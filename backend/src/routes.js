@@ -120,6 +120,28 @@ function buildRouter() {
     res.status(204).end();
   }));
 
+  // ---- AI: scope extraction from a PDF spec ----
+  const multer = require('multer');
+  const ai = require('./ai');
+  const upload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 30 * 1024 * 1024 } });
+
+  r.post('/ai/scope-extract', upload.single('pdf'), asyncRoute(async (req, res) => {
+    if (!req.file) return res.status(400).json({ error: 'multipart upload missing `pdf` file' });
+    if (!process.env.ANTHROPIC_API_KEY && process.env.ANTHROPIC_FAKE !== '1') {
+      return res.status(503).json({
+        error: 'AI features disabled: set ANTHROPIC_API_KEY in /etc/sbg-tracker.env on the EC2 host'
+      });
+    }
+    try {
+      const result = await ai.scopeExtractFromPdf(req.file.buffer);
+      m.audit('ai-extract', 'pdf', null, { user: req.user.id, bytes: req.file.size });
+      res.json({ ok: true, result });
+    } catch (err) {
+      console.error('[ai] scope extract failed:', err);
+      res.status(500).json({ error: err.message });
+    }
+  }));
+
   // ---- admin: list users (admin only) ----
   r.get('/admin/users', auth.requireAdmin, asyncRoute(async (req, res) => {
     const rows = m.kv && require('./db').getDb().prepare('SELECT id, email, name, role, disabled, created_at FROM users').all();
