@@ -1,0 +1,55 @@
+name: Deploy frontend to GitHub Pages
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'frontend/**'
+      - '.github/workflows/pages-deploy.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+concurrency:
+  group: 'pages'
+  cancel-in-progress: false
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Prepare site
+        run: |
+          mkdir -p _site
+          cp -r frontend/* _site/
+          # Disable backend sync on the public Pages deploy unless an API_BASE
+          # is provided as a repo variable. This keeps the live demo working
+          # purely off localStorage and avoids 404 spam for /api/* calls.
+          if [ -n "${{ vars.API_BASE }}" ]; then
+            echo "Patching api-base to ${{ vars.API_BASE }}"
+            sed -i 's|<meta name="api-base" content="">|<meta name="api-base" content="${{ vars.API_BASE }}">|' _site/index.html
+          else
+            echo "No API_BASE configured -- disabling backend sync on Pages."
+            sed -i 's|<meta name="api-enabled" content="true">|<meta name="api-enabled" content="false">|' _site/index.html
+          fi
+
+      - uses: actions/configure-pages@v5
+
+      - uses: actions/upload-pages-artifact@v3
+        with:
+          path: _site
+
+  deploy:
+    needs: build
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - id: deployment
+        uses: actions/deploy-pages@v4

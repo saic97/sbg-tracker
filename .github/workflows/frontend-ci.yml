@@ -1,0 +1,53 @@
+name: Frontend CI
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'frontend/**'
+      - '.github/workflows/frontend-ci.yml'
+  pull_request:
+    paths:
+      - 'frontend/**'
+      - '.github/workflows/frontend-ci.yml'
+  workflow_dispatch:
+
+jobs:
+  validate:
+    name: Lint HTML + JS syntax check
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: Install validator tooling
+        run: |
+          npm install --no-save html-validate@8 acorn@8
+
+      - name: Validate HTML
+        run: npx html-validate frontend/index.html || true   # warnings allowed for now
+
+      - name: JS syntax check (acorn parse)
+        run: |
+          node -e "
+            const fs = require('fs');
+            const acorn = require('acorn');
+            for (const f of ['frontend/js/api.js', 'frontend/js/app.js']) {
+              const src = fs.readFileSync(f, 'utf8');
+              try {
+                acorn.parse(src, { ecmaVersion: 'latest', sourceType: 'script' });
+                console.log('OK', f);
+              } catch (e) {
+                console.error('SYNTAX ERROR', f, e.message);
+                process.exit(1);
+              }
+            }
+          "
+
+      - name: Verify CSS file is non-empty
+        run: |
+          test -s frontend/css/styles.css && echo "styles.css present"
