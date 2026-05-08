@@ -1,0 +1,61 @@
+name: Deploy backend to AWS EC2
+
+# Triggers a remote `git pull && npm ci && systemctl restart` on the EC2
+# instance whenever main is updated. Requires three GitHub repository
+# secrets (Settings -> Secrets and variables -> Actions):
+#   AWS_HOST    -- public DNS or IP of the EC2 instance (e.g. ec2-1-2-3-4.compute.amazonaws.com)
+#   AWS_USER    -- SSH user (typically `ec2-user` on Amazon Linux)
+#   AWS_SSH_KEY -- private key contents (the .pem file you downloaded at instance launch)
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'backend/**'
+      - 'frontend/**'
+      - 'deploy/aws/**'
+      - '.github/workflows/backend-deploy.yml'
+  workflow_dispatch:
+
+concurrency:
+  group: 'backend-deploy'
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    name: Pull + restart on EC2
+    runs-on: ubuntu-latest
+    steps:
+      - name: Verify required secrets
+        run: |
+          if [ -z "${{ secrets.AWS_HOST }}" ] || [ -z "${{ secrets.AWS_USER }}" ] || [ -z "${{ secrets.AWS_SSH_KEY }}" ]; then
+            echo "::error ::Missing one of: AWS_HOST, AWS_USER, AWS_SSH_KEY repo secrets. See deploy/aws/README.md."
+            exit 1
+          fi
+
+      - name: Set up SSH key
+        run: |
+          mkdir -p ~/.ssh
+          echo "${{ secrets.AWS_SSH_KEY }}" > ~/.ssh/id_rsa
+          chmod 600 ~/.ssh/id_rsa
+          ssh-keyscan -H "${{ secrets.AWS_HOST }}" >> ~/.ssh/known_hosts 2>/dev/null
+
+      - name: Deploy via SSH
+        run: |
+          ssh -i ~/.ssh/id_rsa "${{ secrets.AWS_USER }}@${{ secrets.AWS_HOST }}" bash <<'REMOTE'
+          set -euo pipefail
+          cd /opt/sbg-tracker
+          sudo -u sbg git pull --ff-only origin main
+          cd backend
+          sudo -u sbg npm ci --omit=dev || sudo -u sbg npm install --omit=dev
+          sudo -u sbg npm run migrate
+          sudo systemctl restart sbg-tracker
+          sleep 2
+          sudo systemctl status sbg-tracker --no-pager -l | head -15
+          curl -fsS http://localhost:3001/api/health
+          REMOTE
+
+      - name: Smoke check from runner
+        run: |
+          sleep 3
+          curl -fsS "http://${{ secrets.AWS_HOST }}:3001/api/health" || curl -fsS "http://${{ secrets.AWS_HOST }}/api/health"

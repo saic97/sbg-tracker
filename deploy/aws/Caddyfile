@@ -1,0 +1,18 @@
+# /etc/caddy/Caddyfile
+#
+# Reverse-proxies external traffic to the Node app on port 3001.
+#
+# Two modes:
+#   - If CADDY_DOMAIN is set in /etc/sbg-tracker.env, Caddy automatically gets
+#     a Let's Encrypt cert and serves HTTPS at that domain.
+#   - Otherwise, it serves plain HTTP on :80 -- fine for testing, not for prod.
+#
+# To switch to HTTPS:
+#   1. Point a domain (or subdomain) at this instance's public IP.
+#   2. Edit /etc/sbg-tracker.env to add:  CADDY_DOMAIN=tracker.yourdomain.com
+#   3. systemctl restart caddy
+
+{$CADDY_DOMAIN:":80"} {
+    reverse_proxy localhost:3001
+    encode gzip
+}

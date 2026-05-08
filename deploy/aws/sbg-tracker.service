@@ -1,0 +1,35 @@
+# /etc/systemd/system/sbg-tracker.service
+#
+# Runs the SBG Tracker Express server under a dedicated `sbg` user.
+# Auto-starts on boot. Restarts on crash with a 5-second backoff.
+[Unit]
+Description=SBG Preconstruction Bid Tracker (Node/Express + SQLite)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=sbg
+Group=sbg
+WorkingDirectory=/opt/sbg-tracker/backend
+EnvironmentFile=-/etc/sbg-tracker.env
+Environment=NODE_ENV=production
+Environment=PORT=3001
+Environment=DATABASE_PATH=/opt/sbg-tracker/backend/data/sbg-tracker.db
+Environment=STATIC_DIR=../frontend
+Environment=CORS_ORIGINS=*
+ExecStart=/usr/bin/node src/server.js
+Restart=on-failure
+RestartSec=5
+StandardOutput=journal
+StandardError=journal
+
+# Hardening
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=full
+ProtectHome=true
+ReadWritePaths=/opt/sbg-tracker/backend/data
+
+[Install]
+WantedBy=multi-user.target

@@ -156,18 +156,27 @@ Three workflows are wired up in `.github/workflows/`:
   deployed site points at it; otherwise backend sync is auto-disabled so the
   Pages site works as a pure-localStorage demo.
 
-### Backend hosting (TODO)
+### Backend hosting on AWS EC2
 
-GitHub Pages is static-only, so the backend isn't deployed by these workflows.
-Recommended hosts:
-- **Fly.io / Railway / Render** -- free tiers fit a single SQLite-backed
-  Express app comfortably. Add a workflow that runs `flyctl deploy` (or the
-  equivalent) on push to `main`.
-- **Docker on a $5 VPS** -- a one-line `Dockerfile` (Node 20-alpine + npm ci
-  + npm start) plus a persistent volume for `backend/data/`.
+A complete deploy path is wired up in `deploy/aws/` and
+`.github/workflows/backend-deploy.yml`. It targets a free-tier
+`t3.micro` instance and auto-deploys on every push to `main`.
 
-A `backend/Dockerfile` is intentionally not included yet -- once you pick a
-host, drop the deploy workflow into `.github/workflows/backend-deploy.yml`.
+Walkthrough: [`docs/aws-setup.md`](docs/aws-setup.md).
+
+Summary:
+- `deploy/aws/user-data.sh` -- pasted into EC2 "User data" at launch.
+  Installs Node, clones the repo, runs migrations, starts the systemd unit.
+- `deploy/aws/sbg-tracker.service` -- systemd unit that runs the backend
+  under a dedicated `sbg` user with auto-restart.
+- `deploy/aws/Caddyfile` -- optional reverse proxy for free Let's Encrypt HTTPS.
+- `.github/workflows/backend-deploy.yml` -- SSHes into EC2 on push and runs
+  pull + npm ci + migrate + systemctl restart. Requires three repo secrets
+  (`AWS_HOST`, `AWS_USER`, `AWS_SSH_KEY`).
+
+Cost: $0 for 12 months under AWS free tier; ~$8/month afterwards. The same
+artifacts work on any Linux host (DigitalOcean, Hetzner, your own server) --
+just adapt the SSH details.
 
 ## Source attribution
 
