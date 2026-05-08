@@ -1,20 +1,19 @@
 /* =============================================================================
- * api.js -- Lightweight REST client for the SBG Tracker backend.
+ * api.js -- REST client for the SBG Tracker backend, with bearer-token auth.
  *
  * Strategy: local-first with backend sync.
- *   - localStorage is always the source of truth for an immediate first paint.
- *   - On boot we ALSO fire an async GET /api/state that, if newer than the
- *     local cache, replaces it and triggers a re-render.
- *   - Every saveState() writes to localStorage immediately AND debounces a
- *     PUT /api/state to the server. If the server is unreachable, we just
- *     keep the localStorage copy -- the app stays fully functional offline.
- *   - Entity endpoints (POST /api/projects, etc.) are exposed on window.api
- *     for callers that want fine-grained server mutations instead of the
- *     coarse state blob.
+ *   - localStorage stays the source of truth for instant first paint.
+ *   - On boot we ALSO fire async GET /api/state; if newer, replace local + render.
+ *   - Every saveState() writes localStorage immediately AND debounces a
+ *     PUT /api/state (auth required). Failures are logged + dropped.
  *
- * The API base URL is taken from the meta tag <meta name="api-base"> in
- * index.html. It defaults to "" (same origin) which works when the frontend
- * is served by the Express backend in dev.
+ * Auth integration: every fetch attaches Authorization: Bearer <token> if
+ * window.auth.token is set (managed by auth-ui.js). On 401, we clear the
+ * session and reload, which re-shows the login overlay.
+ *
+ * Meta tags read at boot:
+ *   <meta name="api-base">    -- backend URL (empty = same origin)
+ *   <meta name="api-enabled"> -- "false" disables backend sync entirely
  * =============================================================================
  */
 (function () {
@@ -23,15 +22,29 @@
   const ENABLED_META = document.querySelector('meta[name="api-enabled"]');
   const ENABLED = !ENABLED_META || ENABLED_META.content !== 'false';
 
-  // Track sync health so the UI can show an offline indicator if it wants.
   const status = { online: false, lastSync: null, lastError: null };
+
+  function getToken() {
+    return (window.auth && window.auth.token) || null;
+  }
 
   async function request(path, opts = {}) {
     if (!ENABLED) throw new Error('API disabled');
-    const res = await fetch(BASE + path, {
-      headers: { 'Content-Type': 'application/json' },
-      ...opts,
-    });
+    const headers = { 'Content-Type': 'application/json', ...(opts.headers || {}) };
+    const token = getToken();
+    if (token) headers['Authorization'] = 'Bearer ' + token;
+    const res = await fetch(BASE + path, { ...opts, headers });
+    if (res.status === 401) {
+      // Token expired or invalid -- clear and reload to trigger re-auth.
+      if (window.auth && typeof window.auth.clearSession === 'function') {
+        window.auth.clearSession();
+      }
+      // Don't reload during the very first sync (auth-ui handles the overlay).
+      if (window.auth && window.auth.user) {
+        location.reload();
+      }
+      throw new Error('not authenticated');
+    }
     if (!res.ok) {
       const text = await res.text().catch(() => '');
       throw new Error(`API ${opts.method || 'GET'} ${path} failed: ${res.status} ${text}`);
@@ -42,17 +55,13 @@
   }
 
   const api = {
-    status,
-    enabled: ENABLED,
+    status, enabled: ENABLED,
 
-    // Coarse state-blob endpoint (matches frontend's existing single-blob model).
+    // Coarse state-blob endpoint
     getState: () => request('/api/state'),
-    putState: (state) => request('/api/state', {
-      method: 'PUT',
-      body: JSON.stringify({ state }),
-    }),
+    putState: (state) => request('/api/state', { method: 'PUT', body: JSON.stringify({ state }) }),
 
-    // Entity endpoints -- thin wrappers around fetch.
+    // Entity endpoints
     listProjects: () => request('/api/projects'),
     createProject: (data) => request('/api/projects', { method: 'POST', body: JSON.stringify(data) }),
     updateProject: (id, data) => request(`/api/projects/${encodeURIComponent(id)}`, { method: 'PATCH', body: JSON.stringify(data) }),
@@ -82,7 +91,6 @@
     health: () => request('/api/health'),
   };
 
-  // Mark online status by attempting a health check, but don't block boot.
   api.health()
     .then(() => { status.online = true; status.lastError = null; })
     .catch((e) => { status.online = false; status.lastError = String(e); });
