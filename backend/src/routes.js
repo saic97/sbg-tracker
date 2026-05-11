@@ -50,8 +50,8 @@ function buildRouter() {
     if (!state || typeof state !== 'object') {
       return res.status(400).json({ error: 'body must include `state` object' });
     }
-    const merged = m.saveStateBlob(state);
-    // Broadcast to other connected clients in the workspace.
+    const { state: merged, newAssignments } = m.saveStateBlob(state);
+    // Broadcast workspace-wide state change.
     try {
       const rt = require('./realtime');
       rt.broadcastStateChange({
@@ -62,6 +62,35 @@ function buildRouter() {
       });
     } catch (e) {
       console.warn('[routes] realtime broadcast skipped:', e.message);
+    }
+    // Fire notifications for every assignment created/changed in this save.
+    try {
+      const rt = require('./realtime');
+      const { getDb } = require('./db');
+      for (const a of (newAssignments || [])) {
+        // Match assignee name (case-insensitive trim) to a user.
+        const recipient = getDb().prepare(
+          "SELECT id, name, email FROM users WHERE lower(trim(name)) = lower(trim(?)) AND disabled=0 LIMIT 1"
+        ).get(a.assignee);
+        if (!recipient) continue;
+        // Don't notify yourself for changes you made to your own tasks.
+        if (recipient.id === req.user.id) continue;
+        const title = `${req.user.name || req.user.email} assigned you a task`;
+        const body = `${a.taskTitle} — in ${a.projectName}`;
+        const notif = m.notifications.create({
+          user_id: recipient.id,
+          kind: 'task_assigned',
+          title, body,
+          link: `#project=${encodeURIComponent(a.projectId)}&task=${encodeURIComponent(a.taskId)}`,
+          entity: 'task', entity_id: a.taskId,
+          assignedBy: { id: req.user.id, name: req.user.name || req.user.email },
+          project: { id: a.projectId, name: a.projectName },
+        });
+        m.audit('create', 'notification', notif.id, { user: req.user.id, recipient: recipient.id, kind: 'task_assigned' });
+        rt.emitToUser(recipient.id, 'notification:new', notif);
+      }
+    } catch (e) {
+      console.warn('[routes] notification fan-out skipped:', e.message);
     }
     res.json({ state: merged });
   }));
@@ -217,6 +246,33 @@ function buildRouter() {
     await storage.remove(a.storage_key);
     m.attachments.remove(req.params.id);
     m.audit('delete', 'attachment', req.params.id, { user: req.user.id, filename: a.filename });
+    res.status(204).end();
+  }));
+
+  // ---- Notifications (per-user inbox) ----
+  r.get('/notifications', asyncRoute(async (req, res) => {
+    const unreadOnly = req.query.unreadOnly === '1' || req.query.unreadOnly === 'true';
+    const limit  = Math.min(parseInt(req.query.limit || '50', 10), 200);
+    const offset = parseInt(req.query.offset || '0', 10);
+    const items = m.notifications.listForUser(req.user.id, { unreadOnly, limit, offset });
+    const unread = m.notifications.unreadCount(req.user.id);
+    res.json({ items, unread });
+  }));
+
+  r.patch('/notifications/:id/read', asyncRoute(async (req, res) => {
+    const ok = m.notifications.markRead(req.params.id, req.user.id);
+    if (!ok) return res.status(404).json({ error: 'not found' });
+    res.json({ ok: true, unread: m.notifications.unreadCount(req.user.id) });
+  }));
+
+  r.post('/notifications/read-all', asyncRoute(async (req, res) => {
+    m.notifications.markAllRead(req.user.id);
+    res.json({ ok: true, unread: 0 });
+  }));
+
+  r.delete('/notifications/:id', asyncRoute(async (req, res) => {
+    const ok = m.notifications.remove(req.params.id);
+    if (!ok) return res.status(404).json({ error: 'not found' });
     res.status(204).end();
   }));
 

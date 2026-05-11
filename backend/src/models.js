@@ -143,6 +143,36 @@ const ballInCourtOptions = makeEntity('ball_in_court_options', ['name', 'positio
 const csiDivisions = makeEntity('csi_divisions', ['name', 'number', 'position'], false);
 const sourceOptions = makeEntity('source_options', ['name', 'icon', 'photo', 'position'], false);
 const milestoneTypes = makeEntity('milestone_types', ['name', 'icon', 'color', 'default_days_before_bid', 'position'], false);
+const notifications = makeEntity('notifications', [
+  'user_id', 'kind', 'title', 'body', 'link', 'entity', 'entity_id', 'read_at'
+], false);
+notifications.listForUser = (userId, opts = {}) => {
+  const { unreadOnly = false, limit = 50, offset = 0 } = opts;
+  const where = ['user_id = ?'];
+  const params = [userId];
+  if (unreadOnly) where.push('read_at IS NULL');
+  const sql = `SELECT * FROM notifications WHERE ${where.join(' AND ')} ORDER BY created_at DESC LIMIT ? OFFSET ?`;
+  return getDb().prepare(sql).all(...params, limit, offset).map(row => {
+    const out = { id: row.id };
+    for (const c of ['user_id','kind','title','body','link','entity','entity_id','read_at']) out[c] = row[c];
+    Object.assign(out, (row.data ? parseJson(row.data, {}) : {}));
+    out.createdAt = row.created_at;
+    return out;
+  });
+};
+notifications.unreadCount = (userId) => {
+  return getDb().prepare('SELECT COUNT(*) AS n FROM notifications WHERE user_id=? AND read_at IS NULL').get(userId).n;
+};
+notifications.markRead = (id, userId) => {
+  const info = getDb().prepare('UPDATE notifications SET read_at = ? WHERE id=? AND user_id=?')
+                       .run(Date.now(), id, userId);
+  return info.changes > 0;
+};
+notifications.markAllRead = (userId) => {
+  getDb().prepare('UPDATE notifications SET read_at = ? WHERE user_id=? AND read_at IS NULL')
+         .run(Date.now(), userId);
+};
+
 const attachments = makeEntity('attachments', [
   'project_id', 'task_id', 'filename', 'content_type', 'size_bytes', 'storage_key', 'uploaded_by'
 ]);
@@ -178,6 +208,12 @@ function loadStateBlob() {
 function saveStateBlob(state) {
   if (!state || typeof state !== 'object') throw new Error('state must be an object');
   const db = getDb();
+  // Snapshot existing task assignees so we can diff after the save and surface
+  // new/changed assignments to the caller (used to drive notifications).
+  const beforeAssignees = new Map();
+  for (const row of getDb().prepare('SELECT id, assignee FROM tasks').all()) {
+    beforeAssignees.set(row.id, row.assignee || '');
+  }
   const txn = db.transaction(() => {
     if (Array.isArray(state.projects)) {
       db.prepare('DELETE FROM tasks').run();
@@ -231,7 +267,27 @@ function saveStateBlob(state) {
   });
   txn();
   audit('state-put', 'state', null, { keys: Object.keys(state).slice(0, 50) });
-  return loadStateBlob();
+
+  // Compute the assignee diff: tasks where the assignee was set/changed in this save.
+  const newAssignments = [];
+  if (Array.isArray(state.projects)) {
+    for (const p of state.projects) {
+      if (!Array.isArray(p.tasks)) continue;
+      for (const t of p.tasks) {
+        const before = beforeAssignees.get(t.id) || '';
+        const after = (t.assignee || '').trim();
+        if (after && after !== before) {
+          newAssignments.push({
+            taskId: t.id, taskTitle: t.title || '(untitled task)',
+            projectId: p.id, projectName: p.name || '(unnamed project)',
+            assignee: after,
+            previousAssignee: before,
+          });
+        }
+      }
+    }
+  }
+  return { state: loadStateBlob(), newAssignments };
 }
 
 const projectTasks = {
@@ -263,5 +319,6 @@ module.exports = {
   projects, tasks, projectTasks, teamMembers, stages, taskTemplates,
   holidays, ballInCourtOptions, csiDivisions, sourceOptions, milestoneTypes,
   attachments,
+  notifications,
   loadStateBlob, saveStateBlob,
 };

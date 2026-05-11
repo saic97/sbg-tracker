@@ -80,6 +80,7 @@ function attach(httpServer, opts = {}) {
   io.on('connection', (socket) => {
     const user = socket.data.user;
     socket.join('workspace');
+    socket.join('user:' + user.id);   // per-user room for targeted notifications
     presence.set(socket.id, {
       userId: user.id, name: user.name || user.email, email: user.email,
       activeProjectId: null, since: Date.now(),
@@ -114,4 +115,9 @@ function broadcastStateChange({ state, byUserId, byUserName, clientId }) {
 
 function getIo() { return io; }
 
-module.exports = { attach, broadcastStateChange, getIo, presenceList };
+function emitToUser(userId, event, payload) {
+  if (!io) return;
+  io.to('user:' + userId).emit(event, payload);
+}
+
+module.exports = { attach, broadcastStateChange, getIo, presenceList, emitToUser };
