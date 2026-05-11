@@ -59,7 +59,7 @@
 
     // Coarse state-blob endpoint
     getState: () => request('/api/state'),
-    putState: (state) => request('/api/state', { method: 'PUT', body: JSON.stringify({ state }) }),
+    putState: (state) => request('/api/state', { method: 'PUT', body: JSON.stringify({ state, clientId: (window.realtime && window.realtime.clientId) || null }) }),
 
     // Entity endpoints
     listProjects: () => request('/api/projects'),

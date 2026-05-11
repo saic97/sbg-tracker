@@ -143,6 +143,12 @@ const ballInCourtOptions = makeEntity('ball_in_court_options', ['name', 'positio
 const csiDivisions = makeEntity('csi_divisions', ['name', 'number', 'position'], false);
 const sourceOptions = makeEntity('source_options', ['name', 'icon', 'photo', 'position'], false);
 const milestoneTypes = makeEntity('milestone_types', ['name', 'icon', 'color', 'default_days_before_bid', 'position'], false);
+const attachments = makeEntity('attachments', [
+  'project_id', 'task_id', 'filename', 'content_type', 'size_bytes', 'storage_key', 'uploaded_by'
+]);
+attachments.listByProject = (pid) => attachments.list('project_id=?', [pid]);
+attachments.listByTask = (tid) => attachments.list('task_id=?', [tid]);
+
 
 function audit(action, entity, entityId, payload) {
   try {
@@ -256,5 +262,6 @@ module.exports = {
   uid, now, kv, audit,
   projects, tasks, projectTasks, teamMembers, stages, taskTemplates,
   holidays, ballInCourtOptions, csiDivisions, sourceOptions, milestoneTypes,
+  attachments,
   loadStateBlob, saveStateBlob,
 };

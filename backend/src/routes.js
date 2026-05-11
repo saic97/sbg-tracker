@@ -35,11 +35,23 @@ function buildRouter() {
     res.json({ state: m.loadStateBlob() });
   }));
   r.put('/state', asyncRoute(async (req, res) => {
-    const { state } = req.body || {};
+    const { state, clientId } = req.body || {};
     if (!state || typeof state !== 'object') {
       return res.status(400).json({ error: 'body must include `state` object' });
     }
     const merged = m.saveStateBlob(state);
+    // Broadcast to other connected clients in the workspace.
+    try {
+      const rt = require('./realtime');
+      rt.broadcastStateChange({
+        state: merged,
+        byUserId: req.user.id,
+        byUserName: req.user.name || req.user.email,
+        clientId: clientId || null,
+      });
+    } catch (e) {
+      console.warn('[routes] realtime broadcast skipped:', e.message);
+    }
     res.json({ state: merged });
   }));
 
@@ -140,6 +152,61 @@ function buildRouter() {
       console.error('[ai] scope extract failed:', err);
       res.status(500).json({ error: err.message });
     }
+  }));
+
+  // ---- File attachments ----
+  const storage = require('./storage');
+  const uploadAttachment = multer({
+    storage: multer.memoryStorage(),
+    limits: { fileSize: 50 * 1024 * 1024 }   // 50 MB per file
+  });
+
+  r.post('/attachments', uploadAttachment.single('file'), asyncRoute(async (req, res) => {
+    if (!req.file) return res.status(400).json({ error: 'multipart upload missing `file` field' });
+    const { projectId, taskId } = req.body || {};
+    if (projectId && !m.projects.get(projectId)) {
+      return res.status(400).json({ error: 'project not found' });
+    }
+    const storageKey = storage.generateKey(req.file.originalname);
+    await storage.put(storageKey, req.file.buffer);
+    const id = require('crypto').randomBytes(12).toString('hex');
+    const created = m.attachments.create({
+      id, project_id: projectId || null, task_id: taskId || null,
+      filename: req.file.originalname,
+      content_type: req.file.mimetype || 'application/octet-stream',
+      size_bytes: req.file.size,
+      storage_key: storageKey,
+      uploaded_by: req.user.id,
+    });
+    m.audit('upload', 'attachment', id, { user: req.user.id, filename: req.file.originalname, size: req.file.size, projectId, taskId });
+    res.status(201).json(created);
+  }));
+
+  r.get('/projects/:id/attachments', asyncRoute(async (req, res) => {
+    res.json(m.attachments.listByProject(req.params.id));
+  }));
+
+  r.get('/tasks/:id/attachments', asyncRoute(async (req, res) => {
+    res.json(m.attachments.listByTask(req.params.id));
+  }));
+
+  r.get('/attachments/:id/download', asyncRoute(async (req, res) => {
+    const a = m.attachments.get(req.params.id);
+    if (!a) return res.status(404).json({ error: 'not found' });
+    if (!storage.exists(a.storage_key)) return res.status(404).json({ error: 'file missing from storage' });
+    res.setHeader('Content-Type', a.content_type || 'application/octet-stream');
+    res.setHeader('Content-Disposition', `attachment; filename="${encodeURIComponent(a.filename || 'download')}"`);
+    res.setHeader('Content-Length', String(a.size_bytes || storage.size(a.storage_key)));
+    storage.getStream(a.storage_key).pipe(res);
+  }));
+
+  r.delete('/attachments/:id', asyncRoute(async (req, res) => {
+    const a = m.attachments.get(req.params.id);
+    if (!a) return res.status(404).json({ error: 'not found' });
+    await storage.remove(a.storage_key);
+    m.attachments.remove(req.params.id);
+    m.audit('delete', 'attachment', req.params.id, { user: req.user.id, filename: a.filename });
+    res.status(204).end();
   }));
 
   // ---- admin: list users (admin only) ----

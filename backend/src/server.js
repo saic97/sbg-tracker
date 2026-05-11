@@ -73,14 +73,24 @@ function buildApp() {
   return app;
 }
 
+function buildServer() {
+  const http = require('http');
+  const { attach: attachRealtime } = require('./realtime');
+  const app = buildApp();
+  const httpServer = http.createServer(app);
+  attachRealtime(httpServer);
+  return { app, httpServer };
+}
+
 if (require.main === module) {
   const port = parseInt(process.env.PORT || '3001', 10);
-  const app = buildApp();
-  app.listen(port, () => {
+  const { httpServer } = buildServer();
+  httpServer.listen(port, () => {
     console.log(`[server] SBG Tracker API listening on http://localhost:${port}`);
     console.log(`[server] DB: ${process.env.DATABASE_PATH || './data/sbg-tracker.db'}`);
     console.log(`[server] CORS: ${process.env.CORS_ORIGINS || '*'}`);
+    console.log(`[server] Socket.IO ready on /socket.io`);
   });
 }
 
-module.exports = { buildApp };
+module.exports = { buildApp, buildServer };
