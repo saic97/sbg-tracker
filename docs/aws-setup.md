@@ -162,6 +162,32 @@ CORS_ORIGINS=https://saic97.github.io
 
 Then `sudo systemctl restart sbg-tracker`.
 
+**Sub Bid Inbox says "Inbox not configured"**
+
+Add the mailbox settings to `/etc/sbg-tracker.env` on EC2:
+
+```bash
+sudo nano /etc/sbg-tracker.env
+```
+
+Include:
+
+```bash
+ANTHROPIC_API_KEY=...
+BID_INTAKE_IMAP_HOST=outlook.office365.com
+BID_INTAKE_IMAP_USER=bids@sourcebuild.net
+BID_INTAKE_IMAP_PASSWORD=...
+```
+
+Then restart:
+
+```bash
+sudo systemctl restart sbg-tracker
+```
+
+For Microsoft 365 or Google Workspace, the mailbox may need IMAP enabled and an
+app password or service account style credential.
+
 **"npm ci" fails on the runner during deploy**
 
 The instance might be running out of memory while installing

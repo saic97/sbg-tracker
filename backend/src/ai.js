@@ -1,8 +1,9 @@
 /* =============================================================================
  * ai.js -- Anthropic Claude integration for the SBG Tracker.
  *
- * Currently exposes one capability:
+ * Currently exposes two capabilities:
  *   scopeExtractFromPdf(pdfBuffer) -> { project, tasks, milestones, ... }
+ *   subBidExtractFromPdf(pdfBuffer, meta) -> { subcontractor, total, exclusions, ... }
  *
  * The Claude API supports PDF input natively as a `document` content block --
  * we don't need pdftotext. We send the PDF + a structured-output prompt and
@@ -70,6 +71,53 @@ Guidelines:
 - For trades, focus on the major CSI divisions actually present in the spec.
 - Use empty strings or null where data isn't available; never invent.`;
 
+const SUB_BID_PROMPT = `You are an expert preconstruction estimator reading a subcontractor bid proposal PDF.
+
+Extract the bid into structured data for a GC bid tab. Return ONLY a JSON object matching this schema -- no prose,
+no markdown fences, just JSON:
+
+{
+  "subcontractor": {
+    "name": "company name",
+    "contact_name": "person if visible",
+    "email": "contact email if visible",
+    "phone": "contact phone if visible"
+  },
+  "trade": {
+    "name": "trade/scope name, e.g. Electrical, Concrete, Drywall",
+    "csi_division": "best matching CSI number if visible or inferable, e.g. 26 00 00"
+  },
+  "total": {
+    "amount": 123456.78,
+    "currency": "USD",
+    "confidence": "high | medium | low",
+    "label": "Base Bid / Lump Sum / Total Proposal, etc."
+  },
+  "alternates": [
+    { "name": "alternate name/number", "amount": 1234.56, "notes": "" }
+  ],
+  "unit_prices": [
+    { "description": "unit price description", "unit": "SF / LF / EA", "amount": 12.34 }
+  ],
+  "inclusions": ["included scope item"],
+  "exclusions": ["excluded scope item"],
+  "qualifications": ["qualification, assumption, condition, clarifier"],
+  "addenda_acknowledged": ["Addendum 1", "Addendum 2"],
+  "schedule": "duration or schedule note if visible",
+  "tax_included": true,
+  "bond_included": false,
+  "scope_summary": "1-2 sentence summary of the proposal scope",
+  "risk_flags": ["anything that needs estimator review"],
+  "notes": "anything else important",
+  "confidence": "high | medium | low"
+}
+
+Rules:
+- Prefer the final total/base bid number meant to be carried into the bid tab.
+- If there are several totals, choose the most likely base bid total and explain ambiguity in risk_flags.
+- Do not add taxes/bonds/alternates into the total unless the proposal clearly says they are included.
+- Use null for unknown amounts, empty arrays for missing lists, and never invent a company name.`;
+
 async function scopeExtractFromPdf(pdfBuffer, opts = {}) {
   if (process.env.ANTHROPIC_FAKE === '1') {
     return makeFakeResponse(pdfBuffer.length);
@@ -103,6 +151,40 @@ async function scopeExtractFromPdf(pdfBuffer, opts = {}) {
   return parsed;
 }
 
+async function subBidExtractFromPdf(pdfBuffer, meta = {}, opts = {}) {
+  if (process.env.ANTHROPIC_FAKE === '1') {
+    return makeFakeSubBidResponse(pdfBuffer.length, meta);
+  }
+  const client = getClient();
+  const model = opts.model || process.env.ANTHROPIC_MODEL || 'claude-sonnet-4-6';
+  const context = [
+    meta.filename ? `Filename: ${meta.filename}` : '',
+    meta.subject ? `Email subject: ${meta.subject}` : '',
+    meta.from ? `Email from: ${meta.from}` : '',
+  ].filter(Boolean).join('\n');
+  const msg = await client.messages.create({
+    model,
+    max_tokens: 4096,
+    messages: [{
+      role: 'user',
+      content: [
+        {
+          type: 'document',
+          source: { type: 'base64', media_type: 'application/pdf', data: pdfBuffer.toString('base64') }
+        },
+        { type: 'text', text: `${context ? context + '\n\n' : ''}${SUB_BID_PROMPT}` }
+      ]
+    }]
+  });
+  const text = (msg.content || []).filter(b => b.type === 'text').map(b => b.text).join('\n').trim();
+  const cleaned = text.replace(/^```(?:json)?\s*|\s*```$/g, '').trim();
+  try {
+    return JSON.parse(cleaned);
+  } catch (err) {
+    return { error: 'Could not parse Claude response as JSON', raw: text };
+  }
+}
+
 function makeFakeResponse(pdfBytes) {
   return {
     project: {
@@ -127,4 +209,42 @@ function makeFakeResponse(pdfBytes) {
   };
 }
 
-module.exports = { scopeExtractFromPdf, makeFakeResponse };
+function makeFakeSubBidResponse(pdfBytes, meta = {}) {
+  const nameFromFile = String(meta.filename || 'Test Sub Bid')
+    .replace(/\.pdf$/i, '')
+    .replace(/[_-]+/g, ' ')
+    .trim();
+  return {
+    subcontractor: {
+      name: nameFromFile || 'Stub Subcontractor',
+      contact_name: 'Test Contact',
+      email: 'estimating@example.com',
+      phone: ''
+    },
+    trade: {
+      name: 'Concrete',
+      csi_division: '03 30 00'
+    },
+    total: {
+      amount: 123456.78,
+      currency: 'USD',
+      confidence: 'high',
+      label: 'Stub Base Bid'
+    },
+    alternates: [{ name: 'Alt 1', amount: 2500, notes: 'stub alternate' }],
+    unit_prices: [],
+    inclusions: ['stub included scope'],
+    exclusions: ['stub exclusion'],
+    qualifications: ['stub qualification'],
+    addenda_acknowledged: ['Addendum 1'],
+    schedule: '',
+    tax_included: null,
+    bond_included: null,
+    scope_summary: `Stub sub bid summary -- received ${pdfBytes} bytes of PDF.`,
+    risk_flags: [],
+    notes: 'This is a deterministic stub used in tests.',
+    confidence: 'high'
+  };
+}
+
+module.exports = { scopeExtractFromPdf, subBidExtractFromPdf, makeFakeResponse, makeFakeSubBidResponse };

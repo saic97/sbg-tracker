@@ -137,10 +137,38 @@ configured via the `CORS_ORIGINS` env var (comma-separated).
 | GET/PUT | `/api/options/sources`                    | Bid sources                                     |
 | GET/PUT | `/api/options/milestone-types`            | Milestone types                                 |
 | GET/PUT/DELETE | `/api/settings/:key`                | Arbitrary key/value (companyLogo, prefs, etc.)  |
+| POST   | `/api/ai/scope-extract`                   | Claude project scope extraction from PDF        |
+| GET    | `/api/bid-intake/status`                  | Sub bid inbox configuration status              |
+| POST   | `/api/projects/:id/bid-intake/email-poll` | Poll bid inbox into one project                 |
+| POST   | `/api/projects/:id/bid-intake/upload`     | Manually upload and parse one sub bid PDF       |
+| GET    | `/api/projects/:id/sub-bids`              | List imported sub bid rows                      |
+| PATCH/DELETE | `/api/projects/:id/sub-bids/:bidId` | Update/remove one imported sub bid row       |
 
 The frontend uses the coarse `/api/state` endpoint for everything; the
 fine-grained entity endpoints exist for integrations, scripts, and future UI
 that needs server-side validation per write.
+
+## Sub bid email intake
+
+Estimators can forward subcontractor bid PDFs to a mailbox such as
+`bids@sourcebuild.net`. In a project, the "Sub Bid Inbox" panel can poll that
+mailbox, send each PDF to Claude, attach the original PDF to the project, and
+append a bid-tab row with sub name, trade, total, exclusions, qualifications,
+and review status.
+
+Required backend env:
+
+```bash
+ANTHROPIC_API_KEY=...
+BID_INTAKE_IMAP_HOST=outlook.office365.com
+BID_INTAKE_IMAP_USER=bids@sourcebuild.net
+BID_INTAKE_IMAP_PASSWORD=...
+```
+
+Manual project-level polling does not require a subject convention. Optional
+auto-polling (`BID_INTAKE_AUTO_POLL=1`) should use subjects like
+`[SBG:<projectId>] Project Name - sub bid` or set
+`BID_INTAKE_DEFAULT_PROJECT_ID` during a single-project bid day.
 
 ## CI/CD
 

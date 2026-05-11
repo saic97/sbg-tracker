@@ -208,6 +208,9 @@ function loadStateBlob() {
 function saveStateBlob(state) {
   if (!state || typeof state !== 'object') throw new Error('state must be an object');
   const db = getDb();
+  const preservedProjectData = new Map(
+    db.prepare('SELECT id, data FROM projects').all().map(row => [row.id, parseJson(row.data, {})])
+  );
   // Snapshot existing task assignees so we can diff after the save and surface
   // new/changed assignments to the caller (used to drive notifications).
   const beforeAssignees = new Map();
@@ -219,6 +222,8 @@ function saveStateBlob(state) {
       db.prepare('DELETE FROM tasks').run();
       db.prepare('DELETE FROM projects').run();
       for (const p of state.projects) {
+        const preserved = preservedProjectData.get(p.id) || {};
+        const hasSubBids = Object.prototype.hasOwnProperty.call(p, 'subBids');
         const projRow = {
           ...p,
           id: p.id || uid(),
@@ -229,6 +234,7 @@ function saveStateBlob(state) {
           archived: p.archived ? 1 : 0,
           start_date: p.startDate || p.start_date || null,
           due_date: p.dueDate || p.due_date || null,
+          subBids: hasSubBids ? p.subBids : preserved.subBids,
         };
         delete projRow.tasks;
         projects.create(projRow);

@@ -1,0 +1,1456 @@
+/* =============================================================================
+ * visual-polish.css -- cleaner internal-ops visual layer.
+ *
+ * This file intentionally sits after styles.css and tightens the existing UI
+ * without reshaping the data model or rewriting the large app.js surface.
+ * =============================================================================
+ */
+
+:root {
+  --vp-navy: #0a2540;
+  --vp-navy-soft: #183957;
+  --vp-red: #c8322b;
+  --vp-red-soft: #fff4f3;
+  --vp-gold: #b7791f;
+  --vp-green: #2f7d57;
+  --vp-blue: #2563a8;
+  --vp-bg: #f5f7fa;
+  --vp-surface: #ffffff;
+  --vp-surface-soft: #f9fafb;
+  --vp-border: #d9e0e8;
+  --vp-border-soft: #e8edf3;
+  --vp-text: #172033;
+  --vp-muted: #667085;
+  --vp-faint: #98a2b3;
+  --vp-shadow-sm: 0 1px 2px rgba(16, 24, 40, 0.05);
+  --vp-shadow-md: 0 8px 24px rgba(16, 24, 40, 0.08);
+}
+
+body.visual-polish {
+  background: var(--vp-bg);
+  color: var(--vp-text);
+}
+
+body.visual-polish .main {
+  background: var(--vp-bg);
+}
+
+/* 1. Reduce emoji/icon noise */
+body.visual-polish .pill-tab .icon,
+body.visual-polish .stage-panel-title > span:first-child,
+body.visual-polish .mc-icon,
+body.visual-polish .hsb-icon,
+body.visual-polish .ssb-icon,
+body.visual-polish .sv-btn-icon,
+body.visual-polish .critical-filter-icon,
+body.visual-polish .home-signin-prompt .hsp-icon,
+body.visual-polish .tour-welcome-icon {
+  display: none !important;
+}
+
+body.visual-polish .pill-tab,
+body.visual-polish .stage-panel-title,
+body.visual-polish .mc-header {
+  gap: 7px;
+}
+
+body.visual-polish .view-btn,
+body.visual-polish .btn,
+body.visual-polish .group-tab,
+body.visual-polish .pill-tab,
+body.visual-polish .saved-views-btn,
+body.visual-polish .critical-filter-btn {
+  letter-spacing: 0;
+}
+
+/* 2. Stricter color system */
+body.visual-polish .btn-primary,
+body.visual-polish .add-task-btn:hover,
+body.visual-polish #sx-trigger,
+body.visual-polish .sbi-btn.primary {
+  background: var(--vp-red) !important;
+  border-color: var(--vp-red) !important;
+  color: #fff !important;
+}
+
+body.visual-polish .btn-dark,
+body.visual-polish .view-btn.active,
+body.visual-polish .group-tab.active,
+body.visual-polish .pill-tab.active,
+body.visual-polish .saved-views-btn.has-active-view {
+  background: var(--vp-navy) !important;
+  border-color: var(--vp-navy) !important;
+  color: #fff !important;
+}
+
+body.visual-polish .home-stat.is-warning,
+body.visual-polish .home-item.hi-warning,
+body.visual-polish .home-countdown-card.cd-warning,
+body.visual-polish .home-countdown-card.cd-attention {
+  border-left-color: var(--vp-gold) !important;
+}
+
+body.visual-polish .home-stat.is-critical,
+body.visual-polish .home-item.hi-critical,
+body.visual-polish .task-card.is-overdue,
+body.visual-polish .task-table tr.row-overdue td {
+  border-left-color: var(--vp-red) !important;
+}
+
+body.visual-polish .home-stat.is-info,
+body.visual-polish .home-item.hi-info,
+body.visual-polish .pv-section-header,
+body.visual-polish .section-header {
+  border-left-color: var(--vp-navy) !important;
+}
+
+/* 3. Simpler task cards */
+body.visual-polish .task-card {
+  background: var(--vp-surface) !important;
+  border: 1px solid var(--vp-border-soft) !important;
+  border-left: 4px solid #c7d0da !important;
+  border-radius: 6px !important;
+  box-shadow: var(--vp-shadow-sm) !important;
+  padding: 10px 10px 10px 11px !important;
+  min-height: 92px;
+  transition: border-color 0.12s ease, box-shadow 0.12s ease, transform 0.12s ease;
+}
+
+body.visual-polish .task-card:hover {
+  box-shadow: var(--vp-shadow-md) !important;
+  transform: translateY(-1px);
+}
+
+body.visual-polish .task-card.status-in-progress { border-left-color: var(--vp-blue) !important; }
+body.visual-polish .task-card.status-blocked,
+body.visual-polish .task-card.is-overdue { border-left-color: var(--vp-red) !important; }
+body.visual-polish .task-card.status-pending,
+body.visual-polish .task-card.is-soon,
+body.visual-polish .task-card.is-imminent { border-left-color: var(--vp-gold) !important; }
+body.visual-polish .task-card.status-done { border-left-color: var(--vp-green) !important; opacity: 0.82; }
+
+body.visual-polish .task-card .priority-bar,
+body.visual-polish .task-card .day-offset,
+body.visual-polish .task-card .source-badge,
+body.visual-polish .task-card .bic-chip,
+body.visual-polish .task-card .support-chip,
+body.visual-polish .task-card .hours-chip,
+body.visual-polish .task-card .dlv-chip,
+body.visual-polish .task-card .bp-chip,
+body.visual-polish .task-card .cl-chip,
+body.visual-polish .task-card .sb-chip,
+body.visual-polish .task-card .recurrence-badge {
+  display: none !important;
+}
+
+body.visual-polish .task-card-top {
+  margin: 0 0 7px !important;
+  padding: 0 !important;
+  gap: 6px !important;
+}
+
+body.visual-polish .task-card .task-title {
+  padding-left: 0 !important;
+  margin: 0 0 8px !important;
+  font-size: 13px !important;
+  font-weight: 700 !important;
+  line-height: 1.32 !important;
+  color: var(--vp-text) !important;
+}
+
+body.visual-polish .task-card .task-meta {
+  padding-left: 0 !important;
+  gap: 10px;
+  color: var(--vp-muted) !important;
+}
+
+body.visual-polish .task-card .csi-code {
+  max-width: 150px;
+  background: #f2f5f8 !important;
+  color: #5b6675 !important;
+  border: 1px solid #e1e7ef !important;
+  border-radius: 999px !important;
+  padding: 2px 7px !important;
+  font-size: 10px !important;
+}
+
+body.visual-polish .card-status-select {
+  border-radius: 999px !important;
+  border-color: #ccd5df !important;
+  background: #fff !important;
+  color: var(--vp-text) !important;
+}
+
+body.visual-polish .task-card.is-overdue {
+  background: var(--vp-red-soft) !important;
+  color: var(--vp-text) !important;
+}
+
+body.visual-polish .task-card.is-overdue * {
+  color: var(--vp-text) !important;
+}
+
+/* 4. Cleaner project header */
+body.visual-polish .project-header {
+  background: transparent !important;
+  border: 0 !important;
+  padding: 0 !important;
+  margin-bottom: 14px !important;
+  box-shadow: none !important;
+}
+
+body.visual-polish .project-header-banner {
+  background: linear-gradient(180deg, #ffffff 0%, #fbfcfe 100%) !important;
+  border: 1px solid var(--vp-border) !important;
+  border-radius: 8px !important;
+  box-shadow: var(--vp-shadow-sm) !important;
+  padding: 14px !important;
+}
+
+body.visual-polish .project-header-banner .banner-image {
+  width: 58px !important;
+  height: 58px !important;
+  border-radius: 6px !important;
+}
+
+body.visual-polish .project-header h2 {
+  font-size: 28px !important;
+  letter-spacing: 0 !important;
+  line-height: 1 !important;
+  color: var(--vp-navy) !important;
+}
+
+body.visual-polish .project-meta-grid {
+  grid-template-columns: repeat(auto-fit, minmax(145px, 1fr)) !important;
+  gap: 8px !important;
+}
+
+body.visual-polish .meta-card {
+  border: 1px solid var(--vp-border-soft) !important;
+  border-radius: 6px !important;
+  box-shadow: none !important;
+  padding: 10px 12px !important;
+  background: #fff !important;
+}
+
+body.visual-polish .meta-card .label {
+  font-size: 10px !important;
+  color: var(--vp-muted) !important;
+}
+
+body.visual-polish .meta-card .value {
+  font-size: 18px !important;
+  color: var(--vp-navy) !important;
+}
+
+/* 5. Cleaner Today/My Work screen */
+body.visual-polish .home-header {
+  background: #fff !important;
+  border: 1px solid var(--vp-border) !important;
+  border-radius: 8px !important;
+  padding: 18px !important;
+  box-shadow: var(--vp-shadow-sm) !important;
+}
+
+body.visual-polish .home-title {
+  font-size: 30px !important;
+  color: var(--vp-navy) !important;
+  letter-spacing: 0 !important;
+}
+
+body.visual-polish .home-stats {
+  gap: 8px !important;
+}
+
+body.visual-polish .home-stat,
+body.visual-polish .home-section,
+body.visual-polish .home-task-bucket,
+body.visual-polish .home-countdown-card,
+body.visual-polish .home-item {
+  background: #fff !important;
+  border: 1px solid var(--vp-border-soft) !important;
+  border-radius: 6px !important;
+  box-shadow: none !important;
+}
+
+body.visual-polish .home-section-header {
+  padding-bottom: 8px !important;
+  border-bottom: 1px solid var(--vp-border-soft);
+}
+
+body.visual-polish .home-item {
+  border-left: 4px solid transparent !important;
+  padding: 10px 11px !important;
+}
+
+/* 6. Lighter section/panel framing */
+body.visual-polish .pv-section,
+body.visual-polish .stage-panel,
+body.visual-polish .table-wrap,
+body.visual-polish .pv-workspace-controls,
+body.visual-polish .section-header,
+body.visual-polish .sbi-panel {
+  border: 1px solid var(--vp-border) !important;
+  border-radius: 8px !important;
+  box-shadow: none !important;
+  background: #fff !important;
+}
+
+body.visual-polish .pv-section-header,
+body.visual-polish .stage-panel-header,
+body.visual-polish .section-header {
+  background: #fbfcfe !important;
+}
+
+body.visual-polish .pv-section.has-critical > .pv-section-header,
+body.visual-polish .pv-section.has-warning > .pv-section-header {
+  box-shadow: none !important;
+}
+
+/* 7. Button consistency */
+body.visual-polish .btn,
+body.visual-polish .view-btn,
+body.visual-polish .group-tab,
+body.visual-polish .pill-tab,
+body.visual-polish .critical-filter-btn,
+body.visual-polish .saved-views-btn,
+body.visual-polish .bulk-assign-btn,
+body.visual-polish .sbi-btn {
+  border-radius: 5px !important;
+  box-shadow: none !important;
+  font-family: Inter, system-ui, sans-serif !important;
+  font-weight: 700 !important;
+}
+
+body.visual-polish .btn:not(.btn-primary):not(.btn-dark):not(.btn-danger),
+body.visual-polish .view-btn:not(.active),
+body.visual-polish .group-tab:not(.active),
+body.visual-polish .pill-tab:not(.active),
+body.visual-polish .saved-views-btn:not(.has-active-view),
+body.visual-polish .critical-filter-btn:not(.active) {
+  background: #fff !important;
+  color: var(--vp-navy) !important;
+  border-color: #ccd5df !important;
+}
+
+body.visual-polish .btn-danger,
+body.visual-polish .sbi-btn[onclick*="delete"],
+body.visual-polish .sbi-btn[onclick*="Remove"] {
+  background: #fff !important;
+  color: var(--vp-red) !important;
+  border-color: #f0b8b5 !important;
+}
+
+/* 8. Cleaner table mode */
+body.visual-polish .table-wrap {
+  overflow: auto !important;
+}
+
+body.visual-polish .task-table {
+  font-size: 12px !important;
+}
+
+body.visual-polish .task-table thead {
+  position: sticky;
+  top: 0;
+  z-index: 3;
+  background: var(--vp-navy) !important;
+}
+
+body.visual-polish .task-table th {
+  padding: 9px 10px !important;
+  font-size: 10px !important;
+  letter-spacing: 0.04em !important;
+}
+
+body.visual-polish .task-table td {
+  padding: 8px 10px !important;
+  border-bottom: 1px solid var(--vp-border-soft) !important;
+  background: #fff !important;
+}
+
+body.visual-polish .task-table tr:hover td {
+  background: #f6f8fb !important;
+  filter: none !important;
+}
+
+body.visual-polish .task-table tr.row-in-progress td { box-shadow: inset 3px 0 0 var(--vp-blue); }
+body.visual-polish .task-table tr.row-blocked td,
+body.visual-polish .task-table tr.row-overdue td { box-shadow: inset 3px 0 0 var(--vp-red); }
+body.visual-polish .task-table tr.row-pending td,
+body.visual-polish .task-table tr.row-soon td,
+body.visual-polish .task-table tr.row-imminent td { box-shadow: inset 3px 0 0 var(--vp-gold); }
+body.visual-polish .task-table tr.row-done td { box-shadow: inset 3px 0 0 var(--vp-green); color: var(--vp-muted) !important; }
+
+/* 9. Modal polish */
+body.visual-polish .modal {
+  border-radius: 8px !important;
+  border: 1px solid var(--vp-border) !important;
+  box-shadow: 0 24px 70px rgba(16, 24, 40, 0.24) !important;
+  padding: 22px !important;
+}
+
+body.visual-polish .modal h3 {
+  color: var(--vp-navy) !important;
+  letter-spacing: 0 !important;
+  font-size: 20px !important;
+}
+
+body.visual-polish .modal-actions {
+  position: sticky;
+  bottom: -22px;
+  background: #fff;
+  margin-left: -22px !important;
+  margin-right: -22px !important;
+  margin-bottom: -22px !important;
+  padding: 12px 22px !important;
+  border-top: 1px solid var(--vp-border-soft) !important;
+  box-shadow: 0 -8px 18px rgba(16, 24, 40, 0.04);
+}
+
+body.visual-polish input,
+body.visual-polish select,
+body.visual-polish textarea {
+  border-color: #ccd5df !important;
+  border-radius: 5px !important;
+}
+
+body.visual-polish input:focus,
+body.visual-polish select:focus,
+body.visual-polish textarea:focus {
+  outline: 2px solid rgba(37, 99, 168, 0.18) !important;
+  border-color: var(--vp-blue) !important;
+}
+
+/* 10. Focus mode */
+body.visual-polish .vp-focus-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+
+body.visual-polish.vp-focus-mode .project-header,
+body.visual-polish.vp-focus-mode .pv-section,
+body.visual-polish.vp-focus-mode #subBidIntakePanel,
+body.visual-polish.vp-focus-mode #projectRequiredItemsMount,
+body.visual-polish.vp-focus-mode #pvHoursRollupMount,
+body.visual-polish.vp-focus-mode #activityLogMount {
+  display: none !important;
+}
+
+body.visual-polish.vp-focus-mode .pv-workspace-controls {
+  margin-top: 0 !important;
+}
+
+body.visual-polish.vp-focus-mode #sectionHeader {
+  margin-top: 12px !important;
+}
+
+body.visual-polish.vp-focus-mode .main {
+  background: #fff;
+}
+
+@media (max-width: 760px) {
+  body.visual-polish .project-header h2,
+  body.visual-polish .home-title {
+    font-size: 24px !important;
+  }
+
+  body.visual-polish .project-meta-grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr)) !important;
+  }
+}
+
+/* 11. Compact / comfortable density toggle */
+body.visual-polish .vp-density-btn,
+body.visual-polish .vp-command-btn,
+body.visual-polish .vp-meeting-btn {
+  display: inline-flex;
+  align-items: center;
+  min-height: 30px;
+}
+
+body.visual-polish.vp-density-compact .stage-task-grid {
+  grid-template-columns: repeat(auto-fill, minmax(210px, 1fr)) !important;
+  gap: 6px !important;
+}
+
+body.visual-polish.vp-density-compact .task-card {
+  min-height: 72px !important;
+  padding: 8px 9px 8px 10px !important;
+}
+
+body.visual-polish.vp-density-compact .task-card .task-title {
+  font-size: 12px !important;
+  margin-bottom: 5px !important;
+}
+
+body.visual-polish.vp-density-compact .task-card-top {
+  margin-bottom: 5px !important;
+}
+
+body.visual-polish.vp-density-compact .task-card .task-meta {
+  font-size: 11px !important;
+  gap: 7px !important;
+}
+
+body.visual-polish.vp-density-compact .task-table td {
+  padding: 6px 8px !important;
+}
+
+body.visual-polish.vp-density-compact .stage-panel-header,
+body.visual-polish.vp-density-compact .section-header {
+  padding-top: 9px !important;
+  padding-bottom: 9px !important;
+}
+
+/* 12. Project health command strip */
+body.visual-polish .vp-health-bar {
+  display: grid;
+  grid-template-columns: minmax(220px, 0.9fr) minmax(0, 2fr);
+  gap: 14px;
+  align-items: stretch;
+  margin: 0 0 12px;
+  padding: 12px;
+  background: #fff;
+  border: 1px solid var(--vp-border);
+  border-radius: 8px;
+  box-shadow: var(--vp-shadow-sm);
+}
+
+body.visual-polish .vp-health-main {
+  min-width: 0;
+  padding: 2px 4px;
+}
+
+body.visual-polish .vp-health-kicker,
+body.visual-polish .vp-week-title span,
+body.visual-polish .vp-quick-label {
+  font-size: 10px;
+  font-weight: 800;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--vp-muted);
+}
+
+body.visual-polish .vp-health-title {
+  margin-top: 4px;
+  font-size: 17px;
+  font-weight: 800;
+  color: var(--vp-navy);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+body.visual-polish .vp-health-progress {
+  height: 7px;
+  margin: 10px 0 6px;
+  overflow: hidden;
+  background: #eef2f6;
+  border-radius: 999px;
+}
+
+body.visual-polish .vp-health-progress span {
+  display: block;
+  height: 100%;
+  background: linear-gradient(90deg, var(--vp-red), var(--vp-green));
+  border-radius: inherit;
+}
+
+body.visual-polish .vp-health-sub {
+  font-size: 11px;
+  color: var(--vp-muted);
+}
+
+body.visual-polish .vp-health-metrics {
+  display: grid;
+  grid-template-columns: repeat(5, minmax(0, 1fr));
+  gap: 8px;
+}
+
+body.visual-polish .vp-health-metric {
+  min-width: 0;
+  padding: 10px 8px;
+  background: var(--vp-surface-soft);
+  border: 1px solid var(--vp-border-soft);
+  border-left: 4px solid #c8d1dc;
+  border-radius: 6px;
+}
+
+body.visual-polish .vp-health-metric span {
+  display: block;
+  font-family: "JetBrains Mono", monospace;
+  font-size: 22px;
+  font-weight: 800;
+  line-height: 1;
+  color: var(--vp-navy);
+}
+
+body.visual-polish .vp-health-metric label {
+  display: block;
+  margin-top: 5px;
+  font-size: 11px;
+  font-weight: 700;
+  color: var(--vp-muted);
+}
+
+body.visual-polish .vp-health-overdue.has-value,
+body.visual-polish .vp-health-blocked.has-value {
+  border-left-color: var(--vp-red);
+  background: var(--vp-red-soft);
+}
+
+body.visual-polish .vp-health-today.has-value,
+body.visual-polish .vp-health-waiting.has-value {
+  border-left-color: var(--vp-gold);
+  background: #fff8eb;
+}
+
+body.visual-polish .vp-health-done-week.has-value {
+  border-left-color: var(--vp-green);
+  background: #f0faf5;
+}
+
+/* 13. Assignee initials and avatar scan treatment */
+body.visual-polish .vp-avatar {
+  --vp-avatar-bg: var(--vp-navy);
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 22px;
+  height: 22px;
+  flex: 0 0 22px;
+  border-radius: 50%;
+  background: var(--vp-avatar-bg);
+  color: #fff;
+  font-size: 10px;
+  font-weight: 800;
+  line-height: 1;
+}
+
+body.visual-polish .vp-assignee-pill {
+  display: inline-flex !important;
+  align-items: center !important;
+  gap: 6px !important;
+  min-width: 0;
+}
+
+body.visual-polish.vp-density-compact .task-card .vp-assignee-name,
+body.visual-polish.vp-density-compact .task-card .co-lead-sep,
+body.visual-polish.vp-density-compact .task-card .co-lead-more {
+  display: none !important;
+}
+
+body.visual-polish.vp-density-compact .task-card .assignee .avatar,
+body.visual-polish.vp-density-compact .task-card .assignee .vp-avatar {
+  width: 24px !important;
+  height: 24px !important;
+  flex-basis: 24px !important;
+  font-size: 10px !important;
+}
+
+body.visual-polish .vp-unassigned {
+  color: var(--vp-faint) !important;
+  font-style: italic;
+}
+
+/* 14. Priority heat styling */
+body.visual-polish .task-card.vp-heat-critical {
+  border-left-color: var(--vp-red) !important;
+  box-shadow: inset 0 0 0 1px rgba(200, 50, 43, 0.12), var(--vp-shadow-sm) !important;
+}
+
+body.visual-polish .task-card.vp-heat-overdue {
+  background: #fff8f7 !important;
+}
+
+body.visual-polish .task-card.vp-heat-today:not(.vp-heat-overdue) {
+  border-left-color: var(--vp-gold) !important;
+  background: #fffaf0 !important;
+}
+
+body.visual-polish .task-card.vp-heat-blocked {
+  border-left-color: var(--vp-red) !important;
+}
+
+body.visual-polish .task-card.vp-heat-waiting {
+  border-left-color: #7b61a8 !important;
+}
+
+body.visual-polish .critical-chip,
+body.visual-polish .priority-tag.critical {
+  background: var(--vp-red) !important;
+  color: #fff !important;
+  border: 0 !important;
+  border-radius: 999px !important;
+  padding: 2px 7px !important;
+  font-size: 10px !important;
+  letter-spacing: 0.04em !important;
+}
+
+body.visual-polish .row-needs-ack td,
+body.visual-polish .task-card.needs-ack {
+  background-image: linear-gradient(90deg, rgba(183, 121, 31, 0.08), transparent 46%) !important;
+}
+
+/* 15. Better empty states */
+body.visual-polish .vp-empty-state,
+body.visual-polish .vp-empty-inline {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  min-height: 150px;
+  padding: 22px;
+  text-align: center;
+  background: #fff;
+  border: 1px dashed var(--vp-border);
+  border-radius: 8px;
+  color: var(--vp-muted);
+}
+
+body.visual-polish .vp-empty-inline {
+  min-height: 96px;
+  grid-column: 1 / -1;
+  background: var(--vp-surface-soft);
+}
+
+body.visual-polish .vp-empty-title,
+body.visual-polish .vp-empty-inline strong {
+  font-size: 15px;
+  font-weight: 800;
+  color: var(--vp-navy);
+}
+
+body.visual-polish .vp-empty-sub,
+body.visual-polish .vp-empty-inline span {
+  font-size: 12px;
+  color: var(--vp-muted);
+}
+
+/* 16. Work-week strip */
+body.visual-polish .vp-week-strip {
+  display: grid;
+  grid-template-columns: 150px minmax(0, 1fr);
+  gap: 12px;
+  align-items: stretch;
+  margin: 0 0 12px;
+  padding: 12px;
+  background: #fff;
+  border: 1px solid var(--vp-border);
+  border-radius: 8px;
+}
+
+body.visual-polish .vp-week-title {
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  gap: 4px;
+  min-width: 0;
+}
+
+body.visual-polish .vp-week-title small {
+  font-size: 12px;
+  color: var(--vp-muted);
+  line-height: 1.35;
+}
+
+body.visual-polish .vp-week-days {
+  display: grid;
+  grid-template-columns: repeat(5, minmax(0, 1fr));
+  gap: 8px;
+}
+
+body.visual-polish .vp-week-day {
+  min-width: 0;
+  overflow: hidden;
+  border: 1px solid var(--vp-border-soft);
+  border-radius: 6px;
+  background: var(--vp-surface-soft);
+}
+
+body.visual-polish .vp-week-day.is-today {
+  border-color: rgba(37, 99, 168, 0.35);
+  box-shadow: inset 0 3px 0 var(--vp-blue);
+}
+
+body.visual-polish .vp-week-day-head {
+  display: grid;
+  grid-template-columns: 1fr auto;
+  gap: 2px 6px;
+  align-items: center;
+  padding: 8px;
+  border-bottom: 1px solid var(--vp-border-soft);
+}
+
+body.visual-polish .vp-week-day-head span {
+  font-size: 10px;
+  font-weight: 800;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--vp-muted);
+}
+
+body.visual-polish .vp-week-day-head strong {
+  grid-column: 1;
+  font-size: 12px;
+  color: var(--vp-navy);
+}
+
+body.visual-polish .vp-week-day-head em {
+  grid-row: 1 / span 2;
+  grid-column: 2;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 26px;
+  height: 26px;
+  border-radius: 50%;
+  background: #fff;
+  color: var(--vp-navy);
+  font-style: normal;
+  font-family: "JetBrains Mono", monospace;
+  font-size: 12px;
+  font-weight: 800;
+  border: 1px solid var(--vp-border);
+}
+
+body.visual-polish .vp-week-day-body {
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+  padding: 8px;
+}
+
+body.visual-polish .vp-week-task {
+  display: block;
+  width: 100%;
+  min-width: 0;
+  padding: 6px 7px;
+  border: 1px solid var(--vp-border-soft);
+  border-radius: 5px;
+  background: #fff;
+  color: var(--vp-text);
+  text-align: left;
+  font-size: 11px;
+  font-weight: 700;
+  line-height: 1.25;
+  cursor: pointer;
+}
+
+body.visual-polish .vp-week-task span {
+  display: block;
+  margin-top: 2px;
+  overflow: hidden;
+  color: var(--vp-muted);
+  font-size: 10px;
+  font-weight: 600;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+body.visual-polish .vp-week-task:hover {
+  border-color: var(--vp-blue);
+  color: var(--vp-navy);
+}
+
+body.visual-polish .vp-week-empty,
+body.visual-polish .vp-week-extra {
+  font-size: 11px;
+  color: var(--vp-faint);
+}
+
+/* 17. Bid Day Command Center */
+body.visual-polish .vp-command-center {
+  display: grid;
+  gap: 12px;
+  margin: 0 0 12px;
+}
+
+body.visual-polish.vp-command-mode .project-header,
+body.visual-polish.vp-command-mode .pv-section,
+body.visual-polish.vp-command-mode #subBidIntakePanel,
+body.visual-polish.vp-command-mode #projectRequiredItemsMount,
+body.visual-polish.vp-command-mode #pvHoursRollupMount,
+body.visual-polish.vp-command-mode #activityLogMount {
+  display: none !important;
+}
+
+body.visual-polish .vp-cmd-hero {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 16px;
+  align-items: center;
+  padding: 18px;
+  background: var(--vp-navy);
+  color: #fff;
+  border: 1px solid #06192d;
+  border-radius: 8px;
+  box-shadow: var(--vp-shadow-sm);
+}
+
+body.visual-polish .vp-cmd-kicker {
+  font-size: 11px;
+  font-weight: 800;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  color: rgba(255, 255, 255, 0.7);
+}
+
+body.visual-polish .vp-cmd-hero h2 {
+  margin: 5px 0 6px;
+  color: #fff !important;
+  font-size: 28px;
+  line-height: 1;
+  letter-spacing: 0;
+}
+
+body.visual-polish .vp-cmd-meta {
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+body.visual-polish .vp-cmd-meta span {
+  display: inline-flex;
+  align-items: center;
+  min-height: 24px;
+  padding: 3px 8px;
+  background: rgba(255, 255, 255, 0.1);
+  border: 1px solid rgba(255, 255, 255, 0.14);
+  border-radius: 999px;
+  color: rgba(255, 255, 255, 0.86);
+  font-size: 12px;
+  font-weight: 700;
+}
+
+body.visual-polish .vp-cmd-readiness {
+  display: grid;
+  place-items: center;
+  width: 96px;
+  height: 96px;
+  border-radius: 50%;
+  background: rgba(255, 255, 255, 0.08);
+  border: 7px solid var(--vp-gold);
+}
+
+body.visual-polish .vp-cmd-readiness.is-strong {
+  border-color: var(--vp-green);
+}
+
+body.visual-polish .vp-cmd-readiness.is-risk {
+  border-color: var(--vp-red);
+}
+
+body.visual-polish .vp-cmd-readiness span {
+  font-family: "JetBrains Mono", monospace;
+  font-size: 24px;
+  font-weight: 800;
+  line-height: 1;
+}
+
+body.visual-polish .vp-cmd-readiness label {
+  margin-top: -20px;
+  font-size: 10px;
+  font-weight: 800;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: rgba(255, 255, 255, 0.72);
+}
+
+body.visual-polish .vp-cmd-metrics {
+  display: grid;
+  grid-template-columns: repeat(6, minmax(0, 1fr));
+  gap: 8px;
+}
+
+body.visual-polish .vp-cmd-metric {
+  min-width: 0;
+  padding: 12px 10px;
+  background: #fff;
+  border: 1px solid var(--vp-border);
+  border-left: 4px solid #c8d1dc;
+  border-radius: 7px;
+}
+
+body.visual-polish .vp-cmd-metric span {
+  display: block;
+  font-family: "JetBrains Mono", monospace;
+  font-size: 24px;
+  font-weight: 800;
+  line-height: 1;
+  color: var(--vp-navy);
+}
+
+body.visual-polish .vp-cmd-metric label {
+  display: block;
+  margin-top: 6px;
+  color: var(--vp-muted);
+  font-size: 11px;
+  font-weight: 800;
+}
+
+body.visual-polish .vp-cmd-danger.has-value {
+  border-left-color: var(--vp-red);
+  background: var(--vp-red-soft);
+}
+
+body.visual-polish .vp-cmd-warn.has-value,
+body.visual-polish .vp-cmd-today.has-value {
+  border-left-color: var(--vp-gold);
+  background: #fff8eb;
+}
+
+body.visual-polish .vp-cmd-success.has-value {
+  border-left-color: var(--vp-green);
+  background: #f0faf5;
+}
+
+body.visual-polish .vp-cmd-grid {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 10px;
+}
+
+body.visual-polish .vp-cmd-panel {
+  min-width: 0;
+  background: #fff;
+  border: 1px solid var(--vp-border);
+  border-radius: 8px;
+  overflow: hidden;
+}
+
+body.visual-polish .vp-cmd-panel-head {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 10px;
+  padding: 10px 12px;
+  background: #fbfcfe;
+  border-bottom: 1px solid var(--vp-border-soft);
+}
+
+body.visual-polish .vp-cmd-panel-head strong {
+  color: var(--vp-navy);
+  font-size: 13px;
+  font-weight: 800;
+}
+
+body.visual-polish .vp-cmd-panel-head span {
+  color: var(--vp-muted);
+  font-size: 11px;
+  font-weight: 800;
+}
+
+body.visual-polish .vp-cmd-task-list,
+body.visual-polish .vp-cmd-team-list {
+  display: flex;
+  flex-direction: column;
+  gap: 7px;
+  padding: 10px;
+}
+
+body.visual-polish .vp-cmd-task {
+  display: block;
+  width: 100%;
+  min-width: 0;
+  padding: 9px 10px;
+  text-align: left;
+  background: #fff;
+  border: 1px solid var(--vp-border-soft);
+  border-left: 4px solid #c8d1dc;
+  border-radius: 6px;
+  cursor: pointer;
+}
+
+body.visual-polish .vp-cmd-task:hover {
+  border-color: rgba(37, 99, 168, 0.45);
+  background: #f7fafc;
+}
+
+body.visual-polish .vp-cmd-task-danger {
+  border-left-color: var(--vp-red);
+}
+
+body.visual-polish .vp-cmd-task-warn {
+  border-left-color: var(--vp-gold);
+}
+
+body.visual-polish .vp-cmd-task-success {
+  border-left-color: var(--vp-green);
+}
+
+body.visual-polish .vp-cmd-task-title {
+  display: block;
+  overflow: hidden;
+  color: var(--vp-text);
+  font-size: 12px;
+  font-weight: 800;
+  line-height: 1.3;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+body.visual-polish .vp-cmd-task-meta {
+  display: flex;
+  gap: 6px;
+  flex-wrap: wrap;
+  margin-top: 6px;
+}
+
+body.visual-polish .vp-cmd-task-meta span {
+  color: var(--vp-muted);
+  font-size: 10px;
+  font-weight: 700;
+}
+
+body.visual-polish .vp-cmd-task-meta .vp-due-danger {
+  color: var(--vp-red);
+}
+
+body.visual-polish .vp-cmd-task-meta .vp-due-warn {
+  color: var(--vp-gold);
+}
+
+body.visual-polish .vp-cmd-task-meta .vp-due-ok {
+  color: var(--vp-green);
+}
+
+body.visual-polish .vp-cmd-empty {
+  padding: 18px 12px;
+  color: var(--vp-muted);
+  font-size: 12px;
+  text-align: center;
+  background: var(--vp-surface-soft);
+  border: 1px dashed var(--vp-border);
+  border-radius: 6px;
+}
+
+body.visual-polish .vp-cmd-team-panel,
+body.visual-polish .vp-cmd-notes-panel {
+  grid-column: span 1;
+}
+
+body.visual-polish .vp-cmd-team-row {
+  display: flex;
+  gap: 9px;
+  align-items: center;
+  padding: 8px;
+  border: 1px solid var(--vp-border-soft);
+  border-radius: 6px;
+}
+
+body.visual-polish .vp-cmd-team-body {
+  flex: 1;
+  min-width: 0;
+}
+
+body.visual-polish .vp-cmd-team-top {
+  display: flex;
+  justify-content: space-between;
+  gap: 8px;
+  align-items: center;
+}
+
+body.visual-polish .vp-cmd-team-top strong {
+  overflow: hidden;
+  color: var(--vp-text);
+  font-size: 12px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+body.visual-polish .vp-cmd-team-top span,
+body.visual-polish .vp-cmd-team-meta {
+  color: var(--vp-muted);
+  font-size: 10px;
+  font-weight: 700;
+}
+
+body.visual-polish .vp-cmd-team-progress {
+  height: 5px;
+  margin: 6px 0;
+  overflow: hidden;
+  border-radius: 999px;
+  background: #edf1f5;
+}
+
+body.visual-polish .vp-cmd-team-progress span {
+  display: block;
+  height: 100%;
+  background: var(--vp-red);
+}
+
+body.visual-polish .vp-cmd-notes-panel {
+  grid-column: span 2;
+}
+
+body.visual-polish #vpCommandNotes {
+  display: block;
+  width: calc(100% - 20px);
+  min-height: 194px;
+  margin: 10px;
+  resize: vertical;
+  font-size: 13px;
+  line-height: 1.45;
+  border: 1px solid var(--vp-border);
+  border-radius: 6px;
+  background: #fff;
+}
+
+/* 18. Mobile layout cleanup */
+@media (max-width: 860px) {
+  body.visual-polish .pv-wc-row,
+  body.visual-polish .pv-wc-row > div:last-child,
+  body.visual-polish .group-tabs,
+  body.visual-polish .tab-nav {
+    width: 100%;
+  }
+
+  body.visual-polish .view-switcher,
+  body.visual-polish .group-tabs,
+  body.visual-polish .tab-nav,
+  body.visual-polish .vp-quick-views {
+    display: flex !important;
+    overflow-x: auto;
+    flex-wrap: nowrap !important;
+    padding-bottom: 4px;
+    scroll-snap-type: x proximity;
+  }
+
+  body.visual-polish .view-btn,
+  body.visual-polish .group-tab,
+  body.visual-polish .pill-tab,
+  body.visual-polish .vp-quick-views button {
+    flex: 0 0 auto;
+    min-height: 34px;
+    scroll-snap-align: start;
+  }
+
+  body.visual-polish .vp-health-bar,
+  body.visual-polish .vp-week-strip,
+  body.visual-polish .vp-cmd-hero {
+    grid-template-columns: 1fr;
+  }
+
+  body.visual-polish .vp-health-metrics,
+  body.visual-polish .vp-cmd-metrics {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  body.visual-polish .vp-cmd-grid {
+    grid-template-columns: 1fr;
+  }
+
+  body.visual-polish .vp-cmd-notes-panel {
+    grid-column: span 1;
+  }
+
+  body.visual-polish .vp-week-days {
+    grid-template-columns: repeat(5, minmax(155px, 1fr));
+    overflow-x: auto;
+    padding-bottom: 4px;
+  }
+
+  body.visual-polish .section-header {
+    align-items: flex-start !important;
+    gap: 10px !important;
+  }
+}
+
+@media (max-width: 560px) {
+  body.visual-polish .main {
+    padding: 12px !important;
+  }
+
+  body.visual-polish .project-header-banner,
+  body.visual-polish .home-header,
+  body.visual-polish .pv-workspace-controls {
+    padding: 12px !important;
+  }
+
+  body.visual-polish .vp-health-metrics {
+    grid-template-columns: 1fr;
+  }
+
+  body.visual-polish .modal {
+    width: calc(100vw - 16px) !important;
+    max-height: calc(100vh - 16px) !important;
+  }
+}
+
+/* 19. Saved views and quick view polish */
+body.visual-polish .vp-quick-views {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-wrap: wrap;
+  margin: 10px 0 8px;
+  padding: 8px;
+  background: var(--vp-surface-soft);
+  border: 1px solid var(--vp-border-soft);
+  border-radius: 6px;
+}
+
+body.visual-polish .vp-quick-views button {
+  padding: 5px 9px;
+  border: 1px solid #ccd5df;
+  border-radius: 999px;
+  background: #fff;
+  color: var(--vp-navy);
+  font-size: 11px;
+  font-weight: 800;
+  cursor: pointer;
+}
+
+body.visual-polish .vp-quick-views button:hover {
+  border-color: var(--vp-navy);
+  background: #eef4fb;
+}
+
+body.visual-polish .saved-views-dropdown {
+  min-width: 285px !important;
+  border-radius: 8px !important;
+  border: 1px solid var(--vp-border) !important;
+  box-shadow: var(--vp-shadow-md) !important;
+  padding: 8px !important;
+}
+
+body.visual-polish .sv-list {
+  gap: 6px !important;
+}
+
+body.visual-polish .sv-row {
+  border: 1px solid transparent;
+  border-radius: 6px !important;
+}
+
+body.visual-polish .sv-row-main {
+  padding: 8px 9px !important;
+}
+
+body.visual-polish .sv-row-icon {
+  display: none !important;
+}
+
+body.visual-polish .sv-row.active {
+  background: #edf4fb !important;
+  border-color: rgba(37, 99, 168, 0.35) !important;
+}
+
+body.visual-polish .sv-save-btn {
+  border-radius: 6px !important;
+}
+
+/* 20. Task detail side panel */
+body.visual-polish.vp-task-drawer #taskModal.modal-backdrop.active {
+  align-items: stretch !important;
+  justify-content: flex-end !important;
+  padding: 0 !important;
+  background: rgba(10, 20, 32, 0.42) !important;
+}
+
+body.visual-polish.vp-task-drawer #taskModal .modal {
+  width: min(720px, 100vw) !important;
+  max-width: min(720px, 100vw) !important;
+  height: 100vh !important;
+  max-height: 100vh !important;
+  margin: 0 !important;
+  border-radius: 0 !important;
+  border-top: 0 !important;
+  border-left: 1px solid var(--vp-border) !important;
+  box-shadow: -22px 0 54px rgba(16, 24, 40, 0.24) !important;
+}
+
+body.visual-polish.vp-task-drawer #taskModal .modal-actions {
+  bottom: -22px;
+}
+
+@media (max-width: 760px) {
+  body.visual-polish.vp-task-drawer #taskModal .modal {
+    width: 100vw !important;
+    max-width: 100vw !important;
+  }
+}
+
+/* 21. Print / meeting mode */
+body.visual-polish .vp-meeting-exit {
+  position: fixed;
+  right: 18px;
+  bottom: 18px;
+  z-index: 2200;
+  display: none;
+}
+
+body.visual-polish.vp-meeting-mode .vp-meeting-exit {
+  display: inline-flex;
+}
+
+body.visual-polish.vp-meeting-mode header,
+body.visual-polish.vp-meeting-mode .sidebar,
+body.visual-polish.vp-meeting-mode .pv-workspace-controls,
+body.visual-polish.vp-meeting-mode .pv-section,
+body.visual-polish.vp-meeting-mode #subBidIntakePanel,
+body.visual-polish.vp-meeting-mode #projectRequiredItemsMount,
+body.visual-polish.vp-meeting-mode #pvHoursRollupMount,
+body.visual-polish.vp-meeting-mode #activityLogMount,
+body.visual-polish.vp-meeting-mode .section-actions,
+body.visual-polish.vp-meeting-mode .add-task-btn,
+body.visual-polish.vp-meeting-mode .card-status-select,
+body.visual-polish.vp-meeting-mode .inline-status-select,
+body.visual-polish.vp-meeting-mode .bulk-checkbox-wrap,
+body.visual-polish.vp-meeting-mode .bulk-cell,
+body.visual-polish.vp-meeting-mode .bulk-th {
+  display: none !important;
+}
+
+body.visual-polish.vp-meeting-mode .layout {
+  display: block !important;
+}
+
+body.visual-polish.vp-meeting-mode .main {
+  padding: 18px !important;
+  background: #fff !important;
+}
+
+body.visual-polish.vp-meeting-mode .project-header {
+  display: block !important;
+}
+
+body.visual-polish.vp-meeting-mode .project-header-banner,
+body.visual-polish.vp-meeting-mode .vp-health-bar,
+body.visual-polish.vp-meeting-mode .vp-week-strip,
+body.visual-polish.vp-meeting-mode .section-header,
+body.visual-polish.vp-meeting-mode .stage-panel,
+body.visual-polish.vp-meeting-mode .table-wrap {
+  box-shadow: none !important;
+  border-color: #cfd8e3 !important;
+}
+
+body.visual-polish.vp-meeting-mode .task-card.status-done,
+body.visual-polish.vp-meeting-mode .task-table tr.row-done {
+  display: none !important;
+}
+
+body.visual-polish.vp-meeting-mode .task-card {
+  break-inside: avoid;
+}
+
+@media print {
+  body.visual-polish .vp-health-bar,
+  body.visual-polish .vp-week-strip {
+    display: grid !important;
+    break-inside: avoid;
+  }
+
+  body.visual-polish .vp-meeting-exit,
+  body.visual-polish .vp-density-btn,
+  body.visual-polish .vp-focus-btn,
+  body.visual-polish .vp-command-btn,
+  body.visual-polish .vp-meeting-btn,
+  body.visual-polish .vp-quick-views {
+    display: none !important;
+  }
+}

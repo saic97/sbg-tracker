@@ -67,7 +67,8 @@ function buildApp() {
   // eslint-disable-next-line no-unused-vars
   app.use((err, req, res, _next) => {
     console.error('[server]', err);
-    res.status(500).json({ error: err.message || 'internal error' });
+    const status = err.status || err.statusCode || 500;
+    res.status(status).json({ error: err.message || 'internal error' });
   });
 
   return app;
@@ -90,6 +91,12 @@ if (require.main === module) {
     console.log(`[server] DB: ${process.env.DATABASE_PATH || './data/sbg-tracker.db'}`);
     console.log(`[server] CORS: ${process.env.CORS_ORIGINS || '*'}`);
     console.log(`[server] Socket.IO ready on /socket.io`);
+    try {
+      const { startAutoPoller } = require('./bidIntake');
+      if (startAutoPoller()) console.log('[server] Bid intake inbox poller started');
+    } catch (err) {
+      console.warn('[server] Bid intake poller not started:', err.message);
+    }
   });
 }
 

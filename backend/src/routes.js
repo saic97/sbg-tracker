@@ -194,6 +194,69 @@ function buildRouter() {
     }
   }));
 
+  // ---- Sub bid intake: email/manual PDF -> Claude -> project.subBids row ----
+  const bidIntake = require('./bidIntake');
+  const uploadSubBid = multer({ storage: multer.memoryStorage(), limits: { fileSize: 50 * 1024 * 1024 } });
+
+  r.get('/bid-intake/status', asyncRoute(async (req, res) => {
+    res.json(bidIntake.status());
+  }));
+
+  r.post('/bid-intake/poll', auth.requireAdmin, asyncRoute(async (req, res) => {
+    const limit = parseInt((req.body && req.body.limit) || req.query.limit || '25', 10);
+    const summary = await bidIntake.pollInbox({ limit, userId: req.user.id });
+    if (summary.imported) broadcastState(req);
+    res.json({ ok: true, ...summary });
+  }));
+
+  r.get('/projects/:id/sub-bids', asyncRoute(async (req, res) => {
+    res.json(bidIntake.listSubBids(req.params.id));
+  }));
+
+  r.post('/projects/:id/bid-intake/upload', uploadSubBid.single('pdf'), asyncRoute(async (req, res) => {
+    if (!req.file) return res.status(400).json({ error: 'multipart upload missing `pdf` file' });
+    const result = await bidIntake.importSubBidPdf({
+      projectId: req.params.id,
+      pdfBuffer: req.file.buffer,
+      filename: req.file.originalname,
+      contentType: req.file.mimetype || 'application/pdf',
+      source: 'manual-upload',
+      userId: req.user.id,
+      email: {
+        subject: (req.body && req.body.subject) || '',
+        fromEmail: req.user.email || '',
+        fromName: req.user.name || '',
+        receivedAt: new Date().toISOString(),
+      },
+      force: req.body && (req.body.force === '1' || req.body.force === 'true'),
+    });
+    if (result.status === 'imported') broadcastState(req);
+    res.status(result.status === 'duplicate' ? 200 : 201).json({ ok: true, ...result });
+  }));
+
+  r.post('/projects/:id/bid-intake/email-poll', asyncRoute(async (req, res) => {
+    const limit = parseInt((req.body && req.body.limit) || req.query.limit || '25', 10);
+    const summary = await bidIntake.pollInbox({
+      projectId: req.params.id,
+      limit,
+      userId: req.user.id,
+    });
+    if (summary.imported) broadcastState(req);
+    res.json({ ok: true, ...summary });
+  }));
+
+  r.patch('/projects/:id/sub-bids/:bidId', asyncRoute(async (req, res) => {
+    const updated = bidIntake.updateSubBid(req.params.id, req.params.bidId, req.body || {});
+    broadcastState(req);
+    res.json(updated);
+  }));
+
+  r.delete('/projects/:id/sub-bids/:bidId', asyncRoute(async (req, res) => {
+    bidIntake.removeSubBid(req.params.id, req.params.bidId);
+    broadcastState(req);
+    res.status(204).end();
+  }));
+
   // ---- File attachments ----
   const storage = require('./storage');
   const uploadAttachment = multer({
@@ -378,6 +441,20 @@ function attachCrud(router, prefix, entity, kind) {
     m.audit('delete', kind, req.params.id, { user: req.user.id });
     res.status(204).end();
   }));
+}
+
+function broadcastState(req) {
+  try {
+    const rt = require('./realtime');
+    rt.broadcastStateChange({
+      state: m.loadStateBlob(),
+      byUserId: req.user && req.user.id,
+      byUserName: req.user && (req.user.name || req.user.email),
+      clientId: (req.body && req.body.clientId) || null,
+    });
+  } catch (e) {
+    console.warn('[routes] realtime broadcast skipped:', e.message);
+  }
 }
 
 function attachReplaceAll(router, prefix, entity, bodyKey) {
