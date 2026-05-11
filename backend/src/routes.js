@@ -30,6 +30,17 @@ function buildRouter() {
   // ---- Everything below this line requires auth ----
   r.use(auth.requireAuth);
 
+  // ---- Viewer role is read-only. Block mutating verbs except for admin endpoints
+  //      (which have their own requireAdmin), and except for /attachments/:id/download
+  //      (a GET; not mutating). This single guard avoids decorating every route.
+  r.use((req, res, next) => {
+    if (!req.user) return next();  // requireAuth will have handled it
+    if (req.user.role !== 'viewer') return next();
+    // Viewer is allowed all GET requests.
+    if (req.method === 'GET') return next();
+    return res.status(403).json({ error: 'viewer role is read-only' });
+  });
+
   // ---- coarse state blob ----
   r.get('/state', asyncRoute(async (req, res) => {
     res.json({ state: m.loadStateBlob() });
@@ -209,10 +220,79 @@ function buildRouter() {
     res.status(204).end();
   }));
 
-  // ---- admin: list users (admin only) ----
+  // ---- admin: user management + audit log (admin only) ----
+  const { getDb } = require('./db');
+
   r.get('/admin/users', auth.requireAdmin, asyncRoute(async (req, res) => {
-    const rows = m.kv && require('./db').getDb().prepare('SELECT id, email, name, role, disabled, created_at FROM users').all();
-    res.json(rows || []);
+    const rows = getDb().prepare('SELECT id, email, name, role, disabled, created_at, updated_at FROM users ORDER BY created_at ASC').all();
+    res.json(rows);
+  }));
+
+  r.patch('/admin/users/:id', auth.requireAdmin, asyncRoute(async (req, res) => {
+    const { role, name, disabled } = req.body || {};
+    const target = getDb().prepare('SELECT * FROM users WHERE id=?').get(req.params.id);
+    if (!target) return res.status(404).json({ error: 'user not found' });
+    // Prevent the only admin from accidentally demoting themselves and locking the workspace out.
+    if (target.role === 'admin' && role && role !== 'admin') {
+      const adminCount = getDb().prepare("SELECT COUNT(*) AS n FROM users WHERE role='admin' AND disabled=0").get().n;
+      if (adminCount <= 1) return res.status(400).json({ error: 'cannot demote the last admin' });
+    }
+    const updates = [];
+    const params = [];
+    if (role !== undefined) {
+      if (!['admin', 'estimator', 'viewer'].includes(role)) {
+        return res.status(400).json({ error: 'role must be admin | estimator | viewer' });
+      }
+      updates.push('role=?'); params.push(role);
+    }
+    if (name !== undefined) { updates.push('name=?'); params.push(String(name).slice(0, 200)); }
+    if (disabled !== undefined) { updates.push('disabled=?'); params.push(disabled ? 1 : 0); }
+    if (!updates.length) return res.status(400).json({ error: 'no fields to update' });
+    updates.push("updated_at=CAST(strftime('%s','now') AS INTEGER)*1000");
+    params.push(req.params.id);
+    getDb().prepare(`UPDATE users SET ${updates.join(', ')} WHERE id=?`).run(...params);
+    const after = getDb().prepare('SELECT id, email, name, role, disabled, created_at, updated_at FROM users WHERE id=?').get(req.params.id);
+    m.audit('update', 'user', req.params.id, { by: req.user.id, changes: { role, name, disabled } });
+    res.json(after);
+  }));
+
+  r.delete('/admin/users/:id', auth.requireAdmin, asyncRoute(async (req, res) => {
+    const target = getDb().prepare('SELECT * FROM users WHERE id=?').get(req.params.id);
+    if (!target) return res.status(404).json({ error: 'user not found' });
+    if (target.role === 'admin') {
+      const adminCount = getDb().prepare("SELECT COUNT(*) AS n FROM users WHERE role='admin' AND disabled=0").get().n;
+      if (adminCount <= 1) return res.status(400).json({ error: 'cannot delete the last admin' });
+    }
+    if (target.id === req.user.id) return res.status(400).json({ error: 'cannot delete yourself' });
+    getDb().prepare('DELETE FROM users WHERE id=?').run(req.params.id);
+    m.audit('delete', 'user', req.params.id, { by: req.user.id, email: target.email });
+    res.status(204).end();
+  }));
+
+  r.get('/admin/audit-log', auth.requireAdmin, asyncRoute(async (req, res) => {
+    const limit = Math.min(parseInt(req.query.limit || '100', 10), 500);
+    const offset = parseInt(req.query.offset || '0', 10);
+    const where = [];
+    const params = [];
+    if (req.query.entity) { where.push('entity = ?'); params.push(req.query.entity); }
+    if (req.query.action) { where.push('action = ?'); params.push(req.query.action); }
+    if (req.query.user)   { where.push('user_id = ?'); params.push(req.query.user); }
+    const whereSql = where.length ? 'WHERE ' + where.join(' AND ') : '';
+    const rows = getDb().prepare(`
+      SELECT id, ts, action, entity, entity_id, user_id, payload
+      FROM audit_log ${whereSql}
+      ORDER BY ts DESC LIMIT ? OFFSET ?
+    `).all(...params, limit, offset);
+    // Decorate with user info (best-effort join)
+    const users = getDb().prepare('SELECT id, email, name FROM users').all();
+    const byId = Object.fromEntries(users.map(u => [u.id, u]));
+    const decorated = rows.map(r => ({
+      ...r,
+      user: r.user_id ? byId[r.user_id] || null : null,
+      payload: r.payload ? (() => { try { return JSON.parse(r.payload); } catch { return r.payload; } })() : null,
+    }));
+    const totalRow = getDb().prepare(`SELECT COUNT(*) AS n FROM audit_log ${whereSql}`).get(...params);
+    res.json({ items: decorated, total: totalRow.n, limit, offset });
   }));
 
   return r;

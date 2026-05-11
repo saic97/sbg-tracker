@@ -26,7 +26,7 @@ test('second signup is a member, not admin', async () => {
     email: 'second@example.com', password: 'longenough'
   });
   assert.equal(res.status, 201);
-  assert.equal(res.body.user.role, 'member');
+  assert.equal(res.body.user.role, 'estimator');
 });
 
 test('signup rejects short password', async () => {

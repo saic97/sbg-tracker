@@ -102,6 +102,19 @@ function requireAdmin(req, res, next) {
   next();
 }
 
+function requireRole(...allowed) {
+  return (req, res, next) => {
+    if (!req.user) return res.status(401).json({ error: 'authentication required' });
+    if (allowed.length === 0 || allowed.includes(req.user.role)) return next();
+    return res.status(403).json({ error: `requires one of: ${allowed.join(', ')}` });
+  };
+}
+
+// Convenience: anyone who can write (admin + estimator), NOT viewer.
+function requireWriter(req, res, next) {
+  return requireRole('admin', 'estimator')(req, res, next);
+}
+
 // --- Routes ---
 function buildRouter() {
   const r = express.Router();
@@ -120,7 +133,7 @@ function buildRouter() {
 
       const id = uid();
       const password_hash = await bcrypt.hash(password, 10);
-      const role = isFirstUser ? 'admin' : 'member';
+      const role = isFirstUser ? 'admin' : 'estimator';
       const ts = Date.now();
       getDb().prepare(`INSERT INTO users (id, email, password_hash, name, role, created_at, updated_at)
                        VALUES (?, ?, ?, ?, ?, ?, ?)`)
@@ -172,4 +185,4 @@ function buildRouter() {
   return r;
 }
 
-module.exports = { buildRouter, requireAuth, optionalAuth, requireAdmin, publicUser };
+module.exports = { buildRouter, requireAuth, optionalAuth, requireAdmin, requireRole, requireWriter, publicUser };
