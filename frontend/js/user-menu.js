@@ -1,15 +1,16 @@
 /* =============================================================================
- * user-menu.js -- Header avatar + dropdown with Sign Out.
+ * user-menu.js -- Unmissable "Sign Out" pill in the top-right corner.
  *
- * Injects a circular avatar in the top-right header showing the current user's
- * initials. Clicking it opens a small menu with:
+ * Renders a high-z-index pill button that's hard to miss no matter what other
+ * styles the imported HTML carries. Clicking it opens a small dropdown with
  *   - Name + email + role
+ *   - Reload state from server
  *   - Sign out
- *
- * Designed to be extended (Profile, Change password, etc.) without restructure.
  * =============================================================================
  */
 (function () {
+  console.log('[user-menu] script loaded');
+
   const apiBaseMeta = document.querySelector('meta[name="api-base"]');
   const BASE = (apiBaseMeta && apiBaseMeta.content) || '';
   const apiEnabledMeta = document.querySelector('meta[name="api-enabled"]');
@@ -34,33 +35,60 @@
 
   function injectStyles() {
     const css = `
-      #um-avatar {
-        position: fixed; top: 14px; right: 14px; z-index: 91;
-        width: 32px; height: 32px; border-radius: 50%; border: 0; cursor: pointer;
-        color: #fff; font-weight: 700; font-size: 12px;
+      #um-pill {
+        position: fixed !important;
+        top: 14px !important;
+        right: 18px !important;
+        z-index: 2147483646 !important;
+        display: inline-flex !important;
+        align-items: center !important;
+        gap: 8px !important;
+        padding: 8px 14px 8px 8px !important;
+        border-radius: 999px !important;
+        border: 2px solid #fff !important;
+        background: #c8322b !important;
+        color: #fff !important;
+        cursor: pointer !important;
+        font-family: 'Inter', system-ui, sans-serif !important;
+        font-weight: 700 !important;
+        font-size: 13px !important;
+        letter-spacing: 0.02em !important;
+        box-shadow: 0 4px 14px rgba(10,37,64,0.45) !important;
+        line-height: 1 !important;
+        text-transform: uppercase !important;
+      }
+      #um-pill:hover { background: #a02620 !important; }
+      #um-pill .um-bubble {
         display: inline-flex; align-items: center; justify-content: center;
-        font-family: 'Inter', system-ui, sans-serif; letter-spacing: 0.02em;
-        box-shadow: 0 2px 6px rgba(10,37,64,0.25);
-        text-transform: uppercase;
-        transition: transform 0.1s;
+        width: 26px; height: 26px; border-radius: 50%;
+        background: rgba(255,255,255,0.18);
+        font-size: 11px; font-weight: 800;
       }
-      #um-avatar:hover { transform: scale(1.06); }
+      #um-pill .um-text { white-space: nowrap; }
       #um-menu {
-        position: fixed; top: 54px; right: 14px; z-index: 95;
-        background: #fff; border-radius: 8px; min-width: 240px;
-        box-shadow: 0 12px 40px rgba(10,37,64,0.25);
+        position: fixed !important;
+        top: 58px !important;
+        right: 18px !important;
+        z-index: 2147483647 !important;
+        background: #fff;
+        border-radius: 10px;
+        min-width: 260px;
+        box-shadow: 0 16px 50px rgba(10,37,64,0.35);
         border: 1px solid #dbdfe5;
-        font-family: 'Inter', system-ui, sans-serif; display: none; overflow: hidden;
+        font-family: 'Inter', system-ui, sans-serif;
+        display: none;
+        overflow: hidden;
       }
-      #um-menu.active { display: block; }
+      #um-menu.active { display: block !important; }
       .um-header {
-        padding: 14px 16px; border-bottom: 1px solid #edeff3;
+        padding: 14px 16px;
+        border-bottom: 1px solid #edeff3;
         display: flex; gap: 12px; align-items: center;
       }
       .um-mini-avatar {
         width: 40px; height: 40px; border-radius: 50%; color: #fff;
         display: inline-flex; align-items: center; justify-content: center;
-        font-weight: 700; font-size: 14px; text-transform: uppercase;
+        font-weight: 800; font-size: 14px; text-transform: uppercase;
         flex-shrink: 0;
       }
       .um-who { flex: 1; min-width: 0; }
@@ -76,24 +104,29 @@
       .um-list { padding: 6px 0; }
       .um-item {
         display: flex; align-items: center; gap: 10px;
-        width: 100%; padding: 9px 16px; border: 0; background: transparent;
+        width: 100%; padding: 10px 16px; border: 0; background: transparent;
         cursor: pointer; font: inherit; color: #0a2540; font-size: 13px;
         text-align: left;
       }
       .um-item:hover { background: #f4f5f7; }
-      .um-item.danger { color: #c8322b; }
+      .um-item.danger { color: #c8322b; font-weight: 700; }
       .um-item.danger:hover { background: #fde4e2; }
-      .um-icon { width: 16px; text-align: center; opacity: 0.7; }
+      .um-icon { width: 16px; text-align: center; opacity: 0.85; }
     `;
     const s = document.createElement('style');
+    s.id = 'um-styles';
     s.textContent = css;
     document.head.appendChild(s);
   }
 
   function injectMarkup() {
+    if (document.getElementById('um-pill')) return;
+
     const btn = document.createElement('button');
-    btn.id = 'um-avatar'; btn.type = 'button';
+    btn.id = 'um-pill';
+    btn.type = 'button';
     btn.title = 'Account menu';
+    btn.innerHTML = '<span class="um-bubble" id="um-bubble">?</span><span class="um-text" id="um-text">Sign Out</span>';
     document.body.appendChild(btn);
 
     const menu = document.createElement('div');
@@ -103,21 +136,30 @@
     btn.addEventListener('click', (e) => { e.stopPropagation(); toggle(); });
     document.addEventListener('click', (e) => {
       const m = document.getElementById('um-menu');
-      const b = document.getElementById('um-avatar');
+      const b = document.getElementById('um-pill');
       if (!m || !m.classList.contains('active')) return;
       if (m.contains(e.target) || b.contains(e.target)) return;
       m.classList.remove('active');
     });
+    document.addEventListener('keydown', (e) => {
+      if (e.key === 'Escape') {
+        const m = document.getElementById('um-menu');
+        if (m) m.classList.remove('active');
+      }
+    });
   }
 
-  function renderAvatar() {
-    const btn = document.getElementById('um-avatar');
+  function renderPill() {
+    const btn = document.getElementById('um-pill');
     if (!btn) return;
     const user = window.auth && window.auth.user;
-    if (!user) { btn.style.display = 'none'; return; }
+    if (!user) {
+      btn.style.display = 'none';
+      return;
+    }
     btn.style.display = 'inline-flex';
-    btn.style.background = colorForName(user.name || user.email);
-    btn.textContent = initialsForName(user.name || user.email);
+    const bubble = document.getElementById('um-bubble');
+    if (bubble) bubble.textContent = initialsForName(user.name || user.email);
     btn.title = (user.name || user.email) + ' · ' + (user.role || 'user') + ' — click for menu';
   }
 
@@ -139,10 +181,10 @@
       </div>
       <div class="um-list">
         <button class="um-item" type="button" data-action="reload">
-          <span class="um-icon">🔄</span><span>Reload state from server</span>
+          <span class="um-icon">&#x21bb;</span><span>Reload state from server</span>
         </button>
         <button class="um-item danger" type="button" data-action="signout">
-          <span class="um-icon">⎋</span><span>Sign out</span>
+          <span class="um-icon">&#x23fb;</span><span>Sign out</span>
         </button>
       </div>
     `;
@@ -171,34 +213,36 @@
   async function signOut() {
     try {
       if (window.auth && typeof window.auth.logout === 'function') {
-        await window.auth.logout();   // posts to /api/auth/logout + clears + reload
-      } else {
-        localStorage.removeItem('SBG_AUTH_TOKEN');
-        localStorage.removeItem('SBG_AUTH_USER');
-        location.reload();
+        await window.auth.logout();
+        return;
       }
     } catch (e) {
-      console.warn('logout failed, forcing local clear:', e);
+      console.warn('[user-menu] logout failed, forcing local clear:', e);
+    }
+    // Fallback: clear tokens locally & reload
+    try {
       localStorage.removeItem('SBG_AUTH_TOKEN');
       localStorage.removeItem('SBG_AUTH_USER');
-      location.reload();
-    }
+    } catch (e) { /* ignore */ }
+    location.reload();
   }
 
-  function bootWhenReady() {
-    if (window.auth && window.auth.user) {
-      renderAvatar();
-    } else {
-      setTimeout(bootWhenReady, 500);
+  function boot() {
+    if (!ENABLED) {
+      console.log('[user-menu] api disabled — sign-out button not shown');
+      return;
     }
-  }
-
-  document.addEventListener('DOMContentLoaded', () => {
-    if (!ENABLED) return;
     injectStyles();
     injectMarkup();
-    bootWhenReady();
-    // Re-render avatar periodically in case the user info lands late.
-    setInterval(renderAvatar, 2000);
-  });
+    renderPill();
+    // Repaint periodically in case auth state lands after this script.
+    setInterval(renderPill, 1500);
+    console.log('[user-menu] pill injected; window.auth.user =', window.auth && window.auth.user);
+  }
+
+  if (document.readyState === 'loading') {
+    document.addEventListener('DOMContentLoaded', boot);
+  } else {
+    boot();
+  }
 })();
