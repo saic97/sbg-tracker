@@ -402,13 +402,12 @@ function buildRouter() {
       FROM audit_log ${whereSql}
       ORDER BY ts DESC LIMIT ? OFFSET ?
     `).all(...params, limit, offset);
-    // Decorate with user info (best-effort join)
     const users = getDb().prepare('SELECT id, email, name FROM users').all();
     const byId = Object.fromEntries(users.map(u => [u.id, u]));
-    const decorated = rows.map(r => ({
-      ...r,
-      user: r.user_id ? byId[r.user_id] || null : null,
-      payload: r.payload ? (() => { try { return JSON.parse(r.payload); } catch { return r.payload; } })() : null,
+    const decorated = rows.map(row => ({
+      ...row,
+      user: row.user_id ? byId[row.user_id] || null : null,
+      payload: row.payload ? (() => { try { return JSON.parse(row.payload); } catch { return row.payload; } })() : null,
     }));
     const totalRow = getDb().prepare(`SELECT COUNT(*) AS n FROM audit_log ${whereSql}`).get(...params);
     res.json({ items: decorated, total: totalRow.n, limit, offset });
@@ -441,20 +440,6 @@ function attachCrud(router, prefix, entity, kind) {
     m.audit('delete', kind, req.params.id, { user: req.user.id });
     res.status(204).end();
   }));
-}
-
-function broadcastState(req) {
-  try {
-    const rt = require('./realtime');
-    rt.broadcastStateChange({
-      state: m.loadStateBlob(),
-      byUserId: req.user && req.user.id,
-      byUserName: req.user && (req.user.name || req.user.email),
-      clientId: (req.body && req.body.clientId) || null,
-    });
-  } catch (e) {
-    console.warn('[routes] realtime broadcast skipped:', e.message);
-  }
 }
 
 function attachReplaceAll(router, prefix, entity, bodyKey) {

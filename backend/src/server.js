@@ -1,10 +1,5 @@
 /* =============================================================================
- * server.js -- Express bootstrap.
- *
- * Boots the HTTP server, runs migrations, mounts the REST router under /api,
- * and (optionally) serves the frontend as static files. CORS origins, port,
- * DB path, and static dir all come from environment variables -- see
- * .env.example.
+ * server.js -- Express bootstrap with Socket.IO realtime.
  * =============================================================================
  */
 require('dotenv').config();
@@ -21,35 +16,27 @@ const { buildRouter } = require('./routes');
 function buildApp() {
   const app = express();
 
-  // CORS
   const origins = (process.env.CORS_ORIGINS || '*').split(',').map(s => s.trim()).filter(Boolean);
   app.use(cors({
     origin: origins.includes('*') ? true : origins,
     credentials: false,
   }));
 
-  // Body parser w/ generous limit so the state-blob PUT works even when projects
-  // accumulate a few MB worth of nested data.
   app.use(express.json({ limit: '25mb' }));
 
-  // Request logging (skip in tests).
   if (process.env.NODE_ENV !== 'test') {
     app.use(morgan('dev'));
   }
 
-  // Migrations always run on boot -- safe because they're idempotent.
   runMigrations(getDb());
 
-  // REST API
   app.use('/api', buildRouter());
 
-  // Static frontend (optional)
   const staticDir = process.env.STATIC_DIR ?? '../frontend';
   if (staticDir && staticDir.length > 0) {
     const abs = path.isAbsolute(staticDir) ? staticDir : path.resolve(__dirname, '..', staticDir);
     if (fs.existsSync(abs)) {
       app.use(express.static(abs));
-      // SPA fallback: anything that isn't /api and isn't a real file -> index.html
       app.get(/^(?!\/api).*/, (req, res, next) => {
         const indexPath = path.join(abs, 'index.html');
         if (fs.existsSync(indexPath)) return res.sendFile(indexPath);
@@ -60,10 +47,8 @@ function buildApp() {
     }
   }
 
-  // 404
   app.use((req, res) => res.status(404).json({ error: 'not found', path: req.path }));
 
-  // Error handler
   // eslint-disable-next-line no-unused-vars
   app.use((err, req, res, _next) => {
     console.error('[server]', err);
@@ -93,7 +78,7 @@ if (require.main === module) {
     console.log(`[server] Socket.IO ready on /socket.io`);
     try {
       const { startAutoPoller } = require('./bidIntake');
-      if (startAutoPoller()) console.log('[server] Bid intake inbox poller started');
+      if (startAutoPoller && startAutoPoller()) console.log('[server] Bid intake inbox poller started');
     } catch (err) {
       console.warn('[server] Bid intake poller not started:', err.message);
     }

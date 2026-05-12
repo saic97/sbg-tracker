@@ -119,132 +119,75 @@ Rules:
 - Use null for unknown amounts, empty arrays for missing lists, and never invent a company name.`;
 
 async function scopeExtractFromPdf(pdfBuffer, opts = {}) {
-  if (process.env.ANTHROPIC_FAKE === '1') {
-    return makeFakeResponse(pdfBuffer.length);
-  }
+  if (process.env.ANTHROPIC_FAKE === '1') return makeFakeScopeResponse(pdfBuffer.length);
   const client = getClient();
   const model = opts.model || process.env.ANTHROPIC_MODEL || 'claude-sonnet-4-6';
   const msg = await client.messages.create({
-    model,
-    max_tokens: 4096,
+    model, max_tokens: 4096,
     messages: [{
       role: 'user',
       content: [
-        {
-          type: 'document',
-          source: { type: 'base64', media_type: 'application/pdf', data: pdfBuffer.toString('base64') }
-        },
+        { type: 'document', source: { type: 'base64', media_type: 'application/pdf', data: pdfBuffer.toString('base64') } },
         { type: 'text', text: SCOPE_PROMPT }
       ]
     }]
   });
-  // Claude messages content is an array of blocks; the text response comes back as type=text.
   const text = (msg.content || []).filter(b => b.type === 'text').map(b => b.text).join('\n').trim();
-  // Strip accidental markdown fences if the model adds them despite our instructions.
   const cleaned = text.replace(/^```(?:json)?\s*|\s*```$/g, '').trim();
-  let parsed;
-  try {
-    parsed = JSON.parse(cleaned);
-  } catch (err) {
-    return { error: 'Could not parse Claude response as JSON', raw: text };
-  }
-  return parsed;
+  try { return JSON.parse(cleaned); }
+  catch { return { error: 'Could not parse Claude response as JSON', raw: text }; }
 }
 
-async function subBidExtractFromPdf(pdfBuffer, meta = {}, opts = {}) {
-  if (process.env.ANTHROPIC_FAKE === '1') {
-    return makeFakeSubBidResponse(pdfBuffer.length, meta);
-  }
+async function subBidExtractFromPdf(pdfBuffer, opts = {}) {
+  if (process.env.ANTHROPIC_FAKE === '1') return makeFakeSubBidResponse(pdfBuffer.length);
   const client = getClient();
   const model = opts.model || process.env.ANTHROPIC_MODEL || 'claude-sonnet-4-6';
-  const context = [
-    meta.filename ? `Filename: ${meta.filename}` : '',
-    meta.subject ? `Email subject: ${meta.subject}` : '',
-    meta.from ? `Email from: ${meta.from}` : '',
-  ].filter(Boolean).join('\n');
   const msg = await client.messages.create({
-    model,
-    max_tokens: 4096,
+    model, max_tokens: 2048,
     messages: [{
       role: 'user',
       content: [
-        {
-          type: 'document',
-          source: { type: 'base64', media_type: 'application/pdf', data: pdfBuffer.toString('base64') }
-        },
-        { type: 'text', text: `${context ? context + '\n\n' : ''}${SUB_BID_PROMPT}` }
+        { type: 'document', source: { type: 'base64', media_type: 'application/pdf', data: pdfBuffer.toString('base64') } },
+        { type: 'text', text: SUB_BID_PROMPT }
       ]
     }]
   });
   const text = (msg.content || []).filter(b => b.type === 'text').map(b => b.text).join('\n').trim();
   const cleaned = text.replace(/^```(?:json)?\s*|\s*```$/g, '').trim();
-  try {
-    return JSON.parse(cleaned);
-  } catch (err) {
-    return { error: 'Could not parse Claude response as JSON', raw: text };
-  }
+  try { return JSON.parse(cleaned); }
+  catch { return { error: 'Could not parse Claude response as JSON', raw: text }; }
 }
 
-function makeFakeResponse(pdfBytes) {
+function makeFakeScopeResponse(pdfBytes) {
   return {
-    project: {
-      name: 'Stub Project (ANTHROPIC_FAKE=1)',
-      client: 'Test Client',
-      location: 'Anywhere, USA',
-      scope_summary: `Stub scope summary -- received ${pdfBytes} bytes of PDF.`
-    },
-    milestones: [
-      { name: 'Bid Due', date: null, notes: 'placeholder milestone' }
-    ],
-    trades: [
-      { csi_division: '03 30 00', name: 'Cast-in-place concrete', scope_notes: '' },
-      { csi_division: '06 10 00', name: 'Rough carpentry', scope_notes: '' }
-    ],
-    tasks: [
-      { title: 'Stub: Set up estimating folder', stage: 'project-setup', priority: 'high', notes: '' },
-      { title: 'Stub: Send concrete RFQ', stage: 'trade-solicitation', priority: 'medium', notes: '' }
-    ],
-    risks: ['stub risk note'],
-    notes: 'This is a deterministic stub used in tests.'
+    project: { name: 'Stub Project (ANTHROPIC_FAKE=1)', client: 'Test Client', location: 'Anywhere, USA', scope_summary: `Stub scope -- received ${pdfBytes} bytes.` },
+    milestones: [{ name: 'Bid Due', date: null, notes: 'placeholder' }],
+    trades: [{ csi_division: '03 30 00', name: 'Cast-in-place concrete', scope_notes: '' }],
+    tasks: [{ title: 'Stub: Set up estimating folder', stage: 'project-setup', priority: 'high', notes: '' }],
+    risks: ['stub risk note'], notes: 'deterministic stub'
   };
 }
 
-function makeFakeSubBidResponse(pdfBytes, meta = {}) {
-  const nameFromFile = String(meta.filename || 'Test Sub Bid')
-    .replace(/\.pdf$/i, '')
-    .replace(/[_-]+/g, ' ')
-    .trim();
+function makeFakeSubBidResponse(pdfBytes) {
   return {
-    subcontractor: {
-      name: nameFromFile || 'Stub Subcontractor',
-      contact_name: 'Test Contact',
-      email: 'estimating@example.com',
-      phone: ''
-    },
-    trade: {
-      name: 'Concrete',
-      csi_division: '03 30 00'
-    },
-    total: {
-      amount: 123456.78,
-      currency: 'USD',
-      confidence: 'high',
-      label: 'Stub Base Bid'
-    },
-    alternates: [{ name: 'Alt 1', amount: 2500, notes: 'stub alternate' }],
-    unit_prices: [],
-    inclusions: ['stub included scope'],
-    exclusions: ['stub exclusion'],
-    qualifications: ['stub qualification'],
-    addenda_acknowledged: ['Addendum 1'],
-    schedule: '',
-    tax_included: null,
-    bond_included: null,
-    scope_summary: `Stub sub bid summary -- received ${pdfBytes} bytes of PDF.`,
+    sub_name: 'Stub Sub Co.',
+    contact_email: 'sub@example.com',
+    trade: 'Concrete',
+    csi_division: '03 30 00',
+    base_bid_total: 123456,
+    bid_currency: 'USD',
+    proposal_date: null,
+    inclusions: ['stub inclusion 1'],
+    exclusions: ['stub exclusion 1'],
+    qualifications: [],
+    alternates: [],
+    addenda_acknowledged: [],
+    bond_included: false,
+    scope_summary: `Stub sub bid (${pdfBytes} bytes)`,
     risk_flags: [],
-    notes: 'This is a deterministic stub used in tests.',
-    confidence: 'high'
+    notes: 'deterministic stub',
+    confidence: 'low'
   };
 }
 
-module.exports = { scopeExtractFromPdf, subBidExtractFromPdf, makeFakeResponse, makeFakeSubBidResponse };
+module.exports = { scopeExtractFromPdf, subBidExtractFromPdf, makeFakeScopeResponse, makeFakeSubBidResponse };

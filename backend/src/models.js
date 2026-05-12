@@ -324,7 +324,6 @@ module.exports = {
   uid, now, kv, audit,
   projects, tasks, projectTasks, teamMembers, stages, taskTemplates,
   holidays, ballInCourtOptions, csiDivisions, sourceOptions, milestoneTypes,
-  attachments,
-  notifications,
+  attachments, notifications,
   loadStateBlob, saveStateBlob,
 };
