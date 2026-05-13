@@ -132,10 +132,26 @@
     toastTimer = setTimeout(() => el.classList.remove('show'), 2400);
   }
 
+  // Coalesce bursts of state:updated events. When two users save within ~100ms
+  // of each other we used to re-render N times back to back; now we hold the
+  // most recent payload and apply it once. Reduces both CPU and visible flicker
+  // without making any individual update perceptibly slower.
+  let _pendingRemote = null;
+  let _pendingRemoteTimer = null;
   function applyRemoteState(payload) {
     if (payload.clientId === rt.clientId) return;  // our own change, ignore
     if (!payload.state || typeof window.state === 'undefined') return;
+    _pendingRemote = payload;
+    if (_pendingRemoteTimer) return;
+    _pendingRemoteTimer = setTimeout(() => {
+      const p = _pendingRemote;
+      _pendingRemote = null;
+      _pendingRemoteTimer = null;
+      _flushRemoteState(p);
+    }, 100);
+  }
 
+  function _flushRemoteState(payload) {
     // Merge: replace top-level state with the incoming state, but preserve
     // transient UI flags the server doesn't own.
     const localUiFlags = {

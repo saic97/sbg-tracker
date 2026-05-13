@@ -20,6 +20,24 @@ function asyncRoute(fn) {
   return (req, res, next) => Promise.resolve(fn(req, res, next)).catch(next);
 }
 
+// Broadcast the current full state to all connected WS clients. Called from
+// sub-bid / bid-intake routes after they mutate project data through the
+// bidIntake module (which doesn't go through PUT /api/state). Safe no-op if
+// realtime isn't attached (e.g. during tests that don't bring up the WS layer).
+function broadcastState(req) {
+  try {
+    const rt = require('./realtime');
+    rt.broadcastStateChange({
+      state: m.loadStateBlob(),
+      byUserId: req.user && req.user.id,
+      byUserName: (req.user && (req.user.name || req.user.email)) || null,
+      clientId: null,
+    });
+  } catch (e) {
+    console.warn('[routes] realtime broadcast skipped:', e.message);
+  }
+}
+
 function buildRouter() {
   const r = express.Router();
 
@@ -92,7 +110,10 @@ function buildRouter() {
     } catch (e) {
       console.warn('[routes] notification fan-out skipped:', e.message);
     }
-    res.json({ state: merged });
+    // Don't echo the full merged state back -- it can be 1 MB+ on real
+    // workspaces, and the caller already has its own copy. Other connected
+    // clients get the new state over the WebSocket broadcast above.
+    res.json({ ok: true });
   }));
 
   // ---- projects ----

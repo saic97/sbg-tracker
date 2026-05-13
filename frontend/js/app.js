@@ -758,6 +758,10 @@ function saveState() {
   scheduleApiSync();
 }
 // ---- Backend sync (local-first, debounced) ----
+// 150ms strikes a balance: long enough to coalesce a burst of keystrokes /
+// drags into a single PUT, short enough that other users see the change in
+// well under a second. (Pre-2026-05 this was 500ms, which by itself accounted
+// for half a second of perceived cross-user latency.)
 let _apiSyncTimer = null;
 function scheduleApiSync() {
   if (!window.api || !window.api.enabled) return;
@@ -767,7 +771,7 @@ function scheduleApiSync() {
     window.api.putState(state).catch(err => {
       console.warn('Backend sync failed (keeping localStorage):', err.message);
     });
-  }, 500);
+  }, 150);
 }
 async function syncStateFromServer() {
   if (!window.api || !window.api.enabled) return false;
