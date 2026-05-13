@@ -67,6 +67,13 @@ function attach(httpServer, opts = {}) {
     cors: { origin: corsOrigin, credentials: false },
     path: '/socket.io',
     serveClient: true,  // serves /socket.io/socket.io.js for the browser client
+    // WebSocket compression. Default is OFF, which means every `state:updated`
+    // broadcast ships the full state blob (~700 KB in production) uncompressed
+    // to every connected client. With permessage-deflate negotiated, that JSON
+    // typically compresses ~10x. The 1 KB threshold avoids spending CPU on
+    // tiny frames (presence pings, editing markers).
+    perMessageDeflate: { threshold: 1024 },
+    httpCompression: { threshold: 1024 },
   });
 
   io.use((socket, next) => {
