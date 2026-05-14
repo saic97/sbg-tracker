@@ -22,6 +22,19 @@ test.after(() => { closeDb(); });
 
 function authed(req, token) { return req.set('Authorization', `Bearer ${token}`); }
 
+// PUT /api/state now requires expectedVersion (optimistic concurrency, see
+// models.saveStateBlob). This helper fetches the current version then PUTs
+// with confirmDestructive=true so we don't have to thread destructive-delete
+// guards through every notification test (that's covered elsewhere).
+async function putState(token, state, clientId) {
+  const cur = await authed(request(app).get('/api/state'), token);
+  return authed(request(app).put('/api/state'), token).send({
+    state, clientId,
+    expectedVersion: cur.body.version,
+    confirmDestructive: true,
+  });
+}
+
 test('assigning a task to a user creates a notification for that user', async () => {
   const state = {
     projects: [{
@@ -29,7 +42,7 @@ test('assigning a task to a user creates a notification for that user', async ()
       tasks: [{ id: 't1', title: 'Take off concrete', stage: 'estimating', status: 'not-started', assignee: 'Bob' }]
     }]
   };
-  await authed(request(app).put('/api/state'), aliceToken).send({ state, clientId: 'alice' }).expect(200);
+  await putState(aliceToken, state, 'alice').then(r => assert.equal(r.status, 200));
 
   const notifs = await authed(request(app).get('/api/notifications'), bobToken);
   assert.equal(notifs.status, 200);
@@ -59,7 +72,7 @@ test('re-assigning the same task to the same user does NOT create a duplicate', 
       tasks: [{ id: 't1', title: 'Take off concrete', stage: 'estimating', status: 'not-started', assignee: 'Bob' }]
     }]
   };
-  await authed(request(app).put('/api/state'), aliceToken).send({ state, clientId: 'alice' }).expect(200);
+  await putState(aliceToken, state, 'alice').then(r => assert.equal(r.status, 200));
   const list = await authed(request(app).get('/api/notifications'), bobToken);
   assert.equal(list.body.unread, 0);  // no new ones since previous read
 });
@@ -73,7 +86,7 @@ test('changing the assignee to someone different creates a new notification', as
     }]
   };
   // Bob makes the change so Alice gets notified (recipient != requester).
-  await authed(request(app).put('/api/state'), bobToken).send({ state, clientId: 'bob' }).expect(200);
+  await putState(bobToken, state, 'bob').then(r => assert.equal(r.status, 200));
   const aliceNotifs = await authed(request(app).get('/api/notifications'), aliceToken);
   assert.ok(aliceNotifs.body.unread >= 1);
   assert.equal(aliceNotifs.body.items[0].kind, 'task_assigned');
@@ -90,7 +103,7 @@ test('you do NOT receive a notification when you assign a task to yourself', asy
       tasks: [{ id: 't-self', title: 'Self task', stage: 'estimating', status: 'not-started', assignee: 'Alice' }]
     }]
   };
-  await authed(request(app).put('/api/state'), aliceToken).send({ state, clientId: 'alice' }).expect(200);
+  await putState(aliceToken, state, 'alice').then(r => assert.equal(r.status, 200));
   const list = await authed(request(app).get('/api/notifications'), aliceToken);
   assert.equal(list.body.unread, 0);
 });
@@ -103,7 +116,7 @@ test('POST /api/notifications/read-all clears the badge', async () => {
       tasks: [{ id: 't-rb', title: 'For Bob', stage: 'estimating', status: 'not-started', assignee: 'Bob' }]
     }]
   };
-  await authed(request(app).put('/api/state'), aliceToken).send({ state, clientId: 'alice' }).expect(200);
+  await putState(aliceToken, state, 'alice').then(r => assert.equal(r.status, 200));
   const before = await authed(request(app).get('/api/notifications'), bobToken);
   assert.ok(before.body.unread >= 1);
   const cleared = await authed(request(app).post('/api/notifications/read-all'), bobToken);

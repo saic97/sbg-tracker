@@ -102,12 +102,18 @@ test('PUT /api/state broadcasts state:updated to other clients', async () => {
   // Give socket.io a moment to settle the handshake
   await new Promise(r => setTimeout(r, 100));
 
+  // Fetch current version first; PUT /api/state requires expectedVersion now.
+  const cur = await request(app)
+    .get('/api/state')
+    .set('Authorization', `Bearer ${tokenA}`);
+
   await request(app)
     .put('/api/state')
     .set('Authorization', `Bearer ${tokenA}`)
     .send({
       state: { projects: [{ id: 'rt1', name: 'RT Test', tasks: [] }], grouping: 'stage' },
       clientId: 'client-A',
+      expectedVersion: cur.body.version,
     })
     .expect(200);
 

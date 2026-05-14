@@ -42,11 +42,17 @@ test('PUT/GET /api/state round-trips', async () => {
     stages: [{ id: 'project-setup', name: 'Project Setup', icon: '📋', description: '' }],
     activeProjectId: 'p1', grouping: 'stage',
   };
-  await authed(request(app).put('/api/state')).send({ state: sample }).expect(200);
+  // PUT /api/state requires expectedVersion (optimistic concurrency, see
+  // models.saveStateBlob). Fetch the current version first.
+  const cur = await authed(request(app).get('/api/state'));
+  assert.equal(typeof cur.body.version, 'number');
+  await authed(request(app).put('/api/state'))
+    .send({ state: sample, expectedVersion: cur.body.version }).expect(200);
   const get = await authed(request(app).get('/api/state'));
   assert.equal(get.status, 200);
   assert.equal(get.body.state.activeProjectId, 'p1');
   assert.equal(get.body.state.projects.length, 1);
+  assert.equal(get.body.version, cur.body.version + 1);
 });
 
 test('CRUD on /api/projects', async () => {

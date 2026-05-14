@@ -24,11 +24,17 @@ function asyncRoute(fn) {
 // sub-bid / bid-intake routes after they mutate project data through the
 // bidIntake module (which doesn't go through PUT /api/state). Safe no-op if
 // realtime isn't attached (e.g. during tests that don't bring up the WS layer).
+//
+// We include the current state version in the payload so receivers can keep
+// their `expectedVersion` in sync. (The version isn't bumped here because
+// these mutations don't compete with a bulk PUT /api/state for the same
+// fields -- they touch project.subBids, which saveStateBlob preserves.)
 function broadcastState(req) {
   try {
     const rt = require('./realtime');
     rt.broadcastStateChange({
       state: m.loadStateBlob(),
+      version: m.getStateVersion(),
       byUserId: req.user && req.user.id,
       byUserName: (req.user && (req.user.name || req.user.email)) || null,
       clientId: null,
@@ -61,19 +67,56 @@ function buildRouter() {
 
   // ---- coarse state blob ----
   r.get('/state', asyncRoute(async (req, res) => {
-    res.json({ state: m.loadStateBlob() });
+    res.json({ state: m.loadStateBlob(), version: m.getStateVersion() });
   }));
   r.put('/state', asyncRoute(async (req, res) => {
-    const { state, clientId } = req.body || {};
+    const { state, clientId, expectedVersion, confirmDestructive } = req.body || {};
     if (!state || typeof state !== 'object') {
       return res.status(400).json({ error: 'body must include `state` object' });
     }
-    const { state: merged, newAssignments } = m.saveStateBlob(state);
+    let result;
+    try {
+      result = m.saveStateBlob(state, {
+        expectedVersion,
+        confirmDestructive: !!confirmDestructive,
+        userId: req.user.id,
+      });
+    } catch (err) {
+      // Translate the typed errors from saveStateBlob to HTTP responses. Each
+      // includes the server's CURRENT state so the client can refresh its
+      // local copy without a separate GET round-trip.
+      if (err.code === 'EXPECTED_VERSION_REQUIRED') {
+        return res.status(400).json({
+          error: err.message, code: err.code,
+          currentVersion: err.currentVersion,
+          state: err.currentState,
+        });
+      }
+      if (err.code === 'VERSION_CONFLICT') {
+        return res.status(409).json({
+          error: err.message, code: err.code,
+          expectedVersion: err.expectedVersion,
+          currentVersion: err.currentVersion,
+          state: err.currentState,
+        });
+      }
+      if (err.code === 'DESTRUCTIVE_DELETE') {
+        return res.status(409).json({
+          error: err.message, code: err.code,
+          droppedProjects: err.droppedProjects,
+          currentVersion: err.currentVersion,
+          state: err.currentState,
+        });
+      }
+      throw err;
+    }
+    const { state: merged, version, newAssignments } = result;
     // Broadcast workspace-wide state change.
     try {
       const rt = require('./realtime');
       rt.broadcastStateChange({
         state: merged,
+        version,
         byUserId: req.user.id,
         byUserName: req.user.name || req.user.email,
         clientId: clientId || null,
@@ -112,8 +155,10 @@ function buildRouter() {
     }
     // Don't echo the full merged state back -- it can be 1 MB+ on real
     // workspaces, and the caller already has its own copy. Other connected
-    // clients get the new state over the WebSocket broadcast above.
-    res.json({ ok: true });
+    // clients get the new state over the WebSocket broadcast above. We DO
+    // echo back the new version so the client can update its expectedVersion
+    // for the next save.
+    res.json({ ok: true, version });
   }));
 
   // ---- projects ----
