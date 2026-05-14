@@ -164,6 +164,12 @@
     };
     window.state = { ...window.state, ...payload.state, ...localUiFlags };
     try { localStorage.setItem('sbg_precon_tracker_v3', JSON.stringify(window.state)); } catch(e) {}
+    // Track the server's monotonic state version so the next saveState() PUTs
+    // the right `expectedVersion` and doesn't trip the optimistic-concurrency
+    // guard (which would otherwise treat a fresh post-broadcast save as stale).
+    if (typeof payload.version === 'number' && window.api && typeof window.api.setStateVersion === 'function') {
+      window.api.setStateVersion(payload.version);
+    }
     if (typeof render === 'function') render();
     if (payload.byUserName) showToast('Updated by ' + payload.byUserName);
   }

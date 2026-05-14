@@ -189,6 +189,56 @@ function audit(action, entity, entityId, payload) {
   }
 }
 
+// ---------------------------------------------------------------------------
+// State versioning (optimistic concurrency for PUT /api/state).
+//
+// Background: the bulk PUT /api/state endpoint runs DELETE FROM projects
+// before re-inserting from the request body. Without a version check, any
+// authenticated client -- including a stale browser tab whose localStorage
+// snapshot pre-dates a recently-added project -- can wipe live data. The
+// version counter (migration 007) makes those PUTs reject with 409 before
+// any DELETE runs.
+//
+// `state_version` is stored in key_value (initialized to 0 by 007). It is
+// bumped only by saveStateBlob; per-entity routes do not change it because
+// they don't compete with the bulk PUT for the same fields. Sub-bid /
+// bid-intake mutations also leave it alone -- they preserve unrelated state
+// via the `preservedProjectData` map below, so a stale bulk PUT can't drop
+// their changes.
+// ---------------------------------------------------------------------------
+const SNAPSHOT_RETENTION = 50;
+
+function getStateVersion() {
+  const v = kv.get('state_version');
+  return typeof v === 'number' ? v : 0;
+}
+function bumpStateVersion() {
+  const v = getStateVersion() + 1;
+  kv.set('state_version', v);
+  return v;
+}
+
+function recordStateSnapshot(version, userId, state) {
+  try {
+    const blob = JSON.stringify(state);
+    const projectCount = Array.isArray(state.projects) ? state.projects.length : null;
+    const taskCount = Array.isArray(state.projects)
+      ? state.projects.reduce((s, p) => s + (Array.isArray(p.tasks) ? p.tasks.length : 0), 0)
+      : null;
+    const db = getDb();
+    db.prepare(
+      'INSERT INTO state_snapshots (version, user_id, project_count, task_count, blob) VALUES (?, ?, ?, ?, ?)'
+    ).run(version, userId || null, projectCount, taskCount, blob);
+    // Rotate: keep only the most recent SNAPSHOT_RETENTION rows. Doing this
+    // in app code (vs a trigger) lets us tune the limit without a migration.
+    db.prepare(
+      'DELETE FROM state_snapshots WHERE id NOT IN (SELECT id FROM state_snapshots ORDER BY id DESC LIMIT ?)'
+    ).run(SNAPSHOT_RETENTION);
+  } catch (e) {
+    console.warn('[snapshot] failed:', e.message);
+  }
+}
+
 function loadStateBlob() {
   const blob = kv.get('state') || {};
   return {
@@ -205,9 +255,50 @@ function loadStateBlob() {
   };
 }
 
-function saveStateBlob(state) {
+function saveStateBlob(state, opts = {}) {
   if (!state || typeof state !== 'object') throw new Error('state must be an object');
+  const { expectedVersion, confirmDestructive = false, userId = null } = opts;
   const db = getDb();
+  const currentVersion = getStateVersion();
+
+  // ---- Guard 1: optimistic concurrency ------------------------------------
+  // expectedVersion is required. Missing it == client predates this check
+  // (cached older bundle); reject before doing anything destructive.
+  if (typeof expectedVersion !== 'number') {
+    const err = new Error('expectedVersion is required (your tab may be running an outdated version)');
+    err.code = 'EXPECTED_VERSION_REQUIRED';
+    err.currentVersion = currentVersion;
+    err.currentState = loadStateBlob();
+    throw err;
+  }
+  if (expectedVersion !== currentVersion) {
+    const err = new Error('state version conflict: another tab/user wrote since you loaded');
+    err.code = 'VERSION_CONFLICT';
+    err.expectedVersion = expectedVersion;
+    err.currentVersion = currentVersion;
+    err.currentState = loadStateBlob();
+    throw err;
+  }
+
+  // ---- Guard 2: destructive-delete safety net -----------------------------
+  // Versioning alone catches the failure modes we know about, but if a stale
+  // tab somehow has the right version (e.g. just received a broadcast) and
+  // its blob is missing a project, we still don't want a silent wipe. Only
+  // an explicit confirmDestructive: true bypasses this.
+  if (Array.isArray(state.projects) && !confirmDestructive) {
+    const currentProjects = db.prepare('SELECT id, name FROM projects').all();
+    const incomingIds = new Set(state.projects.map(p => p && p.id).filter(Boolean));
+    const droppedProjects = currentProjects.filter(p => !incomingIds.has(p.id));
+    if (droppedProjects.length > 0) {
+      const err = new Error('save would delete existing project(s); pass confirmDestructive to override');
+      err.code = 'DESTRUCTIVE_DELETE';
+      err.droppedProjects = droppedProjects.map(p => ({ id: p.id, name: p.name }));
+      err.currentVersion = currentVersion;
+      err.currentState = loadStateBlob();
+      throw err;
+    }
+  }
+
   const preservedProjectData = new Map(
     db.prepare('SELECT id, data FROM projects').all().map(row => [row.id, parseJson(row.data, {})])
   );
@@ -272,7 +363,22 @@ function saveStateBlob(state) {
     kv.set('state', state);
   });
   txn();
-  audit('state-put', 'state', null, { keys: Object.keys(state).slice(0, 50) });
+  // Bump the version + snapshot AFTER the txn commits so a failed write
+  // doesn't leave the version desynced or a phantom snapshot lying around.
+  const newVersion = bumpStateVersion();
+  recordStateSnapshot(newVersion, userId, state);
+  audit('state-put', 'state', null, {
+    version: newVersion,
+    userId,
+    keys: Object.keys(state).slice(0, 50),
+    projectCount: Array.isArray(state.projects) ? state.projects.length : null,
+    // First 25 names are enough to spot "wait, project X is missing" in the
+    // audit log without bloating the row past the 4000-char audit limit.
+    projectNames: Array.isArray(state.projects)
+      ? state.projects.slice(0, 25).map(p => p && p.name).filter(Boolean) : null,
+    taskCount: Array.isArray(state.projects)
+      ? state.projects.reduce((s, p) => s + (Array.isArray(p.tasks) ? p.tasks.length : 0), 0) : null,
+  });
 
   // Compute the assignee diff: tasks where the assignee was set/changed in this save.
   const newAssignments = [];
@@ -293,7 +399,7 @@ function saveStateBlob(state) {
       }
     }
   }
-  return { state: loadStateBlob(), newAssignments };
+  return { state: loadStateBlob(), version: newVersion, newAssignments };
 }
 
 const projectTasks = {
@@ -326,4 +432,5 @@ module.exports = {
   holidays, ballInCourtOptions, csiDivisions, sourceOptions, milestoneTypes,
   attachments, notifications,
   loadStateBlob, saveStateBlob,
+  getStateVersion, bumpStateVersion,
 };
