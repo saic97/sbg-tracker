@@ -139,7 +139,7 @@ async function scopeExtractFromPdf(pdfBuffer, opts = {}) {
 }
 
 async function subBidExtractFromPdf(pdfBuffer, opts = {}) {
-  if (process.env.ANTHROPIC_FAKE === '1') return makeFakeSubBidResponse(pdfBuffer.length);
+  if (process.env.ANTHROPIC_FAKE === '1') return makeFakeSubBidResponse(pdfBuffer.length, opts);
   const client = getClient();
   const model = opts.model || process.env.ANTHROPIC_MODEL || 'claude-sonnet-4-6';
   const msg = await client.messages.create({
@@ -168,20 +168,36 @@ function makeFakeScopeResponse(pdfBytes) {
   };
 }
 
-function makeFakeSubBidResponse(pdfBytes) {
+function makeFakeSubBidResponse(pdfBytes, meta = {}) {
+  const nameFromFile = String(meta.filename || 'Test Sub Bid')
+    .replace(/\.pdf$/i, '')
+    .replace(/[_-]+/g, ' ')
+    .trim();
   return {
-    sub_name: 'Stub Sub Co.',
-    contact_email: 'sub@example.com',
-    trade: 'Concrete',
-    csi_division: '03 30 00',
-    base_bid_total: 123456,
-    bid_currency: 'USD',
-    proposal_date: null,
+    subcontractor: {
+      name: nameFromFile || 'Stub Subcontractor',
+      contact_name: 'Test Contact',
+      email: 'estimating@example.com',
+      phone: ''
+    },
+    trade: {
+      name: 'Concrete',
+      csi_division: '03 30 00'
+    },
+    total: {
+      amount: 123456.78,
+      currency: 'USD',
+      confidence: 'high',
+      label: 'Stub Base Bid'
+    },
+    alternates: [{ name: 'Alt 1', amount: 2500, notes: 'stub alternate' }],
+    unit_prices: [],
     inclusions: ['stub inclusion 1'],
     exclusions: ['stub exclusion 1'],
     qualifications: [],
-    alternates: [],
     addenda_acknowledged: [],
+    schedule: '',
+    tax_included: null,
     bond_included: false,
     scope_summary: `Stub sub bid (${pdfBytes} bytes)`,
     risk_flags: [],
