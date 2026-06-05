@@ -226,6 +226,100 @@
         throw e;
       }
     },
+    
+    // Subdomain-based sync endpoints
+    putProjectState: async (project) => {
+      const body = {
+        project,
+        clientId: (window.realtime && window.realtime.clientId) || null,
+        expectedVersion: _stateVersion,
+      };
+      try {
+        const r = await request(`/api/state/projects/${encodeURIComponent(project.id)}`, { method: 'PUT', body: JSON.stringify(body) });
+        if (r && typeof r.version === 'number') _stateVersion = r.version;
+        return r;
+      } catch (e) {
+        const code = e && e.body && e.body.code;
+        if ((e.status === 400 && code === 'EXPECTED_VERSION_REQUIRED') ||
+            (e.status === 409 && code === 'VERSION_CONFLICT')) {
+          handleVersionConflict(e.body);
+        }
+        throw e;
+      }
+    },
+    deleteProjectState: async (id) => {
+      try {
+        const r = await request(`/api/state/projects/${encodeURIComponent(id)}?expectedVersion=${_stateVersion}&clientId=${((window.realtime && window.realtime.clientId) || '')}`, {
+          method: 'DELETE'
+        });
+        if (r && typeof r.version === 'number') _stateVersion = r.version;
+        return r;
+      } catch (e) {
+        const code = e && e.body && e.body.code;
+        if ((e.status === 400 && code === 'EXPECTED_VERSION_REQUIRED') ||
+            (e.status === 409 && code === 'VERSION_CONFLICT')) {
+          handleVersionConflict(e.body);
+        }
+        throw e;
+      }
+    },
+    putTeamMembersState: async (teamMembers) => {
+      const body = {
+        teamMembers,
+        clientId: (window.realtime && window.realtime.clientId) || null,
+        expectedVersion: _stateVersion,
+      };
+      try {
+        const r = await request('/api/state/team-members', { method: 'PUT', body: JSON.stringify(body) });
+        if (r && typeof r.version === 'number') _stateVersion = r.version;
+        return r;
+      } catch (e) {
+        const code = e && e.body && e.body.code;
+        if ((e.status === 400 && code === 'EXPECTED_VERSION_REQUIRED') ||
+            (e.status === 409 && code === 'VERSION_CONFLICT')) {
+          handleVersionConflict(e.body);
+        }
+        throw e;
+      }
+    },
+    putTemplatesState: async (templates) => {
+      const body = {
+        templates,
+        clientId: (window.realtime && window.realtime.clientId) || null,
+        expectedVersion: _stateVersion,
+      };
+      try {
+        const r = await request('/api/state/templates', { method: 'PUT', body: JSON.stringify(body) });
+        if (r && typeof r.version === 'number') _stateVersion = r.version;
+        return r;
+      } catch (e) {
+        const code = e && e.body && e.body.code;
+        if ((e.status === 400 && code === 'EXPECTED_VERSION_REQUIRED') ||
+            (e.status === 409 && code === 'VERSION_CONFLICT')) {
+          handleVersionConflict(e.body);
+        }
+        throw e;
+      }
+    },
+    putSettingsState: async (settings) => {
+      const body = {
+        settings,
+        clientId: (window.realtime && window.realtime.clientId) || null,
+        expectedVersion: _stateVersion,
+      };
+      try {
+        const r = await request('/api/state/settings', { method: 'PUT', body: JSON.stringify(body) });
+        if (r && typeof r.version === 'number') _stateVersion = r.version;
+        return r;
+      } catch (e) {
+        const code = e && e.body && e.body.code;
+        if ((e.status === 400 && code === 'EXPECTED_VERSION_REQUIRED') ||
+            (e.status === 409 && code === 'VERSION_CONFLICT')) {
+          handleVersionConflict(e.body);
+        }
+        throw e;
+      }
+    },
 
     // Entity endpoints
     listProjects: () => request('/api/projects'),

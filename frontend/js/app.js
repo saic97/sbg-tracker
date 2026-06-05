@@ -752,6 +752,7 @@ function loadState() {
       });
     });
   } catch(e) { console.error(e); }
+  window.lastSyncedState = JSON.parse(JSON.stringify(state));
 }
 function saveState() {
   try { localStorage.setItem(STORAGE_KEY, JSON.stringify(state)); } catch(e){}
@@ -768,9 +769,7 @@ function scheduleApiSync() {
   if (_apiSyncTimer) clearTimeout(_apiSyncTimer);
   _apiSyncTimer = setTimeout(() => {
     _apiSyncTimer = null;
-    window.api.putState(state).catch(err => {
-      console.warn('Backend sync failed (keeping localStorage):', err.message);
-    });
+    performIncrementalSync();
   }, 150);
 }
 async function syncStateFromServer() {
@@ -782,12 +781,103 @@ async function syncStateFromServer() {
       state = { ...local, ...res.state };
       state.bulkSelectionMode = false;
       state.bulkSelectedTaskIds = [];
+      window.lastSyncedState = JSON.parse(JSON.stringify(state));
       return true;
     }
   } catch (err) {
     console.warn('Could not load state from backend (using local cache):', err.message);
   }
   return false;
+}
+
+async function performIncrementalSync() {
+  if (!window.api || !window.api.enabled) return;
+  if (!window.lastSyncedState) {
+    window.lastSyncedState = JSON.parse(JSON.stringify(state));
+    return;
+  }
+  
+  const currentProjects = state.projects || [];
+  const syncedProjects = window.lastSyncedState.projects || [];
+  
+  const currentProjMap = new Map(currentProjects.map(p => [p.id, p]));
+  const syncedProjMap = new Map(syncedProjects.map(p => [p.id, p]));
+  
+  // Projects to delete
+  for (const sp of syncedProjects) {
+    if (!currentProjMap.has(sp.id)) {
+      try {
+        await window.api.deleteProjectState(sp.id);
+      } catch (err) {
+        handleSyncError(err);
+      }
+    }
+  }
+  
+  // Projects to add / update
+  for (const cp of currentProjects) {
+    const sp = syncedProjMap.get(cp.id);
+    if (!sp || JSON.stringify(cp) !== JSON.stringify(sp)) {
+      try {
+        await window.api.putProjectState(cp);
+      } catch (err) {
+        handleSyncError(err);
+      }
+    }
+  }
+  
+  // Team members diff
+  if (JSON.stringify(state.teamMembers) !== JSON.stringify(window.lastSyncedState.teamMembers)) {
+    try {
+      await window.api.putTeamMembersState(state.teamMembers);
+    } catch (err) {
+      handleSyncError(err);
+    }
+  }
+  
+  // Templates diff
+  if (JSON.stringify(state.taskTemplates) !== JSON.stringify(window.lastSyncedState.taskTemplates)) {
+    try {
+      await window.api.putTemplatesState(state.taskTemplates);
+    } catch (err) {
+      handleSyncError(err);
+    }
+  }
+  
+  // Settings diff
+  const settingsKeys = [
+    'stages', 'holidays', 'ballInCourtOptions', 'csiDivisions', 'sourceOptions',
+    'milestoneTypes', 'companyLogo', 'skipWeekends', 'skipHolidays', 'currentUser',
+    'sidebarCollapsed', 'homeView'
+  ];
+  
+  let settingsChanged = false;
+  const settingsPayload = {};
+  for (const key of settingsKeys) {
+    settingsPayload[key] = state[key];
+    if (JSON.stringify(state[key]) !== JSON.stringify(window.lastSyncedState[key])) {
+      settingsChanged = true;
+    }
+  }
+  
+  if (settingsChanged) {
+    try {
+      await window.api.putSettingsState(settingsPayload);
+    } catch (err) {
+      handleSyncError(err);
+    }
+  }
+  
+  window.lastSyncedState = JSON.parse(JSON.stringify(state));
+  try { localStorage.setItem(STORAGE_KEY, JSON.stringify(state)); } catch(e){}
+}
+
+function handleSyncError(err) {
+  if (err.status === 409 || err.status === 400) {
+    console.warn('Sync conflict detected, server state applied:', err.message);
+  } else {
+    console.warn('Sync failed:', err.message);
+  }
 }
 function uid() { return Date.now().toString(36) + Math.random().toString(36).slice(2,8); }
 

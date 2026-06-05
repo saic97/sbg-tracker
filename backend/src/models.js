@@ -402,6 +402,148 @@ function saveStateBlob(state, opts = {}) {
   return { state: loadStateBlob(), version: newVersion, newAssignments };
 }
 
+function touchState(version = null) {
+  const newVersion = version !== null ? version : bumpStateVersion();
+  return newVersion;
+}
+
+function saveProjectState(project) {
+  const db = getDb();
+  db.prepare('DELETE FROM tasks WHERE project_id=?').run(project.id);
+  
+  const hasSubBids = Object.prototype.hasOwnProperty.call(project, 'subBids');
+  const preserved = db.prepare('SELECT data FROM projects WHERE id=?').get(project.id);
+  const preservedData = preserved ? parseJson(preserved.data, {}) : {};
+  
+  const projRow = {
+    ...project,
+    id: project.id || uid(),
+    name: project.name || 'Untitled',
+    client: project.client || null,
+    location: project.location || null,
+    status: project.status || null,
+    archived: project.archived ? 1 : 0,
+    start_date: project.startDate || project.start_date || null,
+    due_date: project.dueDate || project.due_date || null,
+    subBids: hasSubBids ? project.subBids : preservedData.subBids,
+  };
+  
+  const projData = { ...projRow };
+  delete projData.id;
+  delete projData.name;
+  delete projData.client;
+  delete projData.location;
+  delete projData.status;
+  delete projData.archived;
+  delete projData.startDate;
+  delete projData.dueDate;
+  delete projData.start_date;
+  delete projData.due_date;
+  delete projData.tasks;
+  
+  db.prepare(`INSERT INTO projects (id, name, client, location, status, archived, start_date, due_date, data)
+              VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+              ON CONFLICT(id) DO UPDATE SET
+                name=excluded.name, client=excluded.client, location=excluded.location,
+                status=excluded.status, archived=excluded.archived,
+                start_date=excluded.start_date, due_date=excluded.due_date, data=excluded.data`)
+    .run(
+      projRow.id, projRow.name, projRow.client, projRow.location, projRow.status,
+      projRow.archived, projRow.start_date, projRow.due_date,
+      JSON.stringify(projData)
+    );
+    
+  if (Array.isArray(project.tasks)) {
+    for (const t of project.tasks) {
+      const tRow = {
+        ...t,
+        id: t.id || uid(),
+        project_id: projRow.id,
+        title: t.title || '',
+        stage: t.stage || null,
+        category: t.category || null,
+        priority: t.priority || null,
+        status: t.status || 'not-started',
+        due_date: t.dueDate || t.due_date || null,
+        start_by_date: t.startByDate || t.start_by_date || null,
+        day_offset: typeof t.dayOffset === 'number' ? t.dayOffset : null,
+        assignee: t.assignee || null,
+        source: t.source || null,
+        notes: t.notes || null,
+      };
+      const tData = { ...tRow };
+      delete tData.id;
+      delete tData.project_id;
+      delete tData.title;
+      delete tData.stage;
+      delete tData.category;
+      delete tData.priority;
+      delete tData.status;
+      delete tData.dueDate;
+      delete tData.due_date;
+      delete tData.startByDate;
+      delete tData.start_by_date;
+      delete tData.dayOffset;
+      delete tData.day_offset;
+      delete tData.assignee;
+      delete tData.source;
+      delete tData.notes;
+      
+      db.prepare(`INSERT INTO tasks (id, project_id, title, stage, category, priority, status, due_date, start_by_date, day_offset, assignee, source, notes, data)
+                  VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
+        .run(
+          tRow.id, tRow.project_id, tRow.title, tRow.stage, tRow.category, tRow.priority, tRow.status,
+          tRow.due_date, tRow.start_by_date, tRow.day_offset, tRow.assignee, tRow.source, tRow.notes,
+          JSON.stringify(tData)
+        );
+    }
+  }
+  
+  const current = kv.get('state') || {};
+  if (Array.isArray(current.projects)) {
+    const idx = current.projects.findIndex(p => p.id === project.id);
+    if (idx !== -1) {
+      current.projects[idx] = project;
+    } else {
+      current.projects.push(project);
+    }
+    kv.set('state', current);
+  }
+}
+
+function deleteProjectState(projectId) {
+  const db = getDb();
+  db.prepare('DELETE FROM tasks WHERE project_id=?').run(projectId);
+  db.prepare('DELETE FROM projects WHERE id=?').run(projectId);
+  
+  const current = kv.get('state') || {};
+  if (Array.isArray(current.projects)) {
+    current.projects = current.projects.filter(p => p.id !== projectId);
+    kv.set('state', current);
+  }
+}
+
+function saveSettingsState(settings) {
+  if (Array.isArray(settings.stages)) stages.replaceAll(settings.stages.map((s, i) => ({ ...s, position: i })));
+  if (Array.isArray(settings.holidays)) holidays.replaceAll(settings.holidays);
+  if (Array.isArray(settings.ballInCourtOptions)) ballInCourtOptions.replaceAll(settings.ballInCourtOptions.map((s, i) => ({ ...s, position: i })));
+  if (Array.isArray(settings.csiDivisions)) csiDivisions.replaceAll(settings.csiDivisions.map((s, i) => ({ ...s, position: i })));
+  if (Array.isArray(settings.sourceOptions)) sourceOptions.replaceAll(settings.sourceOptions.map((s, i) => ({ ...s, position: i })));
+  if (Array.isArray(settings.milestoneTypes)) milestoneTypes.replaceAll(settings.milestoneTypes.map((s, i) => ({ ...s, position: i })));
+  
+  const cleanSettings = { ...settings };
+  delete cleanSettings.projects;
+  delete cleanSettings.teamMembers;
+  delete cleanSettings.taskTemplates;
+  
+  const current = kv.get('state') || {};
+  const merged = { ...current, ...cleanSettings };
+  delete merged.projects;
+  delete merged.teamMembers;
+  delete merged.taskTemplates;
+  kv.set('state', merged);
+}
+
 const projectTasks = {
   list(projectId) {
     return tasks.list('project_id=?', [projectId]);
@@ -432,5 +574,6 @@ module.exports = {
   holidays, ballInCourtOptions, csiDivisions, sourceOptions, milestoneTypes,
   attachments, notifications,
   loadStateBlob, saveStateBlob,
-  getStateVersion, bumpStateVersion,
+  getStateVersion, bumpStateVersion, recordStateSnapshot,
+  touchState, saveProjectState, deleteProjectState, saveSettingsState,
 };

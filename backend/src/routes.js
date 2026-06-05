@@ -160,6 +160,220 @@ function buildRouter() {
     // for the next save.
     res.json({ ok: true, version });
   }));
+  
+  // ---- subdomain state updates ----
+  r.put('/state/projects/:id', asyncRoute(async (req, res) => {
+    const { project, expectedVersion, clientId } = req.body || {};
+    if (!project || typeof project !== 'object') {
+      return res.status(400).json({ error: 'body must include `project` object' });
+    }
+    const currentVersion = m.getStateVersion();
+    if (typeof expectedVersion !== 'number') {
+      return res.status(400).json({
+        error: 'expectedVersion is required', code: 'EXPECTED_VERSION_REQUIRED',
+        currentVersion, state: m.loadStateBlob()
+      });
+    }
+    if (expectedVersion !== currentVersion) {
+      return res.status(409).json({
+        error: 'state version conflict', code: 'VERSION_CONFLICT',
+        expectedVersion, currentVersion, state: m.loadStateBlob()
+      });
+    }
+    const db = require('./db').getDb();
+    let newVersion;
+    const txn = db.transaction(() => {
+      m.saveProjectState(project);
+      newVersion = m.bumpStateVersion();
+    });
+    txn();
+    const updatedState = m.loadStateBlob();
+    m.recordStateSnapshot(newVersion, req.user.id, updatedState);
+    try {
+      const rt = require('./realtime');
+      rt.broadcastStateChange({
+        state: { projects: [ project ] },
+        version: newVersion,
+        byUserId: req.user.id,
+        byUserName: req.user.name || req.user.email,
+        clientId: clientId || null,
+      });
+    } catch (e) {
+      console.warn('[routes] realtime broadcast skipped:', e.message);
+    }
+    res.json({ ok: true, version: newVersion });
+  }));
+
+  r.delete('/state/projects/:id', asyncRoute(async (req, res) => {
+    const expectedVersion = parseInt(req.query.expectedVersion || '0', 10);
+    const clientId = req.query.clientId || null;
+    const currentVersion = m.getStateVersion();
+    if (!expectedVersion) {
+      return res.status(400).json({
+        error: 'expectedVersion is required', code: 'EXPECTED_VERSION_REQUIRED',
+        currentVersion, state: m.loadStateBlob()
+      });
+    }
+    if (expectedVersion !== currentVersion) {
+      return res.status(409).json({
+        error: 'state version conflict', code: 'VERSION_CONFLICT',
+        expectedVersion, currentVersion, state: m.loadStateBlob()
+      });
+    }
+    const db = require('./db').getDb();
+    let newVersion;
+    const txn = db.transaction(() => {
+      m.deleteProjectState(req.params.id);
+      newVersion = m.bumpStateVersion();
+    });
+    txn();
+    const updatedState = m.loadStateBlob();
+    m.recordStateSnapshot(newVersion, req.user.id, updatedState);
+    try {
+      const rt = require('./realtime');
+      rt.broadcastStateChange({
+        state: {},
+        deletedProjectId: req.params.id,
+        version: newVersion,
+        byUserId: req.user.id,
+        byUserName: req.user.name || req.user.email,
+        clientId: clientId || null,
+      });
+    } catch (e) {
+      console.warn('[routes] realtime broadcast skipped:', e.message);
+    }
+    res.json({ ok: true, version: newVersion });
+  }));
+
+  r.put('/state/team-members', asyncRoute(async (req, res) => {
+    const { teamMembers, expectedVersion, clientId } = req.body || {};
+    if (!Array.isArray(teamMembers)) {
+      return res.status(400).json({ error: 'body must include `teamMembers` array' });
+    }
+    const currentVersion = m.getStateVersion();
+    if (typeof expectedVersion !== 'number') {
+      return res.status(400).json({
+        error: 'expectedVersion is required', code: 'EXPECTED_VERSION_REQUIRED',
+        currentVersion, state: m.loadStateBlob()
+      });
+    }
+    if (expectedVersion !== currentVersion) {
+      return res.status(409).json({
+        error: 'state version conflict', code: 'VERSION_CONFLICT',
+        expectedVersion, currentVersion, state: m.loadStateBlob()
+      });
+    }
+    const db = require('./db').getDb();
+    let newVersion;
+    const txn = db.transaction(() => {
+      m.teamMembers.replaceAll(teamMembers);
+      newVersion = m.bumpStateVersion();
+    });
+    txn();
+    const updatedState = m.loadStateBlob();
+    m.recordStateSnapshot(newVersion, req.user.id, updatedState);
+    try {
+      const rt = require('./realtime');
+      rt.broadcastStateChange({
+        state: { teamMembers },
+        version: newVersion,
+        byUserId: req.user.id,
+        byUserName: req.user.name || req.user.email,
+        clientId: clientId || null,
+      });
+    } catch (e) {
+      console.warn('[routes] realtime broadcast skipped:', e.message);
+    }
+    res.json({ ok: true, version: newVersion });
+  }));
+
+  r.put('/state/templates', asyncRoute(async (req, res) => {
+    const { templates, expectedVersion, clientId } = req.body || {};
+    if (!Array.isArray(templates)) {
+      return res.status(400).json({ error: 'body must include `templates` array' });
+    }
+    const currentVersion = m.getStateVersion();
+    if (typeof expectedVersion !== 'number') {
+      return res.status(400).json({
+        error: 'expectedVersion is required', code: 'EXPECTED_VERSION_REQUIRED',
+        currentVersion, state: m.loadStateBlob()
+      });
+    }
+    if (expectedVersion !== currentVersion) {
+      return res.status(409).json({
+        error: 'state version conflict', code: 'VERSION_CONFLICT',
+        expectedVersion, currentVersion, state: m.loadStateBlob()
+      });
+    }
+    const db = require('./db').getDb();
+    let newVersion;
+    const txn = db.transaction(() => {
+      m.taskTemplates.replaceAll(templates);
+      newVersion = m.bumpStateVersion();
+    });
+    txn();
+    const updatedState = m.loadStateBlob();
+    m.recordStateSnapshot(newVersion, req.user.id, updatedState);
+    try {
+      const rt = require('./realtime');
+      rt.broadcastStateChange({
+        state: { taskTemplates: templates },
+        version: newVersion,
+        byUserId: req.user.id,
+        byUserName: req.user.name || req.user.email,
+        clientId: clientId || null,
+      });
+    } catch (e) {
+      console.warn('[routes] realtime broadcast skipped:', e.message);
+    }
+    res.json({ ok: true, version: newVersion });
+  }));
+
+  r.put('/state/settings', asyncRoute(async (req, res) => {
+    const { settings, expectedVersion, clientId } = req.body || {};
+    if (!settings || typeof settings !== 'object') {
+      return res.status(400).json({ error: 'body must include `settings` object' });
+    }
+    const currentVersion = m.getStateVersion();
+    if (typeof expectedVersion !== 'number') {
+      return res.status(400).json({
+        error: 'expectedVersion is required', code: 'EXPECTED_VERSION_REQUIRED',
+        currentVersion, state: m.loadStateBlob()
+      });
+    }
+    if (expectedVersion !== currentVersion) {
+      return res.status(409).json({
+        error: 'state version conflict', code: 'VERSION_CONFLICT',
+        expectedVersion, currentVersion, state: m.loadStateBlob()
+      });
+    }
+    const db = require('./db').getDb();
+    let newVersion;
+    const txn = db.transaction(() => {
+      m.saveSettingsState(settings);
+      newVersion = m.bumpStateVersion();
+    });
+    txn();
+    const updatedState = m.loadStateBlob();
+    m.recordStateSnapshot(newVersion, req.user.id, updatedState);
+    const cleanSettings = { ...updatedState };
+    delete cleanSettings.projects;
+    delete cleanSettings.teamMembers;
+    delete cleanSettings.taskTemplates;
+    try {
+      const rt = require('./realtime');
+      rt.broadcastStateChange({
+        state: cleanSettings,
+        version: newVersion,
+        byUserId: req.user.id,
+        byUserName: req.user.name || req.user.email,
+        clientId: clientId || null,
+      });
+    } catch (e) {
+      console.warn('[routes] realtime broadcast skipped:', e.message);
+    }
+    res.json({ ok: true, version: newVersion });
+  }));
 
   // ---- projects ----
   r.get('/projects', asyncRoute(async (req, res) => res.json(m.projects.list())));

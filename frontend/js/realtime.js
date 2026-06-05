@@ -152,8 +152,38 @@
   }
 
   function _flushRemoteState(payload) {
-    // Merge: replace top-level state with the incoming state, but preserve
-    // transient UI flags the server doesn't own.
+    if (!payload || !payload.state) return;
+    
+    // Merge: replace top-level state fields by subdomain to avoid wiping out other data
+    const newState = { ...window.state };
+    
+    for (const key of Object.keys(payload.state)) {
+      if (key === 'projects' && Array.isArray(payload.state.projects)) {
+        // Merge projects: update/add received project(s), preserve others
+        const projectMap = new Map(newState.projects.map(p => [p.id, p]));
+        for (const p of payload.state.projects) {
+          projectMap.set(p.id, p);
+        }
+        newState.projects = Array.from(projectMap.values());
+      } else if (key === 'teamMembers' && Array.isArray(payload.state.teamMembers)) {
+        newState.teamMembers = payload.state.teamMembers;
+      } else if (key === 'taskTemplates' && Array.isArray(payload.state.taskTemplates)) {
+        newState.taskTemplates = payload.state.taskTemplates;
+      } else {
+        newState[key] = payload.state[key];
+      }
+    }
+    
+    // Handle deleted projects if explicitly broadcasted
+    if (payload.deletedProjectId) {
+      newState.projects = newState.projects.filter(p => p.id !== payload.deletedProjectId);
+      if (newState.activeProjectId === payload.deletedProjectId) {
+        const fallback = newState.projects.find(x => !x.archived);
+        newState.activeProjectId = fallback ? fallback.id : null;
+        if (!fallback) newState.homeView = true;
+      }
+    }
+    
     const localUiFlags = {
       activeProjectId: window.state.activeProjectId,
       activeStageId: window.state.activeStageId,
@@ -162,7 +192,9 @@
       viewMode: window.state.viewMode,
       bulkSelectionMode: false, bulkSelectedTaskIds: [],
     };
-    window.state = { ...window.state, ...payload.state, ...localUiFlags };
+    
+    window.state = { ...newState, ...localUiFlags };
+    window.lastSyncedState = JSON.parse(JSON.stringify(window.state));
     try { localStorage.setItem('sbg_precon_tracker_v3', JSON.stringify(window.state)); } catch(e) {}
     // Track the server's monotonic state version so the next saveState() PUTs
     // the right `expectedVersion` and doesn't trip the optimistic-concurrency

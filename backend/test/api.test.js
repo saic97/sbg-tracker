@@ -96,3 +96,56 @@ test('unknown protected route 401s without auth (auth comes before 404)', async 
   const res = await request(app).get('/api/no-such-thing');
   assert.equal(res.status, 401);
 });
+
+test('subdomain incremental sync and OCC version checks', async () => {
+  // 1. Setup initial state on the server
+  const sample = {
+    projects: [
+      { id: 'sub-p1', name: 'Original Project', client: 'Alice', archived: false, tasks: [] },
+      { id: 'sub-p2', name: 'Other Project', client: 'Bob', archived: false, tasks: [] }
+    ],
+    teamMembers: [],
+    stages: [],
+  };
+  const init = await authed(request(app).put('/api/state')).send({ state: sample, expectedVersion: 0 }).expect(200);
+  const startVersion = init.body.version;
+  assert.ok(startVersion > 0);
+
+  // 2. Update sub-p1 with correct expectedVersion (success case)
+  const updatedProj = { id: 'sub-p1', name: 'Updated Project Name', client: 'Alice', tasks: [] };
+  const putRes = await authed(request(app).put('/api/state/projects/sub-p1'))
+    .send({ project: updatedProj, expectedVersion: startVersion });
+  assert.equal(putRes.status, 200);
+  const newVersion = putRes.body.version;
+  assert.ok(newVersion > startVersion);
+
+  // Verify project updated in db
+  const getProj = await authed(request(app).get('/api/state'));
+  const targetProj = getProj.body.state.projects.find(p => p.id === 'sub-p1');
+  assert.equal(targetProj.name, 'Updated Project Name');
+
+  // Other project remains untouched
+  const otherProj = getProj.body.state.projects.find(p => p.id === 'sub-p2');
+  assert.equal(otherProj.name, 'Other Project');
+
+  // 3. Stale update (conflict case)
+  const staleProj = { id: 'sub-p1', name: 'Stale Edit', client: 'Alice', tasks: [] };
+  const conflictRes = await authed(request(app).put('/api/state/projects/sub-p1'))
+    .send({ project: staleProj, expectedVersion: startVersion });
+  assert.equal(conflictRes.status, 409);
+  assert.equal(conflictRes.body.code, 'VERSION_CONFLICT');
+  assert.equal(conflictRes.body.currentVersion, newVersion);
+
+  // 4. Delete project state
+  const deleteRes = await authed(request(app).delete(`/api/state/projects/sub-p1?expectedVersion=${newVersion}`));
+  assert.equal(deleteRes.status, 200);
+
+  // Verify deleted from db
+  const afterDelete = await authed(request(app).get('/api/state'));
+  assert.equal(afterDelete.body.state.projects.length, 1);
+  assert.equal(afterDelete.body.state.projects[0].id, 'sub-p2');
+
+  // Stale delete conflict
+  const staleDeleteRes = await authed(request(app).delete(`/api/state/projects/sub-p2?expectedVersion=${startVersion}`));
+  assert.equal(staleDeleteRes.status, 409);
+});
