@@ -108,7 +108,9 @@ test('subdomain incremental sync and OCC version checks', async () => {
     stages: [],
   };
   const cur = await authed(request(app).get('/api/state'));
-  const init = await authed(request(app).put('/api/state')).send({ state: sample, expectedVersion: cur.body.version }).expect(200);
+  const init = await authed(request(app).put('/api/state'))
+    .send({ state: sample, expectedVersion: cur.body.version, confirmDestructive: true })
+    .expect(200);
   const startVersion = init.body.version;
   assert.ok(startVersion > 0);
 
