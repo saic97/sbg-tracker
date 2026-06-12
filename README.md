@@ -62,14 +62,23 @@ trips. The only behavioral change is that `loadState()` now also pulls from
 the API after the first paint, and `saveState()` debounces a `PUT /api/state`
 in addition to writing localStorage.
 
-**Sync model: local-first with backend mirror.**
-- On boot the UI reads localStorage -> renders immediately -> then asynchronously
-  pulls `GET /api/state` and re-renders if the server has data.
+**Sync model: local-first, incremental, realtime.**
+- On boot the UI reads localStorage -> renders immediately -> then revalidates
+  with `GET /api/state` sending `If-None-Match: "v<version>"`. Unchanged
+  server state answers **304** (no body); otherwise the gzip-compressed blob
+  downloads and re-renders.
 - Every `saveState()` writes localStorage synchronously and schedules a
-  debounced (500ms) `PUT /api/state` to sync the canonical copy.
+  debounced (150ms) **incremental** sync: only the subdomains that changed
+  (one project, team members, templates, or settings) are PUT -- never the
+  whole workspace. Deliverable files live in the attachments store and ride
+  as small `attachmentId` references, not base64 in the state.
+- Concurrency is per-subdomain: two people saving different projects at the
+  same time both succeed. A genuine same-project race returns a lean 409 (no
+  state payload) and the client refetches + shows the conflict banner.
+- Saves broadcast over Socket.IO to other connected users, who merge just the
+  changed subdomain live -- no reload needed to see a teammate's edit.
 - If the API is unreachable, the app keeps working entirely off localStorage --
-  this matches the original's offline-friendly behavior and means the backend
-  outage never blocks a user.
+  failed incremental PUTs stay dirty and retry on the next save.
 
 ## Quick start
 
@@ -172,17 +181,21 @@ auto-polling (`BID_INTAKE_AUTO_POLL=1`) should use subjects like
 
 ## CI/CD
 
-Three workflows are wired up in `.github/workflows/`:
+Four workflows are wired up in `.github/workflows/`:
 
 - **`backend-ci.yml`** -- runs `npm ci`, `npm run lint`, `npm run migrate`
   (against an in-memory DB), and `npm test` on every push and PR that
   touches `backend/`.
 - **`frontend-ci.yml`** -- HTML structural validation + an acorn-based
   syntax check on `app.js` and `api.js`.
-- **`pages-deploy.yml`** -- publishes `frontend/` to GitHub Pages on every
-  push to `main`. If a repository **variable** named `API_BASE` is set, the
-  deployed site points at it; otherwise backend sync is auto-disabled so the
-  Pages site works as a pure-localStorage demo.
+- **`amplify-deploy.yml`** -- publishes `frontend/` to **AWS Amplify
+  Hosting** (CloudFront CDN + HTTPS) on every push to `main`, with
+  `<meta name="api-base">` patched to the `API_BASE` repo variable.
+  Production URL: <https://main.dg9k1rui1t6m1.amplifyapp.com>. Requires
+  `AWS_ACCESS_KEY_ID` / `AWS_SECRET_ACCESS_KEY` repo secrets; skips quietly
+  if absent (see `docs/aws-setup.md`).
+- **`pages-deploy.yml`** -- legacy mirror of the same frontend to GitHub
+  Pages. Kept as a fallback; Amplify is the primary host.
 
 ### Backend hosting on AWS EC2
 

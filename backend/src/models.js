@@ -207,6 +207,12 @@ function audit(action, entity, entityId, payload) {
 // their changes.
 // ---------------------------------------------------------------------------
 const SNAPSHOT_RETENTION = 50;
+// Snapshot cadence for incremental (subdomain) writes. Snapshotting every
+// save serialized the FULL state blob on every keystroke-burst (CPU + 50x
+// blob-size on disk). Whole-state PUTs and project deletes still always
+// snapshot (those are the writes you want a restore point right before);
+// routine incremental saves snapshot every Nth version.
+const SNAPSHOT_EVERY = 10;
 
 function getStateVersion() {
   const v = kv.get('state_version');
@@ -216,6 +222,60 @@ function bumpStateVersion() {
   const v = getStateVersion() + 1;
   kv.set('state_version', v);
   return v;
+}
+
+// ---------------------------------------------------------------------------
+// Per-subdomain write tracking.
+//
+// The global version alone makes ANY two concurrent writers conflict, even
+// when they touch unrelated subdomains (user A saves project X, user B's
+// save of project Y half a second later carries a stale expectedVersion and
+// gets a 409). That false conflict drops B's edit and forces a full-state
+// refresh -- the "lag" users feel when two people work at once.
+//
+// We record, per subdomain key ('project:<id>', 'teamMembers', 'templates',
+// 'settings'), the global version at which it was last written. A subdomain
+// PUT with a stale expectedVersion is then only a conflict if THAT subdomain
+// changed after expectedVersion; otherwise the write is accepted and the
+// global version advances. The special key '*' marks whole-state writes
+// (bulk PUT /api/state) which invalidate everything.
+//
+// On first run after upgrade the map doesn't exist; we seed it with
+// {'*': currentVersion} so pre-upgrade history is conservatively treated as
+// "everything changed" and stale tabs still conflict exactly as before.
+// ---------------------------------------------------------------------------
+function getSubdomainVersions() {
+  let map = kv.get('subdomain_versions');
+  if (!map || typeof map !== 'object') {
+    map = { '*': getStateVersion() };
+    kv.set('subdomain_versions', map);
+  }
+  return map;
+}
+
+function markSubdomainsWritten(keys, version) {
+  const map = getSubdomainVersions();
+  for (const k of keys) map[k] = version;
+  // A whole-state write supersedes the per-key entries; drop them so the map
+  // doesn't grow unboundedly with stale project ids.
+  if (keys.includes('*')) {
+    for (const k of Object.keys(map)) if (k !== '*') delete map[k];
+  }
+  kv.set('subdomain_versions', map);
+}
+
+function subdomainChangedSince(key, sinceVersion) {
+  const map = getSubdomainVersions();
+  const wildcard = typeof map['*'] === 'number' ? map['*'] : 0;
+  const specific = typeof map[key] === 'number' ? map[key] : 0;
+  return Math.max(wildcard, specific) > sinceVersion;
+}
+
+// Cheap wrapper for incremental writes: only assembles + stores the full
+// blob on the SNAPSHOT_EVERY cadence so routine saves stay light.
+function maybeRecordSnapshot(version, userId) {
+  if (version % SNAPSHOT_EVERY !== 0) return;
+  recordStateSnapshot(version, userId, loadStateBlob());
 }
 
 function recordStateSnapshot(version, userId, state) {
@@ -237,6 +297,22 @@ function recordStateSnapshot(version, userId, state) {
   } catch (e) {
     console.warn('[snapshot] failed:', e.message);
   }
+}
+
+// Everything in this list is the source-of-truth responsibility of a real
+// table; loadStateBlob() always overwrites these keys from the tables, so
+// copies of them inside the kv 'state' row are pure dead weight. Historically
+// the full incoming blob (projects + tasks + embedded files included) was
+// rewritten into kv on every save -- a multi-MB write per keystroke-burst.
+const TABLE_BACKED_KEYS = [
+  'projects', 'teamMembers', 'taskTemplates', 'stages', 'holidays',
+  'ballInCourtOptions', 'csiDivisions', 'sourceOptions', 'milestoneTypes',
+];
+
+function stripTableBackedKeys(state) {
+  const out = { ...state };
+  for (const k of TABLE_BACKED_KEYS) delete out[k];
+  return out;
 }
 
 function loadStateBlob() {
@@ -264,11 +340,14 @@ function saveStateBlob(state, opts = {}) {
   // ---- Guard 1: optimistic concurrency ------------------------------------
   // expectedVersion is required. Missing it == client predates this check
   // (cached older bundle); reject before doing anything destructive.
+  // NOTE: conflict errors deliberately do NOT carry the full current state.
+  // Embedding it meant every conflict response shipped the entire workspace
+  // (multi-MB) back to the client; clients now refetch via GET /api/state,
+  // which is gzip-compressed at the proxy and cheap to serve.
   if (typeof expectedVersion !== 'number') {
     const err = new Error('expectedVersion is required (your tab may be running an outdated version)');
     err.code = 'EXPECTED_VERSION_REQUIRED';
     err.currentVersion = currentVersion;
-    err.currentState = loadStateBlob();
     throw err;
   }
   if (expectedVersion !== currentVersion) {
@@ -276,7 +355,6 @@ function saveStateBlob(state, opts = {}) {
     err.code = 'VERSION_CONFLICT';
     err.expectedVersion = expectedVersion;
     err.currentVersion = currentVersion;
-    err.currentState = loadStateBlob();
     throw err;
   }
 
@@ -294,7 +372,6 @@ function saveStateBlob(state, opts = {}) {
       err.code = 'DESTRUCTIVE_DELETE';
       err.droppedProjects = droppedProjects.map(p => ({ id: p.id, name: p.name }));
       err.currentVersion = currentVersion;
-      err.currentState = loadStateBlob();
       throw err;
     }
   }
@@ -360,12 +437,13 @@ function saveStateBlob(state, opts = {}) {
     if (Array.isArray(state.sourceOptions)) sourceOptions.replaceAll(state.sourceOptions.map((s, i) => ({ ...s, position: i })));
     if (Array.isArray(state.milestoneTypes)) milestoneTypes.replaceAll(state.milestoneTypes.map((s, i) => ({ ...s, position: i })));
 
-    kv.set('state', state);
+    kv.set('state', stripTableBackedKeys(state));
   });
   txn();
   // Bump the version + snapshot AFTER the txn commits so a failed write
   // doesn't leave the version desynced or a phantom snapshot lying around.
   const newVersion = bumpStateVersion();
+  markSubdomainsWritten(['*'], newVersion);
   recordStateSnapshot(newVersion, userId, state);
   audit('state-put', 'state', null, {
     version: newVersion,
@@ -499,28 +577,15 @@ function saveProjectState(project) {
     }
   }
   
-  const current = kv.get('state') || {};
-  if (Array.isArray(current.projects)) {
-    const idx = current.projects.findIndex(p => p.id === project.id);
-    if (idx !== -1) {
-      current.projects[idx] = project;
-    } else {
-      current.projects.push(project);
-    }
-    kv.set('state', current);
-  }
+  // Projects/tasks live in their tables; loadStateBlob() reassembles from
+  // there. No kv 'state' mirror update -- mirroring the full projects array
+  // into kv on every project save was a multi-MB write per save.
 }
 
 function deleteProjectState(projectId) {
   const db = getDb();
   db.prepare('DELETE FROM tasks WHERE project_id=?').run(projectId);
   db.prepare('DELETE FROM projects WHERE id=?').run(projectId);
-  
-  const current = kv.get('state') || {};
-  if (Array.isArray(current.projects)) {
-    current.projects = current.projects.filter(p => p.id !== projectId);
-    kv.set('state', current);
-  }
 }
 
 function saveSettingsState(settings) {
@@ -531,16 +596,8 @@ function saveSettingsState(settings) {
   if (Array.isArray(settings.sourceOptions)) sourceOptions.replaceAll(settings.sourceOptions.map((s, i) => ({ ...s, position: i })));
   if (Array.isArray(settings.milestoneTypes)) milestoneTypes.replaceAll(settings.milestoneTypes.map((s, i) => ({ ...s, position: i })));
   
-  const cleanSettings = { ...settings };
-  delete cleanSettings.projects;
-  delete cleanSettings.teamMembers;
-  delete cleanSettings.taskTemplates;
-  
   const current = kv.get('state') || {};
-  const merged = { ...current, ...cleanSettings };
-  delete merged.projects;
-  delete merged.teamMembers;
-  delete merged.taskTemplates;
+  const merged = stripTableBackedKeys({ ...current, ...settings });
   kv.set('state', merged);
 }
 
@@ -573,7 +630,8 @@ module.exports = {
   projects, tasks, projectTasks, teamMembers, stages, taskTemplates,
   holidays, ballInCourtOptions, csiDivisions, sourceOptions, milestoneTypes,
   attachments, notifications,
-  loadStateBlob, saveStateBlob,
-  getStateVersion, bumpStateVersion, recordStateSnapshot,
+  loadStateBlob, saveStateBlob, stripTableBackedKeys,
+  getStateVersion, bumpStateVersion, recordStateSnapshot, maybeRecordSnapshot,
+  getSubdomainVersions, markSubdomainsWritten, subdomainChangedSince,
   touchState, saveProjectState, deleteProjectState, saveSettingsState,
 };

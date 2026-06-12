@@ -36,3 +36,6 @@ coverage/
 
 # Local source archive (we keep the original docx out of git)
 docs/source/
+
+# Claude Code local session data
+.claude/

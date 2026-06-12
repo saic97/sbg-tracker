@@ -1,0 +1,26 @@
+# Amplify Hosting build spec -- used only if you connect this GitHub repo to
+# the Amplify app in the AWS console (App settings -> Branches -> Connect
+# branch). Until then, deploys happen as zip uploads from
+# .github/workflows/amplify-deploy.yml and this file is inert.
+#
+# Set an Amplify environment variable API_BASE (App settings -> Environment
+# variables) to bake the backend URL into the page, e.g.
+#   API_BASE=https://3-144-241-147.nip.io
+version: 1
+frontend:
+  phases:
+    build:
+      commands:
+        - mkdir -p dist
+        - cp -r frontend/* dist/
+        - |
+          if [ -n "$API_BASE" ]; then
+            echo "Patching api-base to $API_BASE"
+            sed -i "s|<meta name=\"api-base\" content=\"\">|<meta name=\"api-base\" content=\"$API_BASE\">|" dist/index.html
+          fi
+  artifacts:
+    baseDirectory: dist
+    files:
+      - '**/*'
+  cache:
+    paths: []

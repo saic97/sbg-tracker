@@ -35,7 +35,12 @@ function avatarColor(name) {
 // STATE
 // =============================================================
 const STORAGE_KEY = 'sbg_precon_tracker_v3';
-let state = {
+// `var` (not let/const) is load-bearing: a top-level `var` in a classic
+// script IS window.state, which realtime.js and api.js read AND reassign to
+// apply remote users' changes. With `let` the binding never reached window,
+// so every incoming realtime merge bailed out and other users' edits only
+// appeared after a full reload.
+var state = {
   projects: [],
   templates: [],                   // saved project templates
   teamMembers: [],                 // master team roster
@@ -790,85 +795,124 @@ async function syncStateFromServer() {
   return false;
 }
 
+// Reentrancy guard: a sync pass awaits network calls, during which user edits
+// can schedule another pass. Running two passes concurrently would race their
+// diffs and PUT duplicate/competing payloads, so we queue instead.
+let _syncInFlight = false;
+let _syncQueued = false;
+
 async function performIncrementalSync() {
   if (!window.api || !window.api.enabled) return;
   if (!window.lastSyncedState) {
     window.lastSyncedState = JSON.parse(JSON.stringify(state));
     return;
   }
-  
+  if (_syncInFlight) { _syncQueued = true; return; }
+  _syncInFlight = true;
+  try {
+    await _performIncrementalSyncInner();
+  } finally {
+    _syncInFlight = false;
+    if (_syncQueued) {
+      _syncQueued = false;
+      scheduleApiSync();
+    }
+  }
+}
+
+async function _performIncrementalSyncInner() {
+  // IMPORTANT: lastSyncedState is only advanced for the pieces that the
+  // server actually accepted. A failed PUT (offline blip, conflict) leaves
+  // its piece marked dirty so the next pass retries it -- previously a
+  // failure was blanket-marked "synced" and the edit silently never reached
+  // the server (the other user would never see it).
   const currentProjects = state.projects || [];
   const syncedProjects = window.lastSyncedState.projects || [];
-  
+
   const currentProjMap = new Map(currentProjects.map(p => [p.id, p]));
   const syncedProjMap = new Map(syncedProjects.map(p => [p.id, p]));
-  
+
   // Projects to delete
   for (const sp of syncedProjects) {
     if (!currentProjMap.has(sp.id)) {
       try {
         await window.api.deleteProjectState(sp.id);
+        window.lastSyncedState.projects =
+          (window.lastSyncedState.projects || []).filter(p => p.id !== sp.id);
       } catch (err) {
         handleSyncError(err);
       }
     }
   }
-  
-  // Projects to add / update
+
+  // Projects to add / update. Snapshot each project at send time so a user
+  // edit happening mid-flight isn't wrongly marked as synced.
   for (const cp of currentProjects) {
     const sp = syncedProjMap.get(cp.id);
     if (!sp || JSON.stringify(cp) !== JSON.stringify(sp)) {
+      const sentCopy = JSON.parse(JSON.stringify(cp));
       try {
-        await window.api.putProjectState(cp);
+        await window.api.putProjectState(sentCopy);
+        const list = window.lastSyncedState.projects || (window.lastSyncedState.projects = []);
+        const idx = list.findIndex(p => p.id === sentCopy.id);
+        if (idx === -1) list.push(sentCopy); else list[idx] = sentCopy;
       } catch (err) {
         handleSyncError(err);
       }
     }
   }
-  
+
   // Team members diff
   if (JSON.stringify(state.teamMembers) !== JSON.stringify(window.lastSyncedState.teamMembers)) {
+    const sentCopy = JSON.parse(JSON.stringify(state.teamMembers));
     try {
-      await window.api.putTeamMembersState(state.teamMembers);
+      await window.api.putTeamMembersState(sentCopy);
+      window.lastSyncedState.teamMembers = sentCopy;
     } catch (err) {
       handleSyncError(err);
     }
   }
-  
+
   // Templates diff
   if (JSON.stringify(state.taskTemplates) !== JSON.stringify(window.lastSyncedState.taskTemplates)) {
+    const sentCopy = JSON.parse(JSON.stringify(state.taskTemplates));
     try {
-      await window.api.putTemplatesState(state.taskTemplates);
+      await window.api.putTemplatesState(sentCopy);
+      window.lastSyncedState.taskTemplates = sentCopy;
     } catch (err) {
       handleSyncError(err);
     }
   }
-  
-  // Settings diff
+
+  // Settings diff -- send ONLY the keys that changed. The server merges
+  // partial settings payloads, and this keeps e.g. a sidebar toggle from
+  // re-uploading the base64 company logo every time.
   const settingsKeys = [
     'stages', 'holidays', 'ballInCourtOptions', 'csiDivisions', 'sourceOptions',
     'milestoneTypes', 'companyLogo', 'skipWeekends', 'skipHolidays', 'currentUser',
     'sidebarCollapsed', 'homeView'
   ];
-  
-  let settingsChanged = false;
+
   const settingsPayload = {};
+  const changedSettingsKeys = [];
   for (const key of settingsKeys) {
-    settingsPayload[key] = state[key];
     if (JSON.stringify(state[key]) !== JSON.stringify(window.lastSyncedState[key])) {
-      settingsChanged = true;
+      settingsPayload[key] = JSON.parse(JSON.stringify(state[key] === undefined ? null : state[key]));
+      changedSettingsKeys.push(key);
     }
   }
-  
-  if (settingsChanged) {
+
+  if (changedSettingsKeys.length) {
     try {
       await window.api.putSettingsState(settingsPayload);
+      for (const key of changedSettingsKeys) {
+        window.lastSyncedState[key] = settingsPayload[key];
+      }
     } catch (err) {
       handleSyncError(err);
     }
   }
-  
-  window.lastSyncedState = JSON.parse(JSON.stringify(state));
+
   try { localStorage.setItem(STORAGE_KEY, JSON.stringify(state)); } catch(e){}
 }
 
@@ -6616,11 +6660,17 @@ function guardrailJumpToTask() {
 
 // =============================================================
 // DELIVERABLES — Output items linked to a task (description + optional file)
-// Shape: { id, description, fileName, fileUrl, fileData (base64), fileType, fileSize, done, doneBy, doneAt, addedAt }
-// Files ≤ 1MB stored as base64 in localStorage; larger files use external URL only.
+// Shape: { id, description, fileName, fileUrl, attachmentId, fileData (legacy base64),
+//          fileType, fileSize, done, doneBy, doneAt, addedAt }
+// Files upload to the backend attachments store and are referenced by
+// `attachmentId` — keeping them OUT of the state blob so saving the project
+// doesn't re-upload every file (a multi-MB uncompressed PUT per save).
+// `fileData` (inline base64) remains supported read-only for legacy rows and
+// as a fallback when the backend is unreachable (offline mode, ≤ 1 MB).
 // =============================================================
 let pendingDeliverables = []; // working array while task modal is open
-const DLV_MAX_INLINE_BYTES = 1024 * 1024; // 1 MB cap for in-browser stored files
+const DLV_MAX_INLINE_BYTES = 1024 * 1024;        // 1 MB cap for OFFLINE inline fallback
+const DLV_MAX_UPLOAD_BYTES = 25 * 1024 * 1024;   // 25 MB cap for server uploads
 
 function loadDeliverablesIntoModal(task) {
   pendingDeliverables = [];
@@ -6630,6 +6680,7 @@ function loadDeliverablesIntoModal(task) {
       description: d.description || '',
       fileName: d.fileName || '',
       fileUrl: d.fileUrl || '',
+      attachmentId: d.attachmentId || '',
       fileData: d.fileData || '',
       fileType: d.fileType || '',
       fileSize: typeof d.fileSize === 'number' ? d.fileSize : 0,
@@ -6650,12 +6701,13 @@ function loadDeliverablesIntoModal(task) {
 function extractDeliverablesForSave() {
   // Strip rows with no description and no linked file — those are essentially blank slots.
   return pendingDeliverables
-    .filter(d => (d.description && d.description.trim()) || d.fileName || d.fileUrl)
+    .filter(d => (d.description && d.description.trim()) || d.fileName || d.fileUrl || d.attachmentId)
     .map(d => ({
       id: d.id,
       description: (d.description || '').trim(),
       fileName: d.fileName || '',
       fileUrl: d.fileUrl || '',
+      attachmentId: d.attachmentId || '',
       fileData: d.fileData || '',
       fileType: d.fileType || '',
       fileSize: typeof d.fileSize === 'number' ? d.fileSize : 0,
@@ -6688,9 +6740,17 @@ function renderDeliverableItems() {
     const reqBadge = d.required
       ? `<button type="button" class="dlv-req-toggle dlv-req-on" onclick="toggleDeliverableRequired(${idx})" title="Required — click to mark optional">REQ</button>`
       : `<button type="button" class="dlv-req-toggle dlv-req-off" onclick="toggleDeliverableRequired(${idx})" title="Optional — click to mark required">opt</button>`;
-    // File row — three states: linked URL, uploaded file (data URL), or no file
+    // File row — four states: server attachment, linked URL, legacy inline
+    // file (data URL), or no file
     let fileBlock = '';
-    if (d.fileUrl) {
+    if (d.attachmentId) {
+      fileBlock = `
+        <a class="dlv-file-link" href="#" onclick="downloadDeliverableFile(${idx});return false;" title="Download ${escapeAttr(d.fileName)} (${formatFileSize(d.fileSize)})">
+          <span class="dlv-file-link-icon">📎</span>
+          <span>${escapeHtml(d.fileName)} · ${formatFileSize(d.fileSize)}</span>
+        </a>
+        <button type="button" class="dlv-file-clear" onclick="clearDeliverableFile(${idx})" title="Remove this file">✕</button>`;
+    } else if (d.fileUrl) {
       fileBlock = `
         <a class="dlv-file-link" href="${escapeAttr(d.fileUrl)}" target="_blank" rel="noopener" title="${escapeAttr(d.fileUrl)}">
           <span class="dlv-file-link-icon">🔗</span>
@@ -6706,7 +6766,7 @@ function renderDeliverableItems() {
         <button type="button" class="dlv-file-clear" onclick="clearDeliverableFile(${idx})" title="Remove this file">✕</button>`;
     } else {
       fileBlock = `
-        <button type="button" class="dlv-upload-btn" onclick="triggerDeliverableUpload(${idx})" title="Upload a file (≤ 1 MB) to store with this deliverable">📎 Upload</button>
+        <button type="button" class="dlv-upload-btn" onclick="triggerDeliverableUpload(${idx})" title="Upload a file (≤ 25 MB) to store with this deliverable">📎 Upload</button>
         <button type="button" class="dlv-link-btn" onclick="promptDeliverableUrl(${idx})" title="Paste a URL or file path">🔗 Link URL</button>`;
     }
     return `
@@ -6747,6 +6807,7 @@ function addDeliverableItem() {
     description: text,
     fileName: '',
     fileUrl: '',
+    attachmentId: '',
     fileData: '',
     fileType: '',
     fileSize: 0,
@@ -6828,8 +6889,43 @@ function handleDeliverableFileSelected(e) {
   const idx = _dlvActiveUploadIdx;
   const d = pendingDeliverables[idx];
   if (!d) return;
+
+  const canUploadToServer = !!(window.api && window.api.enabled && window.api.status &&
+                               window.api.status.online !== false && window.auth && window.auth.token);
+
+  if (canUploadToServer) {
+    // Preferred path: store the file in the backend attachments store and
+    // keep only a small reference on the deliverable. This keeps files out
+    // of the state blob so project saves stay tiny.
+    if (file.size > DLV_MAX_UPLOAD_BYTES) {
+      alert(`File too large.\n\n${file.name} is ${formatFileSize(file.size)}; the upload limit is ${formatFileSize(DLV_MAX_UPLOAD_BYTES)}.\n\nUpload it to OneDrive (or another cloud location) and use "🔗 Link URL" to paste the share link instead.`);
+      return;
+    }
+    d.fileName = file.name + ' (uploading…)';
+    renderDeliverableItems();
+    window.api.uploadAttachment(file, {
+      projectId: state.activeProjectId || undefined,
+      taskId: editingTaskId || undefined,
+    }).then(created => {
+      d.attachmentId = created.id;
+      d.fileName = file.name;
+      d.fileType = file.type || created.content_type || '';
+      d.fileSize = file.size;
+      d.fileData = '';
+      d.fileUrl = '';
+      renderDeliverableItems();
+    }).catch(err => {
+      console.warn('deliverable upload failed:', err);
+      d.fileName = '';
+      renderDeliverableItems();
+      alert('Upload failed (' + err.message + '). Check your connection and try again, or use "🔗 Link URL" instead.');
+    });
+    return;
+  }
+
+  // Offline / backend-disabled fallback: small files inline as base64.
   if (file.size > DLV_MAX_INLINE_BYTES) {
-    alert(`File too large for in-browser storage.\n\n${file.name} is ${formatFileSize(file.size)}; the limit is ${formatFileSize(DLV_MAX_INLINE_BYTES)}.\n\nFor larger files, upload to OneDrive (or another cloud location) and use "🔗 Link URL" to paste the share link instead.`);
+    alert(`The backend is unreachable, so the file can only be stored in-browser — and ${file.name} is ${formatFileSize(file.size)}, over the ${formatFileSize(DLV_MAX_INLINE_BYTES)} in-browser limit.\n\nUpload to OneDrive (or another cloud location) and use "🔗 Link URL" instead, or retry when back online.`);
     return;
   }
   const reader = new FileReader();
@@ -6839,12 +6935,26 @@ function handleDeliverableFileSelected(e) {
     d.fileType = file.type || '';
     d.fileSize = file.size;
     d.fileUrl = ''; // mutually exclusive with URL
+    d.attachmentId = '';
     renderDeliverableItems();
   };
   reader.onerror = function() {
     alert('Could not read that file. Try a different one or use a URL link instead.');
   };
   reader.readAsDataURL(file);
+}
+
+// Download a server-stored deliverable file with the auth token (a plain
+// <a href> can't carry the Authorization header).
+function downloadDeliverableFile(idx) {
+  const d = pendingDeliverables[idx];
+  if (!d || !d.attachmentId) return;
+  if (!window.api || !window.api.enabled) {
+    alert('Backend is unreachable — cannot download this file right now.');
+    return;
+  }
+  window.api.downloadAttachment(d.attachmentId, d.fileName || 'deliverable')
+    .catch(err => alert('Download failed: ' + err.message));
 }
 
 function promptDeliverableUrl(idx) {
@@ -6874,8 +6984,11 @@ function promptDeliverableUrl(idx) {
       d.fileName = parts[parts.length - 1] || trimmed;
     }
   }
-  // Clear any previously stored file blob
+  // Clear any previously stored file blob / server reference. (The server
+  // attachment itself is left in place: the modal may be cancelled, in which
+  // case the saved task still references it.)
   d.fileData = '';
+  d.attachmentId = '';
   d.fileType = '';
   d.fileSize = 0;
   renderDeliverableItems();
@@ -6887,6 +7000,7 @@ function clearDeliverableFile(idx) {
   d.fileName = '';
   d.fileUrl = '';
   d.fileData = '';
+  d.attachmentId = '';
   d.fileType = '';
   d.fileSize = 0;
   renderDeliverableItems();

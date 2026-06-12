@@ -131,16 +131,41 @@ test('subdomain incremental sync and OCC version checks', async () => {
   const otherProj = getProj.body.state.projects.find(p => p.id === 'sub-p2');
   assert.equal(otherProj.name, 'Other Project');
 
-  // 3. Stale update (conflict case)
+  // 3. Stale update of the SAME project (true conflict case)
   const staleProj = { id: 'sub-p1', name: 'Stale Edit', client: 'Alice', tasks: [] };
   const conflictRes = await authed(request(app).put('/api/state/projects/sub-p1'))
     .send({ project: staleProj, expectedVersion: startVersion });
   assert.equal(conflictRes.status, 409);
   assert.equal(conflictRes.body.code, 'VERSION_CONFLICT');
   assert.equal(conflictRes.body.currentVersion, newVersion);
+  // Conflict bodies are lean: no full-state payload rides along.
+  assert.equal(conflictRes.body.state, undefined);
+
+  // 3b. Stale update of a DIFFERENT subdomain is NOT a conflict: sub-p2
+  // hasn't changed since startVersion, so the write is accepted even though
+  // the global version moved (two users editing different projects).
+  const otherEdit = { id: 'sub-p2', name: 'Other Project Renamed', client: 'Bob', tasks: [] };
+  const crossRes = await authed(request(app).put('/api/state/projects/sub-p2'))
+    .send({ project: otherEdit, expectedVersion: startVersion });
+  assert.equal(crossRes.status, 200);
+  const v3 = crossRes.body.version;
+  assert.ok(v3 > newVersion);
+
+  // ...same for an unrelated subdomain like team members.
+  const tmRes = await authed(request(app).put('/api/state/team-members'))
+    .send({ teamMembers: [{ id: 'tm1', name: 'Carol' }], expectedVersion: startVersion });
+  assert.equal(tmRes.status, 200);
+  const v4 = tmRes.body.version;
+  assert.ok(v4 > v3);
+
+  // ...but a stale write to a subdomain that DID change conflicts.
+  const tmConflict = await authed(request(app).put('/api/state/team-members'))
+    .send({ teamMembers: [], expectedVersion: v3 });
+  assert.equal(tmConflict.status, 409);
+  assert.equal(tmConflict.body.code, 'VERSION_CONFLICT');
 
   // 4. Delete project state
-  const deleteRes = await authed(request(app).delete(`/api/state/projects/sub-p1?expectedVersion=${newVersion}`));
+  const deleteRes = await authed(request(app).delete(`/api/state/projects/sub-p1?expectedVersion=${v4}`));
   assert.equal(deleteRes.status, 200);
 
   // Verify deleted from db
@@ -148,7 +173,28 @@ test('subdomain incremental sync and OCC version checks', async () => {
   assert.equal(afterDelete.body.state.projects.length, 1);
   assert.equal(afterDelete.body.state.projects[0].id, 'sub-p2');
 
-  // Stale delete conflict
+  // Stale delete of a project changed since the client's version conflicts
+  // (sub-p2 was renamed at v3, so expectedVersion=startVersion is stale FOR IT).
   const staleDeleteRes = await authed(request(app).delete(`/api/state/projects/sub-p2?expectedVersion=${startVersion}`));
   assert.equal(staleDeleteRes.status, 409);
+});
+
+test('GET /api/state supports If-None-Match revalidation (304)', async () => {
+  const first = await authed(request(app).get('/api/state'));
+  assert.equal(first.status, 200);
+  const etag = first.headers.etag;
+  assert.ok(etag, 'ETag header expected');
+  assert.equal(etag, `"v${first.body.version}"`);
+
+  // Same version -> 304 with empty body.
+  const second = await authed(request(app).get('/api/state').set('If-None-Match', etag));
+  assert.equal(second.status, 304);
+
+  // After a write the version moves and the same validator misses.
+  const put = await authed(request(app).put('/api/state/settings'))
+    .send({ settings: { skipWeekends: true }, expectedVersion: first.body.version });
+  assert.equal(put.status, 200);
+  const third = await authed(request(app).get('/api/state').set('If-None-Match', etag));
+  assert.equal(third.status, 200);
+  assert.equal(third.body.version, put.body.version);
 });
