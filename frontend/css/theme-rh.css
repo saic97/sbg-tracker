@@ -1,0 +1,265 @@
+/* =============================================================================
+ * theme-rh.css -- "Robinhood-smooth" theme layer (PILOT: Today screen).
+ *
+ * Additive and reversible, exactly like visual-polish.css: everything is
+ * scoped under `body.theme-rh` (light) with `body.theme-rh.theme-dark` for the
+ * dark variant. It re-maps the existing :root design tokens (so the whole app
+ * inherits the new type + palette cheaply) and adds focused component polish +
+ * motion for the Today/home view, which is the first screen we're piloting.
+ *
+ * Nothing here touches app.js or styles.css; remove the <link> to revert.
+ * =============================================================================
+ */
+
+/* ---------------------------------------------------------------------------
+ * 1. Tokens -- LIGHT. Re-maps the variables the rest of the CSS already reads.
+ * ------------------------------------------------------------------------- */
+body.theme-rh {
+  --bg: #f5f6f8;
+  --surface: #ffffff;
+  --surface-2: #f7f8fa;
+  --surface-3: #eef0f3;
+  --border: #ecedf1;
+  --border-strong: #e0e3e9;
+
+  --text: #0c0e14;
+  --text-2: #2a2f3a;
+  --text-dim: #6c727e;
+  --text-faint: #9aa1ad;
+
+  /* refined SBG red kept as the single brand accent */
+  --sbg-red: #e1352c;
+  --sbg-red-dark: #c42c24;
+  --sbg-red-light: #ef5a52;
+  --red: #d83a32;
+  --green: #12936a;
+  --blue: #2f6fd6;
+  --gold: #b9770a;
+  --yellow: #b9770a;
+  --purple: #7b4397;
+  --overlay: rgba(12, 14, 20, 0.55);
+
+  /* status fills, re-tuned soft + flat */
+  --fill-not-started: #f1f3f6;  --fill-not-started-border: #e4e7ec;
+  --fill-in-progress: #e8f1ff;  --fill-in-progress-border: #cfe0fb;
+  --fill-blocked: #fdecea;      --fill-blocked-border: #f6d4d0;
+  --fill-pending: #f1eafb;      --fill-pending-border: #e1d2f3;
+  --fill-done: #e6f5ee;         --fill-done-border: #c8e9d8;
+
+  --rh-radius: 16px;
+  --rh-radius-sm: 11px;
+  --rh-shadow-sm: 0 1px 2px rgba(16, 24, 40, 0.05);
+  --rh-shadow-md: 0 6px 22px rgba(16, 24, 40, 0.07);
+  --rh-ease: cubic-bezier(.2, .7, .2, 1);
+  --rh-font: 'Inter', system-ui, -apple-system, sans-serif;
+
+  background: var(--bg);
+  color: var(--text);
+  font-family: var(--rh-font);
+}
+
+/* ---------------------------------------------------------------------------
+ * 2. Tokens -- DARK.
+ * ------------------------------------------------------------------------- */
+body.theme-rh.theme-dark {
+  --bg: #0b0c0f;
+  --surface: #15171d;
+  --surface-2: #1b1e26;
+  --surface-3: #23262f;
+  --border: #23262f;
+  --border-strong: #2d313b;
+
+  --text: #f3f5f8;
+  --text-2: #d3d8df;
+  --text-dim: #98a0ad;
+  --text-faint: #6b727f;
+
+  --sbg-red: #ff5b4f;
+  --sbg-red-dark: #e7463b;
+  --sbg-red-light: #ff7b71;
+  --red: #ff5d52;
+  --green: #28d08a;
+  --blue: #5b9bff;
+  --gold: #ffb627;
+  --yellow: #ffb627;
+  --purple: #b98fe0;
+  --overlay: rgba(0, 0, 0, 0.6);
+
+  --fill-not-started: #1c1f27;  --fill-not-started-border: #2a2e38;
+  --fill-in-progress: #122236;  --fill-in-progress-border: #1e3a5c;
+  --fill-blocked: #2a1614;      --fill-blocked-border: #4a221f;
+  --fill-pending: #20172e;      --fill-pending-border: #382850;
+  --fill-done: #10241d;         --fill-done-border: #1d4435;
+
+  --rh-shadow-sm: 0 1px 0 rgba(255, 255, 255, 0.02);
+  --rh-shadow-md: 0 12px 32px rgba(0, 0, 0, 0.5);
+}
+
+/* ---------------------------------------------------------------------------
+ * 3. Base type. Replace the condensed/mono dominance with a clean sans; keep
+ *    mono only for true numeric/tabular readouts.
+ * ------------------------------------------------------------------------- */
+body.theme-rh,
+body.theme-rh button,
+body.theme-rh input,
+body.theme-rh select,
+body.theme-rh textarea {
+  font-family: var(--rh-font);
+  letter-spacing: -0.003em;
+}
+body.theme-rh .main { background: var(--bg); }
+body.theme-rh h1, body.theme-rh h2, body.theme-rh h3,
+body.theme-rh .home-title, body.theme-rh .home-section-title {
+  font-family: var(--rh-font);
+  letter-spacing: -0.02em;
+}
+
+/* Subtle, modern scrollbars (very RH) */
+body.theme-rh *::-webkit-scrollbar { width: 10px; height: 10px; }
+body.theme-rh *::-webkit-scrollbar-thumb { background: var(--border-strong); border-radius: 10px; border: 3px solid transparent; background-clip: padding-box; }
+body.theme-rh *::-webkit-scrollbar-track { background: transparent; }
+
+/* ---------------------------------------------------------------------------
+ * 4. Chrome -- header, sidebar, brand (always visible).
+ * ------------------------------------------------------------------------- */
+body.theme-rh header {
+  background: var(--surface);
+  border-bottom: 1px solid var(--border);
+  box-shadow: none;
+}
+body.theme-rh .brand-logo,
+body.theme-rh #brandLogo {
+  border-radius: 10px;
+  overflow: hidden;
+}
+body.theme-rh .brand-text { font-weight: 800; letter-spacing: -0.03em; color: var(--text); }
+body.theme-rh .sidebar,
+body.theme-rh #appSidebar {
+  background: var(--surface);
+  border-right: 1px solid var(--border);
+}
+body.theme-rh .header-stats .stat-chip {
+  background: var(--surface-2);
+  border: 1px solid var(--border);
+  border-radius: var(--rh-radius-sm);
+  transition: background-color .18s var(--rh-ease), border-color .18s var(--rh-ease);
+}
+body.theme-rh .current-user-chip {
+  background: var(--surface-2);
+  border: 1px solid var(--border);
+  border-radius: 999px;
+}
+
+/* ---------------------------------------------------------------------------
+ * 5. Today / home view -- the piloted screen.
+ * ------------------------------------------------------------------------- */
+body.theme-rh #homeView { background: var(--bg); }
+
+body.theme-rh .home-title {
+  font-size: 28px;
+  font-weight: 800;
+  color: var(--text);
+}
+body.theme-rh .home-subtitle { color: var(--text-dim); font-weight: 500; }
+body.theme-rh .home-section-title { font-weight: 700; color: var(--text); letter-spacing: -0.01em; }
+body.theme-rh .home-section-sub { color: var(--text-dim); }
+
+/* bid countdown cards -> soft rounded "hero" cards */
+body.theme-rh .home-countdown-card {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--rh-radius);
+  box-shadow: var(--rh-shadow-sm);
+  transition: transform .22s var(--rh-ease), box-shadow .22s var(--rh-ease), border-color .18s var(--rh-ease);
+}
+body.theme-rh .home-countdown-card:hover {
+  transform: translateY(-2px);
+  box-shadow: var(--rh-shadow-md);
+  border-color: var(--border-strong);
+}
+body.theme-rh .hcc-thumb { border-radius: 12px; }
+body.theme-rh .hcc-project { font-weight: 700; letter-spacing: -0.01em; color: var(--text); }
+body.theme-rh .hcc-label { color: var(--text-faint); font-weight: 600; text-transform: uppercase; letter-spacing: 0.06em; font-size: 11px; }
+body.theme-rh .hcc-countdown {
+  font-variant-numeric: tabular-nums;
+  font-weight: 800;
+  letter-spacing: -0.02em;
+  color: var(--text);
+}
+
+/* stat tiles */
+body.theme-rh .home-stat {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--rh-radius);
+  box-shadow: var(--rh-shadow-sm);
+  transition: transform .2s var(--rh-ease), box-shadow .2s var(--rh-ease);
+}
+body.theme-rh .home-stat:hover { transform: translateY(-2px); box-shadow: var(--rh-shadow-md); }
+body.theme-rh .home-stat .hs-value {
+  font-size: 26px;
+  font-weight: 800;
+  letter-spacing: -0.03em;
+  font-variant-numeric: tabular-nums;
+  color: var(--text);
+}
+body.theme-rh .home-stat.is-critical .hs-value { color: var(--red); }
+body.theme-rh .home-stat.is-warning .hs-value { color: var(--gold); }
+body.theme-rh .home-stat.is-info .hs-value { color: var(--blue); }
+body.theme-rh .home-stat .hs-label { color: var(--text-dim); font-weight: 600; }
+
+/* task list sections */
+body.theme-rh .home-section {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--rh-radius);
+  box-shadow: var(--rh-shadow-sm);
+}
+body.theme-rh .home-section-header { border-bottom: 1px solid var(--border); }
+
+/* ---------------------------------------------------------------------------
+ * 6. Buttons + pills.
+ * ------------------------------------------------------------------------- */
+body.theme-rh .btn {
+  border-radius: 999px;
+  font-weight: 600;
+  transition: transform .15s var(--rh-ease), background-color .15s var(--rh-ease), filter .15s var(--rh-ease);
+}
+body.theme-rh .btn:active { transform: scale(0.97); }
+body.theme-rh .btn-primary,
+body.theme-rh .btn.btn-primary {
+  background: var(--sbg-red);
+  border-color: var(--sbg-red);
+  color: #fff;
+}
+body.theme-rh .btn-primary:hover { filter: brightness(1.06); }
+
+/* ---------------------------------------------------------------------------
+ * 7. Motion -- smooth view entrance.
+ * ------------------------------------------------------------------------- */
+@keyframes rh-fade-in {
+  from { opacity: 0; transform: translateY(6px); }
+  to   { opacity: 1; transform: none; }
+}
+body.theme-rh #homeView:not(.hidden) {
+  animation: rh-fade-in .26s var(--rh-ease) both;
+}
+@media (prefers-reduced-motion: reduce) {
+  body.theme-rh #homeView:not(.hidden),
+  body.theme-rh .home-countdown-card,
+  body.theme-rh .home-stat,
+  body.theme-rh .btn { animation: none !important; transition: none !important; }
+}
+
+/* ---------------------------------------------------------------------------
+ * 8. The theme toggle (injected by theme-rh.js into the header).
+ * ------------------------------------------------------------------------- */
+.rh-toggle {
+  display: inline-flex; align-items: center; justify-content: center;
+  width: 34px; height: 34px; border-radius: 999px;
+  background: var(--surface-2, #f2f3f6); border: 1px solid var(--border, #e3e5ea);
+  color: var(--text-dim, #6b727e); cursor: pointer; font-size: 16px; line-height: 1;
+  transition: transform .15s var(--rh-ease, ease), background-color .15s ease, color .15s ease;
+}
+.rh-toggle:hover { color: var(--text, #0c0e14); transform: translateY(-1px); }
+.rh-toggle:active { transform: scale(0.95); }
