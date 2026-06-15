@@ -190,6 +190,12 @@
       activeAssignee: window.state.activeAssignee,
       grouping: window.state.grouping,
       viewMode: window.state.viewMode,
+      // Device-local UI prefs: never let a remote user's values clobber ours
+      // (these no longer travel from an up-to-date server, but a peer on an
+      // older build could still broadcast them).
+      sidebarCollapsed: window.state.sidebarCollapsed,
+      homeView: window.state.homeView,
+      currentUser: window.state.currentUser,
       bulkSelectionMode: false, bulkSelectedTaskIds: [],
     };
     

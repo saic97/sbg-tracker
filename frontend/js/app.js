@@ -763,6 +763,16 @@ function saveState() {
   try { localStorage.setItem(STORAGE_KEY, JSON.stringify(state)); } catch(e){}
   scheduleApiSync();
 }
+// Shared-config sync groups. Each is its own backend subdomain
+// (`settings:<group>`); keys NOT listed here (sidebarCollapsed, homeView,
+// currentUser, and all the active*/view-mode/calendar-cursor UI state) never
+// sync -- they're device-local and live only in localStorage.
+const SETTINGS_GROUPS = {
+  branding: ['companyLogo'],
+  calendar: ['holidays', 'skipWeekends', 'skipHolidays'],
+  lists: ['stages', 'ballInCourtOptions', 'csiDivisions', 'sourceOptions', 'milestoneTypes'],
+};
+
 // ---- Backend sync (local-first, debounced) ----
 // 150ms strikes a balance: long enough to coalesce a burst of keystrokes /
 // drags into a single PUT, short enough that other users see the change in
@@ -884,30 +894,31 @@ async function _performIncrementalSyncInner() {
     }
   }
 
-  // Settings diff -- send ONLY the keys that changed. The server merges
-  // partial settings payloads, and this keeps e.g. a sidebar toggle from
-  // re-uploading the base64 company logo every time.
-  const settingsKeys = [
-    'stages', 'holidays', 'ballInCourtOptions', 'csiDivisions', 'sourceOptions',
-    'milestoneTypes', 'companyLogo', 'skipWeekends', 'skipHolidays', 'currentUser',
-    'sidebarCollapsed', 'homeView'
-  ];
-
-  const settingsPayload = {};
-  const changedSettingsKeys = [];
-  for (const key of settingsKeys) {
-    if (JSON.stringify(state[key]) !== JSON.stringify(window.lastSyncedState[key])) {
-      settingsPayload[key] = JSON.parse(JSON.stringify(state[key] === undefined ? null : state[key]));
-      changedSettingsKeys.push(key);
-    }
-  }
-
-  if (changedSettingsKeys.length) {
-    try {
-      await window.api.putSettingsState(settingsPayload);
-      for (const key of changedSettingsKeys) {
-        window.lastSyncedState[key] = settingsPayload[key];
+  // Shared workspace config, split into INDEPENDENT subdomains so a change to
+  // one group never bundles or version-conflicts with another. Each group
+  // syncs as `settings:<group>` and only when one of its keys actually
+  // changed -- so e.g. editing a holiday no longer re-uploads the company
+  // logo, and two admins editing the calendar vs. the dropdown lists at the
+  // same time don't collide.
+  //
+  // DEVICE_LOCAL_KEYS (sidebarCollapsed, homeView, currentUser) are
+  // deliberately absent: they're per-tab/per-person UI preferences that live
+  // only in localStorage. Syncing them used to bump the shared version on
+  // every sidebar toggle AND push one user's UI state onto everyone else.
+  for (const group of Object.keys(SETTINGS_GROUPS)) {
+    const keys = SETTINGS_GROUPS[group];
+    const payload = {};
+    const changed = [];
+    for (const key of keys) {
+      if (JSON.stringify(state[key]) !== JSON.stringify(window.lastSyncedState[key])) {
+        payload[key] = JSON.parse(JSON.stringify(state[key] === undefined ? null : state[key]));
+        changed.push(key);
       }
+    }
+    if (!changed.length) continue;
+    try {
+      await window.api.putSettingsState(payload, group);
+      for (const key of changed) window.lastSyncedState[key] = payload[key];
     } catch (err) {
       handleSyncError(err);
     }

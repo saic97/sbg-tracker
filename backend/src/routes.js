@@ -304,19 +304,25 @@ function buildRouter() {
   }));
 
   r.put('/state/settings', asyncRoute(async (req, res) => {
-    const { settings, expectedVersion, clientId } = req.body || {};
+    const { settings, expectedVersion, clientId, group } = req.body || {};
     if (!settings || typeof settings !== 'object') {
       return res.status(400).json({ error: 'body must include `settings` object' });
     }
-    if (guardSubdomainWrite(req, res, expectedVersion, 'settings') === null) return;
+    // Settings is split into independent subdomains: `settings:branding`,
+    // `settings:calendar`, `settings:lists`. A change to one group only
+    // conflicts with a concurrent change to that SAME group. `group` is a
+    // short slug; fall back to the legacy single `settings` key if absent.
+    const groupSlug = typeof group === 'string' && /^[a-z0-9_-]{1,32}$/.test(group) ? group : null;
+    const subdomainKey = groupSlug ? `settings:${groupSlug}` : 'settings';
+    if (guardSubdomainWrite(req, res, expectedVersion, subdomainKey) === null) return;
     // Broadcast only what the caller sent -- not the whole settings domain --
-    // so e.g. a sidebar toggle doesn't ship the company logo to every client.
+    // so e.g. a calendar edit doesn't ship the company logo to every client.
     const cleanSettings = { ...settings };
     delete cleanSettings.projects;
     delete cleanSettings.teamMembers;
     delete cleanSettings.taskTemplates;
     commitSubdomainWrite(req, res, {
-      subdomainKey: 'settings',
+      subdomainKey,
       clientId,
       write: () => m.saveSettingsState(settings),
       broadcast: { state: cleanSettings },

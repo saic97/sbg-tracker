@@ -159,6 +159,10 @@
       activeAssignee: window.state.activeAssignee,
       grouping: window.state.grouping,
       viewMode: window.state.viewMode,
+      // Device-local: a peer's UI prefs must never overwrite ours.
+      sidebarCollapsed: window.state.sidebarCollapsed,
+      homeView: window.state.homeView,
+      currentUser: window.state.currentUser,
       bulkSelectionMode: false,
       bulkSelectedTaskIds: [],
     };
@@ -352,9 +356,10 @@
         throw e;
       }
     },
-    putSettingsState: async (settings) => {
+    putSettingsState: async (settings, group) => {
       const body = {
         settings,
+        group: group || undefined,   // -> server subdomain key `settings:<group>`
         clientId: (window.realtime && window.realtime.clientId) || null,
         expectedVersion: _stateVersion,
       };

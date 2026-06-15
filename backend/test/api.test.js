@@ -198,3 +198,53 @@ test('GET /api/state supports If-None-Match revalidation (304)', async () => {
   assert.equal(third.status, 200);
   assert.equal(third.body.version, put.body.version);
 });
+
+test('settings groups are independent subdomains (no cross-group conflict)', async () => {
+  const v0 = (await authed(request(app).get('/api/state'))).body.version;
+
+  // Write the `lists` group at v0.
+  const listsRes = await authed(request(app).put('/api/state/settings'))
+    .send({ settings: { sourceOptions: [{ id: 's1', name: 'Bluebeam' }] }, group: 'lists', expectedVersion: v0 });
+  assert.equal(listsRes.status, 200);
+  const v1 = listsRes.body.version;
+  assert.ok(v1 > v0);
+
+  // A write to a DIFFERENT group (calendar) still carrying the old v0 is
+  // accepted -- the calendar group hasn't changed since v0.
+  const calRes = await authed(request(app).put('/api/state/settings'))
+    .send({ settings: { skipWeekends: true }, group: 'calendar', expectedVersion: v0 });
+  assert.equal(calRes.status, 200);
+  const v2 = calRes.body.version;
+  assert.ok(v2 > v1);
+
+  // But a stale write to the SAME group (lists) at v0 now conflicts.
+  const staleLists = await authed(request(app).put('/api/state/settings'))
+    .send({ settings: { sourceOptions: [] }, group: 'lists', expectedVersion: v0 });
+  assert.equal(staleLists.status, 409);
+  assert.equal(staleLists.body.code, 'VERSION_CONFLICT');
+
+  // Both groups' values landed.
+  const after = await authed(request(app).get('/api/state'));
+  assert.equal(after.body.state.skipWeekends, true);
+  assert.equal(after.body.state.sourceOptions.find(o => o.id === 's1').name, 'Bluebeam');
+});
+
+test('device-local UI keys are never stored or returned by the server', async () => {
+  const v = (await authed(request(app).get('/api/state'))).body.version;
+  // Even if a client mistakenly sends them, the server drops them.
+  const res = await authed(request(app).put('/api/state/settings'))
+    .send({
+      settings: { sidebarCollapsed: true, homeView: true, currentUser: 'Alice', companyLogo: 'data:img' },
+      group: 'branding',
+      expectedVersion: v,
+    });
+  assert.equal(res.status, 200);
+
+  const after = await authed(request(app).get('/api/state'));
+  // Genuine shared key persisted...
+  assert.equal(after.body.state.companyLogo, 'data:img');
+  // ...device-local ones did not leak back out.
+  assert.equal(after.body.state.sidebarCollapsed, undefined);
+  assert.equal(after.body.state.homeView, undefined);
+  assert.equal(after.body.state.currentUser, undefined);
+});

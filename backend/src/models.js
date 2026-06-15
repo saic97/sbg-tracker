@@ -315,8 +315,22 @@ function stripTableBackedKeys(state) {
   return out;
 }
 
+// Per-device / per-tab UI preferences that the server must never store or
+// emit. Each browser owns its own copy in localStorage. Persisting these
+// workspace-wide meant one user toggling their sidebar (or picking who they
+// "act as") bumped the shared version and pushed that UI state onto everyone
+// else. They are scrubbed on both read (loadStateBlob) and write
+// (saveSettingsState) so no stale copy can leak back out.
+const DEVICE_LOCAL_KEYS = ['sidebarCollapsed', 'homeView', 'currentUser'];
+
+function stripDeviceLocalKeys(state) {
+  const out = { ...state };
+  for (const k of DEVICE_LOCAL_KEYS) delete out[k];
+  return out;
+}
+
 function loadStateBlob() {
-  const blob = kv.get('state') || {};
+  const blob = stripDeviceLocalKeys(kv.get('state') || {});
   return {
     ...blob,
     projects: projects.list().map(p => ({ ...p, tasks: tasks.list('project_id=?', [p.id]) })),
@@ -597,7 +611,10 @@ function saveSettingsState(settings) {
   if (Array.isArray(settings.milestoneTypes)) milestoneTypes.replaceAll(settings.milestoneTypes.map((s, i) => ({ ...s, position: i })));
   
   const current = kv.get('state') || {};
-  const merged = stripTableBackedKeys({ ...current, ...settings });
+  // Strip both table-backed keys (owned by real tables) and device-local UI
+  // prefs (owned by each browser) before persisting -- the kv 'state' row
+  // holds only genuine shared scalars (e.g. companyLogo, skipWeekends).
+  const merged = stripDeviceLocalKeys(stripTableBackedKeys({ ...current, ...settings }));
   kv.set('state', merged);
 }
 
@@ -630,7 +647,7 @@ module.exports = {
   projects, tasks, projectTasks, teamMembers, stages, taskTemplates,
   holidays, ballInCourtOptions, csiDivisions, sourceOptions, milestoneTypes,
   attachments, notifications,
-  loadStateBlob, saveStateBlob, stripTableBackedKeys,
+  loadStateBlob, saveStateBlob, stripTableBackedKeys, stripDeviceLocalKeys,
   getStateVersion, bumpStateVersion, recordStateSnapshot, maybeRecordSnapshot,
   getSubdomainVersions, markSubdomainsWritten, subdomainChangedSince,
   touchState, saveProjectState, deleteProjectState, saveSettingsState,
