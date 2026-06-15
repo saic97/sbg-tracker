@@ -27020,7 +27020,11 @@ if (typeof syncStateFromServer === 'function') {
       state.sidebarCollapsed = true;
       if (typeof renderCompanyLogo === 'function') renderCompanyLogo();
       if (typeof render === 'function') render();
-      if (typeof openHomeView === 'function') openHomeView();
+      // Re-apply the URL route now that server data is in (a deep-linked
+      // project may not have been in the local cache on first paint). Falls
+      // back to Today when there's no deep link, matching the old behavior.
+      if (window.router && typeof window.router.reapply === 'function') window.router.reapply();
+      else if (typeof openHomeView === 'function') openHomeView();
     }
   });
 }
