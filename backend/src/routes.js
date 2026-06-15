@@ -275,6 +275,73 @@ function buildRouter() {
     });
   }));
 
+  // ---- per-task subdomains (finer than whole-project) ----
+  // Editing one task ships ~one task, and two people editing DIFFERENT tasks
+  // in the SAME project never collide (keys project:<pid>:task:<tid>).
+  r.put('/state/projects/:pid/tasks/:tid', asyncRoute(async (req, res) => {
+    const { task, expectedVersion, clientId } = req.body || {};
+    if (!task || typeof task !== 'object') {
+      return res.status(400).json({ error: 'body must include `task` object' });
+    }
+    if (task.id && task.id !== req.params.tid) {
+      return res.status(400).json({ error: 'task.id does not match URL' });
+    }
+    if (!m.projects.get(req.params.pid)) {
+      // The parent project must exist (it syncs first via whole-project PUT).
+      return res.status(409).json({
+        error: 'parent project not found; resync', code: 'VERSION_CONFLICT',
+        currentVersion: m.getStateVersion(),
+      });
+    }
+    const subdomainKey = `project:${req.params.pid}:task:${req.params.tid}`;
+    if (guardSubdomainWrite(req, res, expectedVersion, subdomainKey) === null) return;
+    const taskWithId = { ...task, id: req.params.tid };
+    commitSubdomainWrite(req, res, {
+      subdomainKey,
+      clientId,
+      write: () => m.saveTaskState(req.params.pid, taskWithId),
+      broadcast: { state: {}, taskUpsert: { projectId: req.params.pid, task: taskWithId } },
+    });
+  }));
+
+  r.delete('/state/projects/:pid/tasks/:tid', asyncRoute(async (req, res) => {
+    const expectedVersion = parseInt(req.query.expectedVersion || '', 10);
+    const clientId = req.query.clientId || null;
+    const subdomainKey = `project:${req.params.pid}:task:${req.params.tid}`;
+    if (guardSubdomainWrite(req, res, Number.isNaN(expectedVersion) ? undefined : expectedVersion, subdomainKey) === null) return;
+    commitSubdomainWrite(req, res, {
+      subdomainKey,
+      clientId,
+      write: () => m.deleteTaskState(req.params.pid, req.params.tid),
+      broadcast: { state: {}, taskDelete: { projectId: req.params.pid, taskId: req.params.tid } },
+    });
+  }));
+
+  // Project META only (non-task fields). Separate key so editing a project's
+  // name/dates doesn't conflict with a concurrent task edit in it.
+  r.put('/state/projects/:pid/meta', asyncRoute(async (req, res) => {
+    const { meta, expectedVersion, clientId } = req.body || {};
+    if (!meta || typeof meta !== 'object') {
+      return res.status(400).json({ error: 'body must include `meta` object' });
+    }
+    if (meta.id && meta.id !== req.params.pid) {
+      return res.status(400).json({ error: 'meta.id does not match URL' });
+    }
+    const subdomainKey = `project:${req.params.pid}:meta`;
+    if (guardSubdomainWrite(req, res, expectedVersion, subdomainKey) === null) return;
+    // Never let a meta write carry tasks/subBids -- those have their own paths
+    // (per-task sync; bid intake). Strip them defensively.
+    const cleanMeta = { ...meta, id: req.params.pid };
+    delete cleanMeta.tasks;
+    delete cleanMeta.subBids;
+    commitSubdomainWrite(req, res, {
+      subdomainKey,
+      clientId,
+      write: () => m.saveProjectMeta(cleanMeta),
+      broadcast: { state: {}, projectMeta: { projectId: req.params.pid, meta: cleanMeta } },
+    });
+  }));
+
   r.put('/state/team-members', asyncRoute(async (req, res) => {
     const { teamMembers, expectedVersion, clientId } = req.body || {};
     if (!Array.isArray(teamMembers)) {

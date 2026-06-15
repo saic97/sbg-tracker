@@ -302,6 +302,63 @@
         throw e;
       }
     },
+    // Per-task sync. Editing one task ships one task instead of the whole
+    // project, and conflicts only with a concurrent edit to that same task.
+    putTaskState: async (projectId, task) => {
+      const body = {
+        task,
+        clientId: (window.realtime && window.realtime.clientId) || null,
+        expectedVersion: _stateVersion,
+      };
+      try {
+        const r = await request(`/api/state/projects/${encodeURIComponent(projectId)}/tasks/${encodeURIComponent(task.id)}`, { method: 'PUT', body: JSON.stringify(body) });
+        if (r && typeof r.version === 'number') setVersion(r.version);
+        return r;
+      } catch (e) {
+        const code = e && e.body && e.body.code;
+        if ((e.status === 400 && code === 'EXPECTED_VERSION_REQUIRED') ||
+            (e.status === 409 && code === 'VERSION_CONFLICT')) {
+          handleVersionConflict(e.body);
+        }
+        throw e;
+      }
+    },
+    deleteTaskState: async (projectId, taskId) => {
+      try {
+        const r = await request(`/api/state/projects/${encodeURIComponent(projectId)}/tasks/${encodeURIComponent(taskId)}?expectedVersion=${_stateVersion}&clientId=${((window.realtime && window.realtime.clientId) || '')}`, {
+          method: 'DELETE'
+        });
+        if (r && typeof r.version === 'number') setVersion(r.version);
+        return r;
+      } catch (e) {
+        const code = e && e.body && e.body.code;
+        if ((e.status === 400 && code === 'EXPECTED_VERSION_REQUIRED') ||
+            (e.status === 409 && code === 'VERSION_CONFLICT')) {
+          handleVersionConflict(e.body);
+        }
+        throw e;
+      }
+    },
+    // Project meta (non-task fields) only.
+    putProjectMeta: async (meta) => {
+      const body = {
+        meta,
+        clientId: (window.realtime && window.realtime.clientId) || null,
+        expectedVersion: _stateVersion,
+      };
+      try {
+        const r = await request(`/api/state/projects/${encodeURIComponent(meta.id)}/meta`, { method: 'PUT', body: JSON.stringify(body) });
+        if (r && typeof r.version === 'number') setVersion(r.version);
+        return r;
+      } catch (e) {
+        const code = e && e.body && e.body.code;
+        if ((e.status === 400 && code === 'EXPECTED_VERSION_REQUIRED') ||
+            (e.status === 409 && code === 'VERSION_CONFLICT')) {
+          handleVersionConflict(e.body);
+        }
+        throw e;
+      }
+    },
     deleteProjectState: async (id) => {
       try {
         const r = await request(`/api/state/projects/${encodeURIComponent(id)}?expectedVersion=${_stateVersion}&clientId=${((window.realtime && window.realtime.clientId) || '')}`, {

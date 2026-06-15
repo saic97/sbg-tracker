@@ -132,28 +132,53 @@
     toastTimer = setTimeout(() => el.classList.remove('show'), 2400);
   }
 
-  // Coalesce bursts of state:updated events. When two users save within ~100ms
-  // of each other we used to re-render N times back to back; now we hold the
-  // most recent payload and apply it once. Reduces both CPU and visible flicker
-  // without making any individual update perceptibly slower.
-  let _pendingRemote = null;
+  // Coalesce bursts of state:updated events so we render once per ~100ms
+  // window instead of N times back to back. CRUCIAL: now that payloads are
+  // incremental deltas (one task, one project's meta), we QUEUE every payload
+  // and apply them all -- the old "keep only the most recent" behavior would
+  // silently drop every delta but the last.
+  let _pendingRemote = [];
   let _pendingRemoteTimer = null;
   function applyRemoteState(payload) {
     if (payload.clientId === rt.clientId) return;  // our own change, ignore
     if (!payload.state || typeof window.state === 'undefined') return;
-    _pendingRemote = payload;
+    _pendingRemote.push(payload);
     if (_pendingRemoteTimer) return;
     _pendingRemoteTimer = setTimeout(() => {
-      const p = _pendingRemote;
-      _pendingRemote = null;
+      const batch = _pendingRemote;
+      _pendingRemote = [];
       _pendingRemoteTimer = null;
-      _flushRemoteState(p);
+      _flushRemoteBatch(batch);
     }, 100);
   }
 
-  function _flushRemoteState(payload) {
+  // Apply a whole batch of deltas to window.state, then persist + render ONCE.
+  function _flushRemoteBatch(batch) {
+    if (!batch || !batch.length) return;
+    let lastByUserName = null;
+    let lastVersion = null;
+    for (const payload of batch) {
+      _applyOneRemotePayload(payload);
+      if (payload.byUserName) lastByUserName = payload.byUserName;
+      if (typeof payload.version === 'number') lastVersion = payload.version;
+    }
+    window.lastSyncedState = JSON.parse(JSON.stringify(window.state));
+    try { localStorage.setItem('sbg_precon_tracker_v3', JSON.stringify(window.state)); } catch(e) {}
+    // Track the server's monotonic state version so the next saveState() PUTs
+    // the right `expectedVersion` and doesn't trip the optimistic-concurrency
+    // guard (which would otherwise treat a fresh post-broadcast save as stale).
+    if (lastVersion !== null && window.api && typeof window.api.setStateVersion === 'function') {
+      window.api.setStateVersion(lastVersion);
+    }
+    if (typeof render === 'function') render();
+    if (lastByUserName) showToast('Updated by ' + lastByUserName);
+  }
+
+  // Merge ONE payload into window.state (no persist/render -- the batch does
+  // that once at the end).
+  function _applyOneRemotePayload(payload) {
     if (!payload || !payload.state) return;
-    
+
     // Merge: replace top-level state fields by subdomain to avoid wiping out other data
     const newState = { ...window.state };
     
@@ -183,7 +208,43 @@
         if (!fallback) newState.homeView = true;
       }
     }
-    
+
+    // ---- Per-task / project-meta merges (finer than a whole project) ----
+    // Each touches ONE task or only the meta fields, so sibling tasks and
+    // server-owned subBids are left intact.
+    if (payload.taskUpsert && payload.taskUpsert.projectId && payload.taskUpsert.task) {
+      const { projectId, task } = payload.taskUpsert;
+      const proj = newState.projects.find(p => p.id === projectId);
+      if (proj) {
+        const tasks = Array.isArray(proj.tasks) ? proj.tasks.slice() : [];
+        const idx = tasks.findIndex(t => t.id === task.id);
+        if (idx === -1) tasks.push(task); else tasks[idx] = task;
+        proj.tasks = tasks;
+      }
+      // If we don't have the project yet, skip -- a subsequent full sync /
+      // 304-miss boot will pull it.
+    }
+    if (payload.taskDelete && payload.taskDelete.projectId) {
+      const { projectId, taskId } = payload.taskDelete;
+      const proj = newState.projects.find(p => p.id === projectId);
+      if (proj && Array.isArray(proj.tasks)) {
+        proj.tasks = proj.tasks.filter(t => t.id !== taskId);
+      }
+    }
+    if (payload.projectMeta && payload.projectMeta.projectId && payload.projectMeta.meta) {
+      const { projectId, meta } = payload.projectMeta;
+      const proj = newState.projects.find(p => p.id === projectId);
+      if (proj) {
+        const keptTasks = proj.tasks;       // meta must never wipe tasks...
+        const keptSubBids = proj.subBids;   // ...or server-owned subBids
+        Object.assign(proj, meta);
+        proj.tasks = keptTasks;
+        if (typeof keptSubBids !== 'undefined') proj.subBids = keptSubBids;
+      } else {
+        newState.projects = newState.projects.concat([{ ...meta, tasks: [] }]);
+      }
+    }
+
     const localUiFlags = {
       activeProjectId: window.state.activeProjectId,
       activeStageId: window.state.activeStageId,
@@ -200,16 +261,6 @@
     };
     
     window.state = { ...newState, ...localUiFlags };
-    window.lastSyncedState = JSON.parse(JSON.stringify(window.state));
-    try { localStorage.setItem('sbg_precon_tracker_v3', JSON.stringify(window.state)); } catch(e) {}
-    // Track the server's monotonic state version so the next saveState() PUTs
-    // the right `expectedVersion` and doesn't trip the optimistic-concurrency
-    // guard (which would otherwise treat a fresh post-broadcast save as stale).
-    if (typeof payload.version === 'number' && window.api && typeof window.api.setStateVersion === 'function') {
-      window.api.setStateVersion(payload.version);
-    }
-    if (typeof render === 'function') render();
-    if (payload.byUserName) showToast('Updated by ' + payload.byUserName);
   }
 
   function reportActiveProject() {

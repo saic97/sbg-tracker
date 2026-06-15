@@ -855,21 +855,28 @@ async function _performIncrementalSyncInner() {
     }
   }
 
-  // Projects to add / update. Snapshot each project at send time so a user
-  // edit happening mid-flight isn't wrongly marked as synced.
+  // Projects to add / update. We diff at the TASK level so editing one task
+  // ships ~one task instead of the whole project's task list, and two people
+  // editing different tasks in the same project don't collide.
   for (const cp of currentProjects) {
     const sp = syncedProjMap.get(cp.id);
-    if (!sp || JSON.stringify(cp) !== JSON.stringify(sp)) {
+    if (sp && JSON.stringify(cp) === JSON.stringify(sp)) continue;  // unchanged
+
+    // Brand-new project: one whole-project PUT creates it + all its tasks in
+    // a single request (cheaper than N per-task POSTs).
+    if (!sp) {
       const sentCopy = JSON.parse(JSON.stringify(cp));
       try {
         await window.api.putProjectState(sentCopy);
         const list = window.lastSyncedState.projects || (window.lastSyncedState.projects = []);
-        const idx = list.findIndex(p => p.id === sentCopy.id);
-        if (idx === -1) list.push(sentCopy); else list[idx] = sentCopy;
+        list.push(sentCopy);
       } catch (err) {
         handleSyncError(err);
       }
+      continue;
     }
+
+    await syncProjectIncrementally(cp, sp);
   }
 
   // Team members diff
@@ -925,6 +932,98 @@ async function _performIncrementalSyncInner() {
   }
 
   try { localStorage.setItem(STORAGE_KEY, JSON.stringify(state)); } catch(e){}
+}
+
+// If more than this many tasks changed in one project in one pass, it's
+// cheaper to replace the whole project in a single request than to fire that
+// many per-task PUTs (e.g. "mark all done", a template reload).
+const TASK_LEVEL_THRESHOLD = 8;
+
+// Diff one already-synced project at the task + meta level and push only the
+// pieces that changed. lastSyncedState is advanced per-piece on success, so a
+// failed PUT leaves just that piece dirty for the next pass to retry.
+async function syncProjectIncrementally(cp, sp) {
+  const cpTasks = cp.tasks || [];
+  const spTasks = sp.tasks || [];
+  const cpTaskMap = new Map(cpTasks.map(t => [t.id, t]));
+  const spTaskMap = new Map(spTasks.map(t => [t.id, t]));
+
+  const changedTasks = [];
+  for (const t of cpTasks) {
+    const old = spTaskMap.get(t.id);
+    if (!old || JSON.stringify(t) !== JSON.stringify(old)) changedTasks.push(t);
+  }
+  const deletedTaskIds = [];
+  for (const t of spTasks) {
+    if (!cpTaskMap.has(t.id)) deletedTaskIds.push(t.id);
+  }
+
+  // Project meta = everything except tasks. subBids are server-authoritative
+  // (bid intake), so they're excluded from the client-owned meta diff.
+  const cpMeta = { ...cp }; delete cpMeta.tasks; delete cpMeta.subBids;
+  const spMeta = { ...sp }; delete spMeta.tasks; delete spMeta.subBids;
+  const metaChanged = JSON.stringify(cpMeta) !== JSON.stringify(spMeta);
+
+  // Too many task changes at once -> one whole-project PUT is cheaper.
+  if (changedTasks.length + deletedTaskIds.length > TASK_LEVEL_THRESHOLD) {
+    const sentCopy = JSON.parse(JSON.stringify(cp));
+    try {
+      await window.api.putProjectState(sentCopy);
+      replaceInLastSynced(sentCopy);
+    } catch (err) {
+      handleSyncError(err);
+    }
+    return;
+  }
+
+  // Build up the new synced snapshot from sp, applying only what succeeds.
+  const syncedProj = JSON.parse(JSON.stringify(sp));
+  syncedProj.tasks = syncedProj.tasks || [];
+  const syncedTaskMap = new Map(syncedProj.tasks.map(t => [t.id, t]));
+
+  for (const t of changedTasks) {
+    const sent = JSON.parse(JSON.stringify(t));
+    try {
+      await window.api.putTaskState(cp.id, sent);
+      syncedTaskMap.set(sent.id, sent);
+    } catch (err) {
+      handleSyncError(err);
+    }
+  }
+  for (const tid of deletedTaskIds) {
+    try {
+      await window.api.deleteTaskState(cp.id, tid);
+      syncedTaskMap.delete(tid);
+    } catch (err) {
+      handleSyncError(err);
+    }
+  }
+  if (metaChanged) {
+    const sentMeta = JSON.parse(JSON.stringify(cpMeta));
+    try {
+      await window.api.putProjectMeta(sentMeta);
+      Object.assign(syncedProj, sentMeta);
+    } catch (err) {
+      handleSyncError(err);
+    }
+  }
+
+  syncedProj.tasks = Array.from(syncedTaskMap.values());
+  // subBids are server-authoritative and not part of our outbound diff -- mirror
+  // the current value so a subBids-only delta (from a broadcast) doesn't make
+  // every later save re-enter this function as a no-op.
+  if (Object.prototype.hasOwnProperty.call(cp, 'subBids')) {
+    syncedProj.subBids = JSON.parse(JSON.stringify(cp.subBids));
+  } else {
+    delete syncedProj.subBids;
+  }
+  replaceInLastSynced(syncedProj);
+}
+
+function replaceInLastSynced(proj) {
+  const list = window.lastSyncedState.projects || (window.lastSyncedState.projects = []);
+  const idx = list.findIndex(p => p.id === proj.id);
+  if (idx === -1) list.push(proj); else list[idx] = proj;
 }
 
 function handleSyncError(err) {

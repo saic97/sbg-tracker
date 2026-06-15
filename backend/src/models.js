@@ -233,17 +233,39 @@ function bumpStateVersion() {
 // gets a 409). That false conflict drops B's edit and forces a full-state
 // refresh -- the "lag" users feel when two people work at once.
 //
-// We record, per subdomain key ('project:<id>', 'teamMembers', 'templates',
-// 'settings'), the global version at which it was last written. A subdomain
-// PUT with a stale expectedVersion is then only a conflict if THAT subdomain
-// changed after expectedVersion; otherwise the write is accepted and the
-// global version advances. The special key '*' marks whole-state writes
-// (bulk PUT /api/state) which invalidate everything.
+// We record, per subdomain key, the global version at which it was last
+// written. A subdomain PUT with a stale expectedVersion is then only a
+// conflict if THAT subdomain changed after expectedVersion; otherwise the
+// write is accepted and the global version advances.
+//
+// Keys are HIERARCHICAL:
+//   '*'                          whole-state writes (bulk PUT /api/state)
+//   'project:<id>'               whole-project writes (create / bulk fallback)
+//   'project:<id>:task:<tid>'    a single task
+//   'project:<id>:meta'          a project's non-task fields
+//   'teamMembers' / 'templates' / 'settings:<group>'
+//
+// Conflict checks honor the hierarchy so there are no lost updates:
+//   - a task/meta write conflicts if its own key, its parent 'project:<id>',
+//     or '*' moved since the client's version;
+//   - a whole-project write conflicts if the project key, '*', OR ANY of its
+//     child task/meta keys moved (so a per-task edit can't be clobbered by a
+//     concurrent whole-project replace).
+// A whole-project write supersedes (clears) its child keys; '*' clears all.
 //
 // On first run after upgrade the map doesn't exist; we seed it with
 // {'*': currentVersion} so pre-upgrade history is conservatively treated as
 // "everything changed" and stale tabs still conflict exactly as before.
+//
+// The map lives in one kv JSON row, so we cap it (oldest/lowest-version child
+// keys evicted first) to keep that row small. Eviction only risks a missed
+// conflict for a client more than ~thousands of versions stale writing the
+// exact evicted task -- pathological, and such a client is already caught by
+// the global guards on any bulk op.
 // ---------------------------------------------------------------------------
+const MAX_SUBDOMAIN_KEYS = 4000;
+const SUBDOMAIN_PRUNE_TO = 3000;
+
 function getSubdomainVersions() {
   let map = kv.get('subdomain_versions');
   if (!map || typeof map !== 'object') {
@@ -253,22 +275,49 @@ function getSubdomainVersions() {
   return map;
 }
 
+function pruneSubdomainVersions(map) {
+  const keys = Object.keys(map);
+  if (keys.length <= MAX_SUBDOMAIN_KEYS) return;
+  const evictable = keys.filter(k => k !== '*').sort((a, b) => (map[a] || 0) - (map[b] || 0));
+  const dropCount = keys.length - SUBDOMAIN_PRUNE_TO;
+  for (let i = 0; i < dropCount && i < evictable.length; i++) delete map[evictable[i]];
+}
+
 function markSubdomainsWritten(keys, version) {
   const map = getSubdomainVersions();
-  for (const k of keys) map[k] = version;
-  // A whole-state write supersedes the per-key entries; drop them so the map
-  // doesn't grow unboundedly with stale project ids.
+  for (const k of keys) {
+    map[k] = version;
+    // A whole-project write supersedes its child task/meta keys.
+    if (/^project:[^:]+$/.test(k)) {
+      const prefix = k + ':';
+      for (const existing of Object.keys(map)) {
+        if (existing.startsWith(prefix)) delete map[existing];
+      }
+    }
+  }
+  // A whole-state write supersedes every per-key entry.
   if (keys.includes('*')) {
     for (const k of Object.keys(map)) if (k !== '*') delete map[k];
   }
+  pruneSubdomainVersions(map);
   kv.set('subdomain_versions', map);
 }
 
 function subdomainChangedSince(key, sinceVersion) {
   const map = getSubdomainVersions();
-  const wildcard = typeof map['*'] === 'number' ? map['*'] : 0;
-  const specific = typeof map[key] === 'number' ? map[key] : 0;
-  return Math.max(wildcard, specific) > sinceVersion;
+  let maxV = typeof map['*'] === 'number' ? map['*'] : 0;
+  if (typeof map[key] === 'number' && map[key] > maxV) maxV = map[key];
+  // Child (task/meta) -> also covered by a whole-project write on its parent.
+  const child = /^(project:[^:]+):/.exec(key);
+  if (child && typeof map[child[1]] === 'number' && map[child[1]] > maxV) maxV = map[child[1]];
+  // Parent project -> also covered by ANY child task/meta write.
+  if (/^project:[^:]+$/.test(key)) {
+    const prefix = key + ':';
+    for (const k of Object.keys(map)) {
+      if (k.startsWith(prefix) && typeof map[k] === 'number' && map[k] > maxV) maxV = map[k];
+    }
+  }
+  return maxV > sinceVersion;
 }
 
 // Cheap wrapper for incremental writes: only assembles + stores the full
@@ -499,14 +548,16 @@ function touchState(version = null) {
   return newVersion;
 }
 
-function saveProjectState(project) {
+// Upsert a project ROW only (never touches the tasks table). subBids are
+// server-authoritative (bid intake writes them outside the sync path), so
+// they're preserved from the existing row unless the caller explicitly
+// includes a `subBids` key.
+function upsertProjectRow(project) {
   const db = getDb();
-  db.prepare('DELETE FROM tasks WHERE project_id=?').run(project.id);
-  
   const hasSubBids = Object.prototype.hasOwnProperty.call(project, 'subBids');
   const preserved = db.prepare('SELECT data FROM projects WHERE id=?').get(project.id);
   const preservedData = preserved ? parseJson(preserved.data, {}) : {};
-  
+
   const projRow = {
     ...project,
     id: project.id || uid(),
@@ -519,20 +570,13 @@ function saveProjectState(project) {
     due_date: project.dueDate || project.due_date || null,
     subBids: hasSubBids ? project.subBids : preservedData.subBids,
   };
-  
+
   const projData = { ...projRow };
-  delete projData.id;
-  delete projData.name;
-  delete projData.client;
-  delete projData.location;
-  delete projData.status;
-  delete projData.archived;
-  delete projData.startDate;
-  delete projData.dueDate;
-  delete projData.start_date;
-  delete projData.due_date;
-  delete projData.tasks;
-  
+  for (const k of ['id', 'name', 'client', 'location', 'status', 'archived',
+                   'startDate', 'dueDate', 'start_date', 'due_date', 'tasks']) {
+    delete projData[k];
+  }
+
   db.prepare(`INSERT INTO projects (id, name, client, location, status, archived, start_date, due_date, data)
               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
               ON CONFLICT(id) DO UPDATE SET
@@ -544,56 +588,80 @@ function saveProjectState(project) {
       projRow.archived, projRow.start_date, projRow.due_date,
       JSON.stringify(projData)
     );
-    
-  if (Array.isArray(project.tasks)) {
-    for (const t of project.tasks) {
-      const tRow = {
-        ...t,
-        id: t.id || uid(),
-        project_id: projRow.id,
-        title: t.title || '',
-        stage: t.stage || null,
-        category: t.category || null,
-        priority: t.priority || null,
-        status: t.status || 'not-started',
-        due_date: t.dueDate || t.due_date || null,
-        start_by_date: t.startByDate || t.start_by_date || null,
-        day_offset: typeof t.dayOffset === 'number' ? t.dayOffset : null,
-        assignee: t.assignee || null,
-        source: t.source || null,
-        notes: t.notes || null,
-      };
-      const tData = { ...tRow };
-      delete tData.id;
-      delete tData.project_id;
-      delete tData.title;
-      delete tData.stage;
-      delete tData.category;
-      delete tData.priority;
-      delete tData.status;
-      delete tData.dueDate;
-      delete tData.due_date;
-      delete tData.startByDate;
-      delete tData.start_by_date;
-      delete tData.dayOffset;
-      delete tData.day_offset;
-      delete tData.assignee;
-      delete tData.source;
-      delete tData.notes;
-      
-      db.prepare(`INSERT INTO tasks (id, project_id, title, stage, category, priority, status, due_date, start_by_date, day_offset, assignee, source, notes, data)
-                  VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
-        .run(
-          tRow.id, tRow.project_id, tRow.title, tRow.stage, tRow.category, tRow.priority, tRow.status,
-          tRow.due_date, tRow.start_by_date, tRow.day_offset, tRow.assignee, tRow.source, tRow.notes,
-          JSON.stringify(tData)
-        );
-    }
+  return projRow.id;
+}
+
+// Upsert a single task ROW (INSERT ... ON CONFLICT so it works for both a
+// fresh insert and an in-place edit, without disturbing sibling tasks).
+function upsertTaskRow(projectId, t) {
+  const db = getDb();
+  const tRow = {
+    ...t,
+    id: t.id || uid(),
+    project_id: projectId,
+    title: t.title || '',
+    stage: t.stage || null,
+    category: t.category || null,
+    priority: t.priority || null,
+    status: t.status || 'not-started',
+    due_date: t.dueDate || t.due_date || null,
+    start_by_date: t.startByDate || t.start_by_date || null,
+    day_offset: typeof t.dayOffset === 'number' ? t.dayOffset : null,
+    assignee: t.assignee || null,
+    source: t.source || null,
+    notes: t.notes || null,
+  };
+  const tData = { ...tRow };
+  for (const k of ['id', 'project_id', 'title', 'stage', 'category', 'priority',
+                   'status', 'dueDate', 'due_date', 'startByDate', 'start_by_date',
+                   'dayOffset', 'day_offset', 'assignee', 'source', 'notes']) {
+    delete tData[k];
   }
-  
+  db.prepare(`INSERT INTO tasks (id, project_id, title, stage, category, priority, status, due_date, start_by_date, day_offset, assignee, source, notes, data)
+              VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+              ON CONFLICT(id) DO UPDATE SET
+                project_id=excluded.project_id, title=excluded.title, stage=excluded.stage,
+                category=excluded.category, priority=excluded.priority, status=excluded.status,
+                due_date=excluded.due_date, start_by_date=excluded.start_by_date,
+                day_offset=excluded.day_offset, assignee=excluded.assignee,
+                source=excluded.source, notes=excluded.notes, data=excluded.data`)
+    .run(
+      tRow.id, tRow.project_id, tRow.title, tRow.stage, tRow.category, tRow.priority, tRow.status,
+      tRow.due_date, tRow.start_by_date, tRow.day_offset, tRow.assignee, tRow.source, tRow.notes,
+      JSON.stringify(tData)
+    );
+  return tRow.id;
+}
+
+// Whole-project replace: upsert the project row, then delete+reinsert ALL its
+// tasks. Used for project creation and the bulk-change fallback.
+function saveProjectState(project) {
+  const db = getDb();
+  upsertProjectRow(project);
+  db.prepare('DELETE FROM tasks WHERE project_id=?').run(project.id);
+  if (Array.isArray(project.tasks)) {
+    for (const t of project.tasks) upsertTaskRow(project.id, t);
+  }
   // Projects/tasks live in their tables; loadStateBlob() reassembles from
   // there. No kv 'state' mirror update -- mirroring the full projects array
   // into kv on every project save was a multi-MB write per save.
+}
+
+// Project META only -- the non-task fields (name, client, dates, archived,
+// notes, etc.). Leaves the tasks table untouched, so it can't clobber a
+// concurrent per-task edit.
+function saveProjectMeta(project) {
+  upsertProjectRow(project);
+}
+
+// Single task upsert (per-task sync path).
+function saveTaskState(projectId, task) {
+  upsertTaskRow(projectId, task);
+}
+
+// Single task delete (per-task sync path).
+function deleteTaskState(projectId, taskId) {
+  getDb().prepare('DELETE FROM tasks WHERE id=? AND project_id=?').run(taskId, projectId);
 }
 
 function deleteProjectState(projectId) {
@@ -651,4 +719,5 @@ module.exports = {
   getStateVersion, bumpStateVersion, recordStateSnapshot, maybeRecordSnapshot,
   getSubdomainVersions, markSubdomainsWritten, subdomainChangedSince,
   touchState, saveProjectState, deleteProjectState, saveSettingsState,
+  saveProjectMeta, saveTaskState, deleteTaskState,
 };

@@ -248,3 +248,99 @@ test('device-local UI keys are never stored or returned by the server', async ()
   assert.equal(after.body.state.homeView, undefined);
   assert.equal(after.body.state.currentUser, undefined);
 });
+
+test('per-task sync: two tasks in one project edit independently (no cross-task conflict)', async () => {
+  // Seed a project with two tasks via a whole-project PUT.
+  const seed = {
+    projects: [{
+      id: 'tp1', name: 'Task Proj', archived: false,
+      tasks: [
+        { id: 'ta', title: 'Task A', status: 'not-started' },
+        { id: 'tb', title: 'Task B', status: 'not-started' },
+      ],
+    }],
+  };
+  const v0 = (await authed(request(app).get('/api/state'))).body.version;
+  const seeded = await authed(request(app).put('/api/state'))
+    .send({ state: seed, expectedVersion: v0, confirmDestructive: true }).expect(200);
+  const base = seeded.body.version;
+
+  // Edit task A at `base`.
+  const aRes = await authed(request(app).put('/api/state/projects/tp1/tasks/ta'))
+    .send({ task: { id: 'ta', title: 'Task A edited', status: 'in-progress' }, expectedVersion: base });
+  assert.equal(aRes.status, 200);
+  const vA = aRes.body.version;
+  assert.ok(vA > base);
+
+  // Edit task B STILL carrying `base` -- task B hasn't changed, so no conflict
+  // even though the global version moved when A was saved.
+  const bRes = await authed(request(app).put('/api/state/projects/tp1/tasks/tb'))
+    .send({ task: { id: 'tb', title: 'Task B edited', status: 'blocked' }, expectedVersion: base });
+  assert.equal(bRes.status, 200);
+  const vB = bRes.body.version;
+  assert.ok(vB > vA);
+
+  // But a stale re-edit of task A at `base` now conflicts (A changed at vA).
+  const aStale = await authed(request(app).put('/api/state/projects/tp1/tasks/ta'))
+    .send({ task: { id: 'ta', title: 'racey', status: 'done' }, expectedVersion: base });
+  assert.equal(aStale.status, 409);
+  assert.equal(aStale.body.code, 'VERSION_CONFLICT');
+
+  // Both edits landed; sibling tasks intact.
+  const proj = (await authed(request(app).get('/api/state'))).body.state.projects.find(p => p.id === 'tp1');
+  assert.equal(proj.tasks.length, 2);
+  assert.equal(proj.tasks.find(t => t.id === 'ta').title, 'Task A edited');
+  assert.equal(proj.tasks.find(t => t.id === 'tb').title, 'Task B edited');
+});
+
+test('per-task sync: whole-project replace conflicts if a child task changed since', async () => {
+  const seed = {
+    projects: [{ id: 'tp2', name: 'P2', archived: false, tasks: [{ id: 'x1', title: 'X1', status: 'not-started' }] }],
+  };
+  const v0 = (await authed(request(app).get('/api/state'))).body.version;
+  const seeded = await authed(request(app).put('/api/state'))
+    .send({ state: { projects: [...seed.projects, { id: 'keep', name: 'keep', tasks: [] }] }, expectedVersion: v0, confirmDestructive: true })
+    .expect(200);
+  const base = seeded.body.version;
+
+  // Someone edits a task in tp2 -> child key moves.
+  const childRes = await authed(request(app).put('/api/state/projects/tp2/tasks/x1'))
+    .send({ task: { id: 'x1', title: 'X1 edited', status: 'done' }, expectedVersion: base });
+  assert.equal(childRes.status, 200);
+
+  // A whole-project replace of tp2 still carrying `base` must conflict -- it
+  // would otherwise wipe the just-edited task.
+  const wholeRes = await authed(request(app).put('/api/state/projects/tp2'))
+    .send({ project: { id: 'tp2', name: 'P2', tasks: [] }, expectedVersion: base });
+  assert.equal(wholeRes.status, 409);
+  assert.equal(wholeRes.body.code, 'VERSION_CONFLICT');
+});
+
+test('per-task sync: task delete + project-meta update are independent', async () => {
+  const seed = {
+    projects: [{
+      id: 'tp3', name: 'Original Name', archived: false,
+      tasks: [{ id: 'd1', title: 'Doomed', status: 'not-started' }, { id: 'k1', title: 'Keeper', status: 'not-started' }],
+    }],
+  };
+  const v0 = (await authed(request(app).get('/api/state'))).body.version;
+  const seeded = await authed(request(app).put('/api/state'))
+    .send({ state: seed, expectedVersion: v0, confirmDestructive: true }).expect(200);
+  let v = seeded.body.version;
+
+  // Delete one task.
+  const del = await authed(request(app).delete(`/api/state/projects/tp3/tasks/d1?expectedVersion=${v}`));
+  assert.equal(del.status, 200);
+  v = del.body.version;
+
+  // Update project meta (name) -- doesn't touch tasks.
+  const meta = await authed(request(app).put('/api/state/projects/tp3/meta'))
+    .send({ meta: { id: 'tp3', name: 'Renamed', client: 'New Client' }, expectedVersion: v });
+  assert.equal(meta.status, 200);
+
+  const proj = (await authed(request(app).get('/api/state'))).body.state.projects.find(p => p.id === 'tp3');
+  assert.equal(proj.name, 'Renamed');
+  assert.equal(proj.client, 'New Client');
+  assert.equal(proj.tasks.length, 1);
+  assert.equal(proj.tasks[0].id, 'k1');
+});
