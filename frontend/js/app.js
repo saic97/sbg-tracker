@@ -27020,11 +27020,12 @@ if (typeof syncStateFromServer === 'function') {
       state.sidebarCollapsed = true;
       if (typeof renderCompanyLogo === 'function') renderCompanyLogo();
       if (typeof render === 'function') render();
-      // Re-apply the URL route now that server data is in (a deep-linked
-      // project may not have been in the local cache on first paint). Falls
-      // back to Today when there's no deep link, matching the old behavior.
-      if (window.router && typeof window.router.reapply === 'function') window.router.reapply();
-      else if (typeof openHomeView === 'function') openHomeView();
+    }
+    // Resolve any pending deep-linked project route now that server data is in
+    // (a shared link to a project that wasn't in the local cache resolves here).
+    // Runs regardless of `updated` so a not-found link still gets handled.
+    if (window.router && typeof window.router.afterStateLoad === 'function') {
+      window.router.afterStateLoad();
     }
   });
 }

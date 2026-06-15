@@ -31,6 +31,10 @@
   // True while we're applying a route, so the wrapped navigation functions
   // don't write the hash back (which would fight the URL we're reacting to).
   let _applying = false;
+  // A project route we couldn't satisfy from cache yet (deep link to a project
+  // the local workspace hasn't loaded). Resolved once server state arrives.
+  let _pendingRoute = null;
+  let _bootSyncDone = false;
 
   function norm(h) {
     return String(h || '').replace(/^#/, '').replace(/\/+$/, '') || '/';
@@ -82,14 +86,24 @@
     _applying = true;
     try {
       if (r.view === 'snapshot' && typeof window.openStatusSnapshot === 'function') {
-        window.openStatusSnapshot();
+        window.openStatusSnapshot(); clearPending();
       } else if (r.view === 'workload' && typeof window.openTeamWorkloadView === 'function') {
-        window.openTeamWorkloadView();
-      } else if (r.view === 'project' && r.projectId && projectExists(r.projectId)) {
-        window.selectProject(r.projectId);
-        if (r.mode && typeof window.setViewMode === 'function') window.setViewMode(r.mode);
+        window.openTeamWorkloadView(); clearPending();
+      } else if (r.view === 'project' && r.projectId) {
+        if (projectExists(r.projectId)) {
+          window.selectProject(r.projectId);
+          if (r.mode && typeof window.setViewMode === 'function') window.setViewMode(r.mode);
+          clearPending();
+        } else {
+          // The project isn't in the local cache yet -- e.g. a link shared with
+          // someone who hasn't loaded that project. Show a loader and resolve
+          // once the workspace finishes loading, instead of flashing Today.
+          _pendingRoute = r;
+          showRouteLoading();
+          ensureStateLoad();
+        }
       } else if (typeof window.openHomeView === 'function') {
-        window.openHomeView();
+        window.openHomeView(); clearPending();
       }
     } finally {
       _applying = false;
@@ -112,7 +126,10 @@
     if (typeof orig !== 'function') return;
     window[name] = function () {
       const out = orig.apply(this, arguments);
-      if (!_applying) syncHashFromState();
+      if (!_applying) {
+        clearPending();   // a real user navigation supersedes a pending deep-link load
+        syncHashFromState();
+      }
       return out;
     };
   }
@@ -133,14 +150,122 @@
     else syncHashFromState();
   }
 
-  // Re-apply the current URL (used by app.js after the async server load, when
-  // a deep-linked project may not have been in the local cache on first paint).
-  function reapply() {
-    if (isOwnHash(location.hash)) applyRoute(location.hash);
-    else if (typeof window.openHomeView === 'function') window.openHomeView();
+  // --- pending deep-link resolution -----------------------------------------
+
+  function clearPending() {
+    _pendingRoute = null;
+    hideRouteLoading();
   }
 
-  window.router = { boot, reapply, applyRoute, syncHashFromState, parseHash, hashFromState, isDeepLink: function () {
+  // Make sure the workspace gets loaded so a pending project can resolve. At
+  // boot, app.js already kicks a sync and will call afterStateLoad() for us, so
+  // we only trigger our own fetch for a hashchange that happens AFTER boot.
+  function ensureStateLoad() {
+    if (!_pendingRoute) return;
+    if (!_bootSyncDone) return;   // boot sync in flight -> afterStateLoad resolves us
+    if (typeof window.syncStateFromServer === 'function') {
+      window.syncStateFromServer().then(resolvePending).catch(resolvePending);
+    } else {
+      resolvePending();
+    }
+  }
+
+  // Called once the workspace finishes loading. Definitive: navigates to the
+  // pending project if it now exists, otherwise reports it missing -- never
+  // re-pends, so there's no loop if the project truly isn't there.
+  function resolvePending() {
+    if (!_pendingRoute) return;
+    const want = _pendingRoute;
+    // If the user navigated elsewhere while we were loading, abandon quietly.
+    const cur = parseHash(location.hash);
+    if (!cur || cur.view !== 'project' || cur.projectId !== want.projectId) {
+      clearPending();
+      return;
+    }
+    if (projectExists(want.projectId)) {
+      _pendingRoute = null;
+      hideRouteLoading();
+      _applying = true;
+      try {
+        window.selectProject(want.projectId);
+        if (want.mode && typeof window.setViewMode === 'function') window.setViewMode(want.mode);
+      } finally {
+        _applying = false;
+      }
+    } else {
+      clearPending();
+      routeNotFound();
+    }
+  }
+
+  // app.js calls this after its boot-time server sync (regardless of whether
+  // state changed), so a deep-linked project that wasn't cached on first paint
+  // resolves as soon as data lands.
+  function afterStateLoad() {
+    _bootSyncDone = true;
+    resolvePending();
+  }
+
+  function routeNotFound() {
+    _applying = true;
+    try { if (typeof window.openHomeView === 'function') window.openHomeView(); }
+    finally { _applying = false; }
+    if (norm(location.hash) !== norm('#/today')) location.hash = '#/today';
+    showRouteToast('That project link could not be opened — it may have been removed or you may not have access.');
+  }
+
+  // --- tiny loader + toast UI (self-contained) ------------------------------
+
+  function injectRouteStyles() {
+    if (document.getElementById('sbg-route-style')) return;
+    const s = document.createElement('style');
+    s.id = 'sbg-route-style';
+    s.textContent = [
+      '#route-loading{position:fixed;inset:0;z-index:99998;display:none;align-items:center;',
+      'justify-content:center;background:rgba(255,255,255,0.92);font-family:\'Inter\',system-ui,sans-serif;}',
+      '#route-loading .rl-card{text-align:center;color:#0a2540;}',
+      '#route-loading .rl-spinner{width:38px;height:38px;margin:0 auto 14px;border:3px solid #dbe2ea;',
+      'border-top-color:#c8322b;border-radius:50%;animation:rl-spin .8s linear infinite;}',
+      '@keyframes rl-spin{to{transform:rotate(360deg);}}',
+      '#route-loading .rl-text{font-size:14px;font-weight:600;letter-spacing:.02em;}',
+      '#route-toast{position:fixed;bottom:24px;left:50%;transform:translateX(-50%) translateY(8px);',
+      'z-index:99999;background:#0a2540;color:#fff;padding:11px 16px;border-radius:6px;',
+      'font-family:\'Inter\',system-ui,sans-serif;font-size:13px;max-width:360px;line-height:1.35;',
+      'box-shadow:0 6px 20px rgba(0,0,0,.25);opacity:0;pointer-events:none;transition:opacity .2s,transform .2s;}',
+      '#route-toast.show{opacity:1;transform:translateX(-50%) translateY(0);}'
+    ].join('');
+    document.head.appendChild(s);
+  }
+
+  function showRouteLoading() {
+    injectRouteStyles();
+    let el = document.getElementById('route-loading');
+    if (!el) {
+      el = document.createElement('div');
+      el.id = 'route-loading';
+      el.innerHTML = '<div class="rl-card"><div class="rl-spinner"></div><div class="rl-text">Loading project…</div></div>';
+      document.body.appendChild(el);
+    }
+    el.style.display = 'flex';
+  }
+
+  function hideRouteLoading() {
+    const el = document.getElementById('route-loading');
+    if (el) el.style.display = 'none';
+  }
+
+  let _toastTimer = null;
+  function showRouteToast(msg) {
+    injectRouteStyles();
+    let t = document.getElementById('route-toast');
+    if (!t) { t = document.createElement('div'); t.id = 'route-toast'; document.body.appendChild(t); }
+    t.textContent = msg;
+    t.classList.add('show');
+    if (_toastTimer) clearTimeout(_toastTimer);
+    _toastTimer = setTimeout(function () { t.classList.remove('show'); }, 4000);
+  }
+
+  window.router = { boot, afterStateLoad, applyRoute, syncHashFromState, parseHash, hashFromState, isDeepLink: function () {
     const r = parseHash(location.hash);
     return !!r && r.view !== 'today';
   } };
