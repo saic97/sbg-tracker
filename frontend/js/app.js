@@ -1,3 +1,4 @@
+
 // =============================================================
 // BID STAGES
 // =============================================================
@@ -35,7 +36,7 @@ function avatarColor(name) {
 // STATE
 // =============================================================
 const STORAGE_KEY = 'sbg_precon_tracker_v3';
-let state = {
+var state = {
   projects: [],
   templates: [],                   // saved project templates
   teamMembers: [],                 // master team roster
@@ -110,7 +111,7 @@ let state = {
   schedHideDone: false,             // hide completed tasks on the schedule
   bulkSelectionMode: false,         // when true, checkboxes appear on cards and rows for bulk operations
   bulkSelectedTaskIds: [],          // array of task IDs currently selected for bulk operations
-  laWindow: 7,                      // Look Ahead time window in days: 1, 2, 7, or 14
+  laWindow: 7,                      // Look Ahead time window: 1, 2, 7, 14, 30, 45, or 'project' (v74)
   laProjectScope: 'active',         // 'active' = current project only, 'all' = all active projects
   laAssignee: 'all',                // 'all' or specific assignee name
   laIncludeOverdue: true,           // include tasks already past due
@@ -189,13 +190,47 @@ function loadState() {
     }
     // Workload page view-state. Persisted so the user's filter/sort returns next visit.
     if (typeof state.teamWorkloadView !== 'boolean') state.teamWorkloadView = false;
-    if (!['this-week','next-week','two-week','all-open'].includes(state.workloadDateScope)) {
+    if (!['this-week','next-week','two-week','four-week','this-month','next-month','all-open'].includes(state.workloadDateScope)) {
       state.workloadDateScope = 'two-week';
     }
     if (typeof state.workloadShowInactive !== 'boolean') state.workloadShowInactive = false;
     if (!['load-desc','name','capacity-pct','overdue'].includes(state.workloadSort)) {
       state.workloadSort = 'load-desc';
     }
+    // v78: workload chart grain — 'day' or 'week'. Controls how the per-card
+    // strip and the team-wide chart bucket hours.
+    if (!['day','week'].includes(state.workloadGrain)) {
+      state.workloadGrain = 'day';
+    }
+    // v80: Open Slots feature state — finds days where team members are
+    // under-loaded (<= threshold% of capacity). Threshold configurable.
+    if (typeof state.openSlotsView !== 'boolean') state.openSlotsView = false;
+    if (![10, 25, 50, 75].includes(state.openSlotsThreshold)) {
+      state.openSlotsThreshold = 25;
+    }
+    if (!['all-projects', 'active-project'].includes(state.openSlotsScope)) {
+      state.openSlotsScope = 'all-projects';
+    }
+    if (!['this-week', 'next-week', 'two-week', 'four-week'].includes(state.openSlotsWindow)) {
+      state.openSlotsWindow = 'two-week';
+    }
+    // v82: Team Performance Insights — task hygiene metrics view.
+    // tiView: boolean for view active state.
+    // tiWindow: '30d' / '90d' / 'quarter' / 'all' — time scope for metrics.
+    // tiScope: 'all-projects' / 'active-project'.
+    if (typeof state.tiView !== 'boolean') state.tiView = false;
+    if (!['30d', '90d', 'quarter', 'all'].includes(state.tiWindow)) {
+      state.tiWindow = '90d';
+    }
+    if (!['all-projects', 'active-project'].includes(state.tiScope)) {
+      state.tiScope = 'all-projects';
+    }
+    // v75: Project Timeline view state — persists across sessions
+    if (typeof state.projectTimelineView !== 'boolean') state.projectTimelineView = false;
+    if (typeof state.ptvProjectId !== 'string') state.ptvProjectId = '';   // empty = use activeProjectId
+    if (typeof state.ptvStageFilter !== 'string') state.ptvStageFilter = 'all';
+    if (typeof state.ptvAssigneeFilter !== 'string') state.ptvAssigneeFilter = 'all';
+    if (typeof state.ptvHideEmpty !== 'boolean') state.ptvHideEmpty = true;
     // Holiday calendar — array of YYYY-MM-DD strings, applies to whole team
     if (!Array.isArray(state.teamHolidays)) state.teamHolidays = [];
     if (!Array.isArray(state.milestoneTypes)) state.milestoneTypes = [];
@@ -223,6 +258,16 @@ function loadState() {
     state.bulkSelectionMode = false;
     state.bulkSelectedTaskIds = [];
     if (typeof state.laWindow === 'undefined') state.laWindow = 7;
+    // v74: validate laWindow — accept integers 1, 2, 7, 14, 30, 45 OR string 'project'.
+    // Anything else (null, NaN, old string values like '7') gets coerced to 7.
+    if (state.laWindow !== 'project') {
+      const asInt = parseInt(state.laWindow, 10);
+      if (isNaN(asInt) || ![1, 2, 7, 14, 30, 45].includes(asInt)) {
+        state.laWindow = 7;
+      } else {
+        state.laWindow = asInt;
+      }
+    }
     if (typeof state.laProjectScope === 'undefined') state.laProjectScope = 'active';
     if (typeof state.laAssignee === 'undefined') state.laAssignee = 'all';
     if (typeof state.laIncludeOverdue === 'undefined') state.laIncludeOverdue = true;
@@ -329,11 +374,11 @@ function loadState() {
           if (typeof t.requiresSenior !== 'boolean') t.requiresSenior = false;
           if (typeof t.requiresLead1  !== 'boolean') t.requiresLead1  = false;
           if (typeof t.requiresLead2  !== 'boolean') t.requiresLead2  = false;
-          // ===== DATE ANCHOR (v63) — template task =====
-          // Same as project task: per-task choice of anchor. Default to
-          // bid-start so existing templates load identically. New template
-          // tasks default to bid-start (user clicks the B toggle to switch).
-          if (t.dateAnchor !== 'bid-day' && t.dateAnchor !== 'bid-start') {
+          // ===== DATE ANCHOR (v63, extended v82+) — template task =====
+          // Same as project task: per-task choice of anchor. Four valid values:
+          // 'bid-start', 'bid-day', 'pre-bid', 'rfi-due'. Default to bid-start
+          // so existing templates load identically.
+          if (!['bid-start','bid-day','pre-bid','rfi-due'].includes(t.dateAnchor)) {
             t.dateAnchor = 'bid-start';
           }
           // ===== v61 RESET MIGRATION =====
@@ -656,19 +701,28 @@ function loadState() {
       if (typeof p.archived === 'undefined') p.archived = false;
       if (typeof p.archivedAt === 'undefined') p.archivedAt = null;
       if (typeof p.archivedBy === 'undefined') p.archivedBy = '';
+      // v81: per-project Project Health Score gauge visibility. Defaults to true.
+      if (typeof p.healthScoreVisible === 'undefined') p.healthScoreVisible = true;
+      // v82+: additional project-level anchor dates for task scheduling.
+      // prebidDate = Mandatory Pre-Bid Walk date (often the trigger for many
+      // walk-related tasks). rfiDueDate = RFI cutoff for questions to the
+      // design team. Both optional; empty string when not set.
+      if (typeof p.prebidDate === 'undefined') p.prebidDate = '';
+      if (typeof p.rfiDueDate === 'undefined') p.rfiDueDate = '';
 
       p.tasks.forEach(t => {
         if (!t.stage) t.stage = 'project-setup';
         if (typeof t.dayOffset === 'undefined') t.dayOffset = null;
         if (typeof t.source === 'undefined') t.source = '';
         if (typeof t.support === 'undefined') t.support = '';
-        // ===== DATE ANCHOR (v63) =====
-        // Each task's dayOffset can be relative to either Bid Start (the
-        // project kickoff date) or Bid Day (the submission deadline).
-        // Backward-compat: missing field defaults to 'bid-start' so all
-        // existing tasks keep current behavior. New tasks default the same.
-        // Values: 'bid-start' or 'bid-day'.
-        if (t.dateAnchor !== 'bid-day' && t.dateAnchor !== 'bid-start') {
+        // ===== DATE ANCHOR (v63, extended v82+) =====
+        // Each task's dayOffset can be relative to one of four anchors:
+        //   bid-start  — Bid Start / kickoff (default for legacy tasks)
+        //   bid-day    — Bid Due / submission deadline
+        //   pre-bid    — Mandatory Pre-Bid Walk date (v82+)
+        //   rfi-due    — RFI cutoff to design team (v82+)
+        // Backward-compat: missing field defaults to 'bid-start'.
+        if (!['bid-start','bid-day','pre-bid','rfi-due'].includes(t.dateAnchor)) {
           t.dateAnchor = 'bid-start';
         }
         // Multi-support migration: ensure every task has a supportMembers array.
@@ -752,132 +806,198 @@ function loadState() {
       });
     });
   } catch(e) { console.error(e); }
-  window.lastSyncedState = JSON.parse(JSON.stringify(state));
 }
-function saveState() {
-  try { localStorage.setItem(STORAGE_KEY, JSON.stringify(state)); } catch(e){}
-  scheduleApiSync();
-}
-// ---- Backend sync (local-first, debounced) ----
-// 150ms strikes a balance: long enough to coalesce a burst of keystrokes /
-// drags into a single PUT, short enough that other users see the change in
-// well under a second. (Pre-2026-05 this was 500ms, which by itself accounted
-// for half a second of perceived cross-user latency.)
-let _apiSyncTimer = null;
-function scheduleApiSync() {
-  if (!window.api || !window.api.enabled) return;
-  if (_apiSyncTimer) clearTimeout(_apiSyncTimer);
-  _apiSyncTimer = setTimeout(() => {
-    _apiSyncTimer = null;
-    performIncrementalSync();
-  }, 150);
-}
-async function syncStateFromServer() {
-  if (!window.api || !window.api.enabled) return false;
+function saveState() { try { localStorage.setItem(STORAGE_KEY, JSON.stringify(state)); } catch(e){} }
+
+// =============================================================
+// EXPORT / IMPORT — full state portability (v79)
+// Why: localStorage is keyed to file-path-as-origin, so users can lose data
+// when they move files, save-as, or switch machines. Export packs every
+// piece of state into a downloadable JSON file. Import loads it back.
+// This is also the prerequisite for any future backend migration
+// (Firebase, etc) — that migration would read this exact JSON format.
+// =============================================================
+
+function exportTrackerStateToJson() {
   try {
-    const res = await window.api.getState();
-    if (res && res.state && Object.keys(res.state).length > 0) {
-      const local = { ...state };
-      state = { ...local, ...res.state };
-      state.bulkSelectionMode = false;
-      state.bulkSelectedTaskIds = [];
-      window.lastSyncedState = JSON.parse(JSON.stringify(state));
-      return true;
-    }
-  } catch (err) {
-    console.warn('Could not load state from backend (using local cache):', err.message);
+    // Build payload with metadata + the live state.
+    // The full state object IS the export — nothing gets stripped. If a
+    // future version adds new fields, they automatically round-trip.
+    const payload = {
+      _schema: 'sbg_precon_tracker_export',
+      _schemaVersion: 1,
+      _exportedAt: new Date().toISOString(),
+      _exportedFrom: navigator.userAgent || 'unknown',
+      _storageKey: STORAGE_KEY,
+      _projectCount: Array.isArray(state.projects) ? state.projects.length : 0,
+      _templateCount: Array.isArray(state.masterTaskTemplates) ? state.masterTaskTemplates.length : 0,
+      _teamMemberCount: Array.isArray(state.teamMembers) ? state.teamMembers.length : 0,
+      state: state
+    };
+    const json = JSON.stringify(payload, null, 2);
+    const blob = new Blob([json], { type: 'application/json' });
+    const url = URL.createObjectURL(blob);
+    // File name: includes today's date for backup discipline
+    const dateStr = new Date().toISOString().slice(0, 10);
+    const filename = `SBG_Tracker_Backup_${dateStr}.json`;
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = filename;
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    URL.revokeObjectURL(url);
+    // Light confirmation — no modal, just a toast-style alert
+    alert(`Exported successfully!\n\nFile: ${filename}\nProjects: ${payload._projectCount}\nTemplates: ${payload._templateCount}\nTeam members: ${payload._teamMemberCount}\n\nSave this file somewhere safe (OneDrive recommended).`);
+  } catch (e) {
+    console.error('Export failed:', e);
+    alert('Export failed: ' + e.message + '\n\nIf this persists, copy your data manually via DevTools (F12 → Console → copy(localStorage.getItem(\'' + STORAGE_KEY + '\'))).');
   }
-  return false;
 }
 
-async function performIncrementalSync() {
-  if (!window.api || !window.api.enabled) return;
-  if (!window.lastSyncedState) {
-    window.lastSyncedState = JSON.parse(JSON.stringify(state));
+function openImportTrackerDialog() {
+  // Create the file input on the fly so it doesn't hang around in the DOM
+  const input = document.createElement('input');
+  input.type = 'file';
+  input.accept = 'application/json,.json';
+  input.style.display = 'none';
+  input.onchange = (e) => {
+    const file = e.target.files && e.target.files[0];
+    if (!file) return;
+    const reader = new FileReader();
+    reader.onload = function(ev) {
+      try {
+        const parsed = JSON.parse(ev.target.result);
+        // Validate the payload shape
+        if (!parsed || typeof parsed !== 'object') throw new Error('File is not valid JSON');
+        // Two shapes accepted: our wrapped {_schema, state} format OR a raw state object
+        let importedState;
+        let metadata = '';
+        if (parsed._schema === 'sbg_precon_tracker_export' && parsed.state) {
+          importedState = parsed.state;
+          metadata = `Exported: ${parsed._exportedAt || 'unknown date'}\nProjects: ${parsed._projectCount || '?'}\nTemplates: ${parsed._templateCount || '?'}`;
+        } else if (parsed.projects && Array.isArray(parsed.projects)) {
+          // Raw state object (e.g., manually exported via DevTools)
+          importedState = parsed;
+          metadata = `Direct state object\nProjects: ${parsed.projects.length}`;
+        } else {
+          throw new Error('Unrecognized file format — does this look like an SBG tracker backup?');
+        }
+        // Confirm with the user before destroying their current data
+        _confirmAndApplyImport(importedState, metadata, file.name);
+      } catch (err) {
+        console.error('Import parse failed:', err);
+        alert('Could not read the file:\n\n' + err.message);
+      }
+    };
+    reader.onerror = function() {
+      alert('Failed to read the file. Try again or use a different export.');
+    };
+    reader.readAsText(file);
+  };
+  document.body.appendChild(input);
+  input.click();
+  // Clean up after a short delay
+  setTimeout(() => { try { document.body.removeChild(input); } catch(e){} }, 60000);
+}
+
+function _confirmAndApplyImport(importedState, metadata, filename) {
+  // Modal-style confirmation with merge/replace choice
+  const currentProjects = Array.isArray(state.projects) ? state.projects.length : 0;
+  const importedProjects = Array.isArray(importedState.projects) ? importedState.projects.length : 0;
+  const modalId = 'importConfirmModal';
+  const existing = document.getElementById(modalId);
+  if (existing) existing.remove();
+  const html = `
+    <div class="modal-backdrop active" id="${modalId}">
+      <div class="modal" style="max-width:600px;" onclick="event.stopPropagation()">
+        <h3>📂 Import Backup</h3>
+        <div style="background:var(--surface-2);padding:12px;border-radius:6px;margin:12px 0;font-family:'JetBrains Mono', monospace;font-size:12px;white-space:pre-wrap;color:var(--text-2);">${escapeHtml(metadata)}\nFile: ${escapeHtml(filename)}</div>
+        <p style="color:var(--text);margin:12px 0;">
+          <strong>Current data:</strong> ${currentProjects} project${currentProjects === 1 ? '' : 's'}<br>
+          <strong>Backup contains:</strong> ${importedProjects} project${importedProjects === 1 ? '' : 's'}
+        </p>
+        <p style="color:var(--text-dim);font-size:13px;margin:14px 0;">
+          Choose how to load the backup. <strong>REPLACE</strong> wipes your current data and uses the backup. <strong>MERGE</strong> keeps your current data and adds anything from the backup that doesn't already exist (matched by project/task ID).
+        </p>
+        <div style="display:flex;gap:10px;justify-content:flex-end;flex-wrap:wrap;margin-top:18px;">
+          <button class="btn btn-sm" onclick="closeImportConfirm()">Cancel</button>
+          <button class="btn btn-sm" onclick="applyImport('merge')" title="Add backup data on top of current data; current data wins on ID conflicts">🔀 Merge (additive)</button>
+          <button class="btn btn-sm btn-danger" onclick="applyImport('replace')" title="WIPE current data and use backup. Cannot be undone.">⚠ Replace All</button>
+        </div>
+      </div>
+    </div>
+  `;
+  document.body.insertAdjacentHTML('beforeend', html);
+  // Stash the imported state on window so applyImport can find it
+  window._pendingImportState = importedState;
+}
+
+function closeImportConfirm() {
+  const m = document.getElementById('importConfirmModal');
+  if (m) m.remove();
+  window._pendingImportState = null;
+}
+
+function applyImport(mode) {
+  const imported = window._pendingImportState;
+  if (!imported) {
+    alert('No import data available. Try again.');
+    closeImportConfirm();
     return;
   }
-  
-  const currentProjects = state.projects || [];
-  const syncedProjects = window.lastSyncedState.projects || [];
-  
-  const currentProjMap = new Map(currentProjects.map(p => [p.id, p]));
-  const syncedProjMap = new Map(syncedProjects.map(p => [p.id, p]));
-  
-  // Projects to delete
-  for (const sp of syncedProjects) {
-    if (!currentProjMap.has(sp.id)) {
-      try {
-        await window.api.deleteProjectState(sp.id);
-      } catch (err) {
-        handleSyncError(err);
+  // Final confirmation if Replace
+  if (mode === 'replace') {
+    const confirmed = confirm('This will REPLACE all your current data with the backup. Your existing projects, tasks, templates, and settings will be lost. Are you sure?\n\nClick OK to proceed, Cancel to abort.');
+    if (!confirmed) return;
+  }
+  try {
+    if (mode === 'replace') {
+      // Wholesale replace — copy every top-level field from imported into state
+      Object.keys(state).forEach(k => { delete state[k]; });
+      Object.keys(imported).forEach(k => { state[k] = imported[k]; });
+    } else {
+      // Merge mode — add projects/templates/teamMembers that don't exist by ID
+      _mergeImportedArrays(state, imported, 'projects', 'id');
+      _mergeImportedArrays(state, imported, 'masterTaskTemplates', 'id');
+      _mergeImportedArrays(state, imported, 'teamMembers', 'name'); // teamMembers keyed by name
+      // Merge holidays (string array, dedupe)
+      if (Array.isArray(imported.teamHolidays)) {
+        const existing = new Set(state.teamHolidays || []);
+        imported.teamHolidays.forEach(h => existing.add(h));
+        state.teamHolidays = Array.from(existing);
+      }
+      // Settings: take imported only if current is empty/default
+      // (don't clobber user's current settings unless they're missing)
+      if (typeof imported.hoursStageDefaults === 'object' && Object.keys(state.hoursStageDefaults || {}).length === 0) {
+        state.hoursStageDefaults = imported.hoursStageDefaults;
       }
     }
+    saveState();
+    closeImportConfirm();
+    alert(`Import complete (${mode}).\n\nYour data has been ${mode === 'replace' ? 'replaced' : 'merged'} with the backup. The page will refresh.`);
+    // Force a fresh render
+    if (typeof render === 'function') render();
+    // Reload the page to ensure all UI state is rebuilt
+    setTimeout(() => { window.location.reload(); }, 250);
+  } catch (e) {
+    console.error('Import apply failed:', e);
+    alert('Import failed to apply: ' + e.message + '\n\nYour data has NOT been changed.');
+    closeImportConfirm();
   }
-  
-  // Projects to add / update
-  for (const cp of currentProjects) {
-    const sp = syncedProjMap.get(cp.id);
-    if (!sp || JSON.stringify(cp) !== JSON.stringify(sp)) {
-      try {
-        await window.api.putProjectState(cp);
-      } catch (err) {
-        handleSyncError(err);
-      }
-    }
-  }
-  
-  // Team members diff
-  if (JSON.stringify(state.teamMembers) !== JSON.stringify(window.lastSyncedState.teamMembers)) {
-    try {
-      await window.api.putTeamMembersState(state.teamMembers);
-    } catch (err) {
-      handleSyncError(err);
-    }
-  }
-  
-  // Templates diff
-  if (JSON.stringify(state.taskTemplates) !== JSON.stringify(window.lastSyncedState.taskTemplates)) {
-    try {
-      await window.api.putTemplatesState(state.taskTemplates);
-    } catch (err) {
-      handleSyncError(err);
-    }
-  }
-  
-  // Settings diff
-  const settingsKeys = [
-    'stages', 'holidays', 'ballInCourtOptions', 'csiDivisions', 'sourceOptions',
-    'milestoneTypes', 'companyLogo', 'skipWeekends', 'skipHolidays', 'currentUser',
-    'sidebarCollapsed', 'homeView'
-  ];
-  
-  let settingsChanged = false;
-  const settingsPayload = {};
-  for (const key of settingsKeys) {
-    settingsPayload[key] = state[key];
-    if (JSON.stringify(state[key]) !== JSON.stringify(window.lastSyncedState[key])) {
-      settingsChanged = true;
-    }
-  }
-  
-  if (settingsChanged) {
-    try {
-      await window.api.putSettingsState(settingsPayload);
-    } catch (err) {
-      handleSyncError(err);
-    }
-  }
-  
-  window.lastSyncedState = JSON.parse(JSON.stringify(state));
-  try { localStorage.setItem(STORAGE_KEY, JSON.stringify(state)); } catch(e){}
 }
 
-function handleSyncError(err) {
-  if (err.status === 409 || err.status === 400) {
-    console.warn('Sync conflict detected, server state applied:', err.message);
-  } else {
-    console.warn('Sync failed:', err.message);
-  }
+// Helper: merge an array from imported into state, deduping by a key field.
+// Existing items (matched by keyField) are NOT overwritten — current state wins.
+function _mergeImportedArrays(target, source, arrName, keyField) {
+  if (!Array.isArray(source[arrName])) return;
+  if (!Array.isArray(target[arrName])) target[arrName] = [];
+  const existingKeys = new Set(target[arrName].map(item => item && item[keyField]).filter(Boolean));
+  source[arrName].forEach(item => {
+    if (item && item[keyField] && !existingKeys.has(item[keyField])) {
+      target[arrName].push(item);
+    }
+  });
 }
 function uid() { return Date.now().toString(36) + Math.random().toString(36).slice(2,8); }
 
@@ -1197,11 +1317,18 @@ function addBusinessDays(dateStr, days) {
 // =============================================================
 function resolveTaskAnchorDate(project, task) {
   if (!project || !task) return null;
-  const anchor = (task.dateAnchor === 'bid-day') ? 'bid-day' : 'bid-start';
+  // v82+: four anchor types — bid-start (default), bid-day, pre-bid, rfi-due
+  const anchor = task.dateAnchor;
   if (anchor === 'bid-day') {
     return (project.dueDate || '').trim() || null;
   }
-  // 'bid-start' uses effective bid start (revised-aware)
+  if (anchor === 'pre-bid') {
+    return (project.prebidDate || '').trim() || null;
+  }
+  if (anchor === 'rfi-due') {
+    return (project.rfiDueDate || '').trim() || null;
+  }
+  // 'bid-start' (or anything unrecognized) uses effective bid start (revised-aware)
   if (typeof getEffectiveBidStart === 'function') {
     return getEffectiveBidStart(project) || null;
   }
@@ -2320,6 +2447,9 @@ function openProjectModal(id=null) {
     document.getElementById('projLeadAssignee2').value = p.leadAssignee2 || '';
     document.getElementById('projStartDate').value = p.startDate||'';
     document.getElementById('projDueDate').value = p.dueDate||'';
+    // v82+: load additional anchor dates
+    document.getElementById('projPrebidDate').value = p.prebidDate || '';
+    document.getElementById('projRfiDueDate').value = p.rfiDueDate || '';
     document.getElementById('projValue').value = p.value||'';
     document.getElementById('projLocation').value = p.location||'';
     document.getElementById('projSqft').value = p.sqft||'';
@@ -2328,6 +2458,8 @@ function openProjectModal(id=null) {
     document.getElementById('projDueTime').value = p.dueTime || '';
     document.getElementById('projDueTimezone').value = p.dueTimezone || '';
     document.getElementById('projSubmissionFormat').value = p.submissionFormat || '';
+    // v81: load health score visibility (default true)
+    document.getElementById('projHealthScoreVisible').checked = p.healthScoreVisible !== false;
     // Bid extension fields
     document.getElementById('projOriginalStartDate').value = p.originalStartDate || p.startDate || '';
     document.getElementById('projOriginalDueDate').value = p.originalDueDate || p.dueDate || '';
@@ -2341,7 +2473,7 @@ function openProjectModal(id=null) {
     deleteBtn.style.display = 'none';
     if (archiveBtn) archiveBtn.style.display = 'none';
     if (restoreBtn) restoreBtn.style.display = 'none';
-    ['projName','projClient','projArchitect','projLeadEstimator','projLeadAssignee1','projLeadAssignee2','projStartDate','projDueDate','projValue','projLocation','projSqft','projOneDriveUrl','projNotes','projOriginalStartDate','projOriginalDueDate','projRevisedStartDate','projDueTime'].forEach(f => {
+    ['projName','projClient','projArchitect','projLeadEstimator','projLeadAssignee1','projLeadAssignee2','projStartDate','projDueDate','projPrebidDate','projRfiDueDate','projValue','projLocation','projSqft','projOneDriveUrl','projNotes','projOriginalStartDate','projOriginalDueDate','projRevisedStartDate','projDueTime'].forEach(f => {
       const el = document.getElementById(f); if (el) el.value = '';
     });
     document.getElementById('projDueTimezone').value = '';
@@ -2352,6 +2484,8 @@ function openProjectModal(id=null) {
     updateBexModeLabels();
     document.getElementById('bexShiftDisplay').textContent = '—';
     renderImagePreview(null);
+    // v81: default health score visible for new projects
+    document.getElementById('projHealthScoreVisible').checked = true;
   }
   // Wire up dynamic toggle label update
   const toggle = document.getElementById('projUseRevisedDates');
@@ -2430,6 +2564,9 @@ function saveProject() {
   const newOriginalDue = document.getElementById('projOriginalDueDate').value;
   const newRevisedStart = document.getElementById('projRevisedStartDate').value;
   const newUseRevised = document.getElementById('projUseRevisedDates').checked;
+  // v82+: read additional anchor dates
+  const newPrebidDate = document.getElementById('projPrebidDate').value;
+  const newRfiDueDate = document.getElementById('projRfiDueDate').value;
 
   const data = {
     name,
@@ -2445,6 +2582,9 @@ function saveProject() {
     leadAssignee2: document.getElementById('projLeadAssignee2').value.trim(),
     startDate: newStart,
     dueDate: newDue,
+    // v82+: additional anchor dates
+    prebidDate: newPrebidDate,
+    rfiDueDate: newRfiDueDate,
     originalStartDate: newOriginalStart || newStart,
     originalDueDate: newOriginalDue || newDue,
     revisedStartDate: newRevisedStart,
@@ -2456,7 +2596,9 @@ function saveProject() {
     notes: document.getElementById('projNotes').value.trim(),
     dueTime: document.getElementById('projDueTime').value,
     dueTimezone: document.getElementById('projDueTimezone').value,
-    submissionFormat: document.getElementById('projSubmissionFormat').value
+    submissionFormat: document.getElementById('projSubmissionFormat').value,
+    // v81: per-project Project Health Score gauge visibility
+    healthScoreVisible: document.getElementById('projHealthScoreVisible').checked
   };
 
   if (editingProjectId) {
@@ -2482,6 +2624,9 @@ function saveProject() {
     const oldUseRevised = !!p.useRevisedDates;
     const oldRevisedStart = p.revisedStartDate || '';
     const oldDue = p.dueDate || '';
+    // v82+: snapshot old pre-bid and RFI cutoff so we can detect changes
+    const oldPrebidDate = p.prebidDate || '';
+    const oldRfiDueDate = p.rfiDueDate || '';
     Object.assign(p, data);
     // v60: detect role changes and prompt to propagate to existing tasks.
     // Walks each of the 3 roles; if old !== new and the old person has tasks
@@ -2501,6 +2646,9 @@ function saveProject() {
     const modeChanged = oldUseRevised !== newUseRevised;
     const revisedChanged = oldRevisedStart !== newRevisedStart && newUseRevised;
     const dueChanged = oldDue !== newDue;
+    // v82+: detect Pre-Bid and RFI Due changes
+    const prebidChanged = oldPrebidDate !== newPrebidDate;
+    const rfiDueChanged = oldRfiDueDate !== newRfiDueDate;
 
     // If due date changed and no revised start has been set yet, offer to compute one
     if (dueChanged && !p.revisedStartDate && p.originalDueDate && newDue !== p.originalDueDate) {
@@ -2514,14 +2662,34 @@ function saveProject() {
       }
     }
 
-    // Reanchor tasks whenever the active anchor changes
-    if (startChanged || modeChanged || revisedChanged) {
+    // Reanchor tasks whenever the active anchor changes.
+    // v82-fix: dueChanged was previously excluded from this trigger.
+    // v82+: prebidChanged and rfiDueChanged also trigger reanchor.
+    // Uses reanchorProjectTaskDates() which honors each task's individual
+    // dateAnchor (Bid Start / Bid Day / Pre-Bid / RFI Due).
+    if (startChanged || modeChanged || revisedChanged || dueChanged || prebidChanged || rfiDueChanged) {
       const tasksWithOffset = p.tasks.filter(t => typeof t.dayOffset === 'number');
       if (tasksWithOffset.length > 0) {
-        const anchor = getEffectiveBidStart(p);
-        const mode = p.useRevisedDates ? 'revised' : 'original';
-        if (confirm(`Scheduling changed. Recalculate due dates for ${tasksWithOffset.length} task(s) from the ${mode} Bid Start (${formatDate(anchor)})?`)) {
-          tasksWithOffset.forEach(t => { t.dueDate = addBusinessDays(anchor, t.dayOffset).date; });
+        // Build a breakdown showing how many tasks anchor to each type
+        const bidStartTasks = tasksWithOffset.filter(t => t.dateAnchor === 'bid-start' || !t.dateAnchor).length;
+        const bidDayTasks   = tasksWithOffset.filter(t => t.dateAnchor === 'bid-day').length;
+        const preBidTasks   = tasksWithOffset.filter(t => t.dateAnchor === 'pre-bid').length;
+        const rfiDueTasks   = tasksWithOffset.filter(t => t.dateAnchor === 'rfi-due').length;
+        const parts = [];
+        if (bidStartTasks > 0) parts.push(`${bidStartTasks} anchored to Bid Start`);
+        if (bidDayTasks > 0)   parts.push(`${bidDayTasks} anchored to Bid Day`);
+        if (preBidTasks > 0)   parts.push(`${preBidTasks} anchored to Pre-Bid`);
+        if (rfiDueTasks > 0)   parts.push(`${rfiDueTasks} anchored to RFI Due`);
+        const breakdown = parts.join(', ');
+        const newEffectiveStart = getEffectiveBidStart(p);
+        const dateLines = [
+          `Bid Start: ${formatDate(newEffectiveStart) || '(not set)'}`,
+          `Bid Due: ${formatDate(p.dueDate) || '(not set)'}`
+        ];
+        if (preBidTasks > 0) dateLines.push(`Pre-Bid: ${formatDate(p.prebidDate) || '(not set)'}`);
+        if (rfiDueTasks > 0) dateLines.push(`RFI Due: ${formatDate(p.rfiDueDate) || '(not set)'}`);
+        if (confirm(`Scheduling changed. Recalculate due dates for ${tasksWithOffset.length} task(s)?\n\n${breakdown}\n\n${dateLines.join('\n')}`)) {
+          reanchorProjectTaskDates(p);
         }
       }
     }
@@ -2538,42 +2706,15 @@ function saveProject() {
     if (!p.originalStartDate) p.originalStartDate = p.startDate || '';
     if (!p.originalDueDate) p.originalDueDate = p.dueDate || '';
     // Apply template tasks if one was picked
+    // Apply template tasks if one was picked.
+    // v82-fix: previously this code inlined a duplicate of template-loading
+    // logic that did NOT honor each task's dateAnchor — so Bid-Day-anchored
+    // template tasks loaded into a brand-new project with no anchor set,
+    // which made them ineligible for the Bid Due reanchor flow. Routing
+    // through the canonical _addTemplateTasksToProject() helper ensures
+    // dateAnchor is preserved and roles auto-assign correctly.
     if (pendingTemplateTasks && pendingTemplateTasks.length > 0) {
-      const anchor = getEffectiveBidStart(p);
-      pendingTemplateTasks.forEach(t => {
-        const newTask = {
-          id: uid(),
-          title: t.title,
-          stage: t.stage,
-          category: t.category,
-          priority: t.priority,
-          status: 'not-started',
-          dueDate: (anchor && typeof t.dayOffset === 'number') ? addBusinessDays(anchor, t.dayOffset).date : '',
-          dayOffset: typeof t.dayOffset === 'number' ? t.dayOffset : null,
-          assignee: '',
-          source: t.source || '',
-          notes: t.notes || '',
-          createdAt: Date.now(),
-          // Carry rich fields from template
-          critical: !!t.critical,
-          estimatedHours: (typeof t.estimatedHours === 'number' && t.estimatedHours > 0) ? t.estimatedHours : null,
-          bestPracticeNotes: (t.tips || '').trim() || ''
-        };
-        if (Array.isArray(t.deliverables) && t.deliverables.length > 0) {
-          newTask.deliverables = t.deliverables.map(d => ({
-            id: uid(),
-            text: (typeof d === 'string') ? d : (d.text || ''),
-            completed: false
-          })).filter(d => d.text);
-        }
-        if (Array.isArray(t.checklist) && t.checklist.length > 0) {
-          newTask.checklist = t.checklist.map(c => {
-            if (typeof c === 'string') return { id: uid(), text: c, required: false, completed: false };
-            return { id: uid(), text: c.text || '', required: !!c.required, completed: false };
-          }).filter(c => c.text);
-        }
-        p.tasks.push(newTask);
-      });
+      _addTemplateTasksToProject(p, pendingTemplateTasks, '(initial)');
     }
     state.projects.push(p);
     state.activeProjectId = p.id;
@@ -2736,6 +2877,9 @@ function selectProject(id) {
   state.activeAssignee = 'all';
   state.homeView = false;
   state.teamWorkloadView = false;
+  state.projectTimelineView = false;
+  state.openSlotsView = false;
+  state.tiView = false;
   state.statusSnapshotView = false;
   saveState(); render();
 }
@@ -2747,6 +2891,9 @@ function openHomeView() {
   state.homeView = true;
   state.statusSnapshotView = false;
   state.teamWorkloadView = false;
+  state.projectTimelineView = false;
+  state.openSlotsView = false;
+  state.tiView = false;
   // Hide sticky countdown bar — it's project-scoped, no value on Home view
   const bar = document.getElementById('stickyCountdownBar');
   const main = document.querySelector('.main');
@@ -2759,6 +2906,9 @@ function openHomeView() {
 function exitHomeView() {
   state.homeView = false;
   state.teamWorkloadView = false;
+  state.projectTimelineView = false;
+  state.openSlotsView = false;
+  state.tiView = false;
   saveState();
   render();
 }
@@ -2778,6 +2928,9 @@ function openStatusSnapshot() {
   state.statusSnapshotView = true;
   state.homeView = false;
   state.teamWorkloadView = false;
+  state.projectTimelineView = false;
+  state.openSlotsView = false;
+  state.tiView = false;
   // Hide sticky countdown bar — Status Snapshot is cross-project, no single bid countdown applies
   const bar = document.getElementById('stickyCountdownBar');
   const main = document.querySelector('.main');
@@ -2790,6 +2943,9 @@ function openStatusSnapshot() {
 function exitStatusSnapshot() {
   state.statusSnapshotView = false;
   state.teamWorkloadView = false;
+  state.projectTimelineView = false;
+  state.openSlotsView = false;
+  state.tiView = false;
   saveState();
   render();
 }
@@ -2808,6 +2964,7 @@ function openTeamWorkloadView() {
   state.teamWorkloadView = true;
   state.homeView = false;
   state.statusSnapshotView = false;
+  state.projectTimelineView = false; // v75: ensure mutually exclusive
   // Hide sticky countdown bar — workload is cross-project
   const bar = document.getElementById('stickyCountdownBar');
   const main = document.querySelector('.main');
@@ -2819,6 +2976,9 @@ function openTeamWorkloadView() {
 
 function exitTeamWorkloadView() {
   state.teamWorkloadView = false;
+  state.projectTimelineView = false;
+  state.openSlotsView = false;
+  state.tiView = false;
   saveState();
   render();
 }
@@ -2827,11 +2987,822 @@ function refreshTeamWorkloadView() {
   renderTeamWorkloadView();
 }
 
+// =============================================================
+// PROJECT TIMELINE VIEW (v75)
+// Full chronological view of every task in a single project,
+// regardless of past/today/future or status. Date-bucketed list
+// (same format as Look Ahead). Past tasks shown in full color
+// with status indicators so the entire project shape is visible.
+// =============================================================
+
+function openProjectTimelineView() {
+  state.projectTimelineView = true;
+  state.teamWorkloadView = false;
+  state.openSlotsView = false;
+  state.tiView = false;
+  state.statusSnapshotView = false;
+  state.homeView = false;
+  // If no project is selected for the view, default to the active project
+  if (!state.ptvProjectId && state.activeProjectId) {
+    state.ptvProjectId = state.activeProjectId;
+  }
+  const bar = document.getElementById('stickyCountdownBar');
+  const main = document.querySelector('.main');
+  if (bar) bar.style.display = 'none';
+  if (main) main.classList.remove('has-sticky-countdown');
+  saveState();
+  render();
+}
+
+function exitProjectTimelineView() {
+  state.projectTimelineView = false;
+  state.openSlotsView = false;
+  state.tiView = false;
+  saveState();
+  render();
+}
+
+function refreshProjectTimelineView() {
+  renderProjectTimelineView();
+}
+
+// =============================================================
+// OPEN SLOTS VIEW (v80) — full-page view
+// =============================================================
+
+function openOpenSlotsView() {
+  state.openSlotsView = true;
+  state.teamWorkloadView = false;
+  state.projectTimelineView = false;
+  state.tiView = false;
+  state.statusSnapshotView = false;
+  state.homeView = false;
+  const bar = document.getElementById('stickyCountdownBar');
+  const main = document.querySelector('.main');
+  if (bar) bar.style.display = 'none';
+  if (main) main.classList.remove('has-sticky-countdown');
+  saveState();
+  render();
+}
+
+function exitOpenSlotsView() {
+  state.openSlotsView = false;
+  state.tiView = false;
+  saveState();
+  render();
+}
+
+function refreshOpenSlotsView() {
+  renderOpenSlotsView();
+}
+
+function setOpenSlotsScope(scope) {
+  if (!['all-projects', 'active-project'].includes(scope)) return;
+  state.openSlotsScope = scope;
+  saveState();
+  renderOpenSlotsView();
+}
+
+function setOpenSlotsWindow(window) {
+  if (!['this-week', 'next-week', 'two-week', 'four-week'].includes(window)) return;
+  state.openSlotsWindow = window;
+  saveState();
+  renderOpenSlotsView();
+}
+
+function setOpenSlotsThreshold(threshold) {
+  if (![10, 25, 50, 75].includes(threshold)) return;
+  state.openSlotsThreshold = threshold;
+  saveState();
+  renderOpenSlotsView();
+}
+
+function renderOpenSlotsView() {
+  document.querySelectorAll('.osv-scope-btn').forEach(b => {
+    b.classList.toggle('active', b.dataset.osvscope === state.openSlotsScope);
+  });
+  document.querySelectorAll('.osv-window-btn').forEach(b => {
+    b.classList.toggle('active', b.dataset.osvwindow === state.openSlotsWindow);
+  });
+  const thresholdSel = document.getElementById('osvThresholdSelect');
+  if (thresholdSel) thresholdSel.value = String(state.openSlotsThreshold);
+
+  const scope = state.openSlotsScope;
+  const threshold = state.openSlotsThreshold;
+  const window = state.openSlotsWindow;
+  const members = (state.teamMembers || [])
+    .filter(m => !m.inactive && m.capacityHrs > 0)
+    .sort((a, b) => a.name.localeCompare(b.name));
+  const personData = members.map(m => {
+    const slots = _findOpenSlots(m.name, { scope, threshold, window });
+    return { member: m, slots };
+  });
+  const totalOpenDays = personData.reduce((sum, p) => sum + p.slots.length, 0);
+  const totalAvailableHours = personData.reduce((sum, p) =>
+    sum + p.slots.reduce((s, slot) => s + slot.availableHrs, 0), 0
+  );
+  const peopleWithOpenDays = personData.filter(p => p.slots.length > 0).length;
+  const windowLabel = {
+    'this-week': 'This Week',
+    'next-week': 'Next Week',
+    'two-week': 'Next 2 Weeks',
+    'four-week': 'Next 4 Weeks'
+  }[window];
+  const scopeLabel = scope === 'all-projects' ? 'All Projects' : 'Active Project Only';
+  const summaryEl = document.getElementById('osvSummary');
+  if (summaryEl) {
+    summaryEl.innerHTML = `
+      <div class="osv-summary-chip"><strong>${windowLabel}</strong> · ${scopeLabel}</div>
+      <div class="osv-summary-chip"><strong>${peopleWithOpenDays}</strong> of ${members.length} ${members.length === 1 ? 'person' : 'people'} have open slots</div>
+      <div class="osv-summary-chip"><strong>${totalOpenDays}</strong> open day${totalOpenDays === 1 ? '' : 's'} total</div>
+      <div class="osv-summary-chip"><strong>${Math.round(totalAvailableHours * 10) / 10}h</strong> available capacity</div>
+    `;
+  }
+  const contentEl = document.getElementById('osvContent');
+  const emptyEl = document.getElementById('osvEmpty');
+  if (members.length === 0) {
+    if (contentEl) contentEl.innerHTML = '';
+    if (emptyEl) {
+      emptyEl.style.display = 'flex';
+      emptyEl.innerHTML = '<div class="osv-empty-icon">⚠️</div><h3>No team members with capacity set</h3><p>Open Capacity & PTO settings and set weekly capacity (hours) for each team member to use Open Slots.</p>';
+    }
+    return;
+  }
+  if (emptyEl) emptyEl.style.display = 'none';
+  let html = '';
+  personData.forEach(({ member, slots }) => {
+    const dailyCap = member.capacityHrs / 5;
+    const cardClass = slots.length === 0 ? 'osv-person-card has-no-slots' : 'osv-person-card';
+    html += `
+      <div class="${cardClass}">
+        <div class="osv-person-header">
+          <div class="osv-person-name">${escapeHtml(member.name)}</div>
+          <div class="osv-person-meta">${member.capacityHrs}h/wk · ${Math.round(dailyCap * 10) / 10}h/day capacity</div>
+        </div>
+        ${slots.length === 0
+          ? `<div class="osv-no-slots-msg">No days at or below ${threshold}% capacity in this window.</div>`
+          : `<div class="osv-slots-list">${slots.map(slot => {
+              let slotCls = 'osv-slot';
+              if (slot.loadPct <= 10) slotCls += ' is-fully-open';
+              else if (slot.loadPct > 50) slotCls += ' is-mostly-open';
+              return `
+                <div class="${slotCls}">
+                  <div class="osv-slot-date">${escapeHtml(slot.dayOfWeek)}, ${escapeHtml(formatDate(slot.date))}</div>
+                  <div class="osv-slot-detail">${slot.hoursScheduled}h scheduled · ${slot.loadPct}% loaded</div>
+                  <div class="osv-slot-available">${slot.availableHrs}h available</div>
+                </div>
+              `;
+            }).join('')}</div>`
+        }
+      </div>
+    `;
+  });
+  if (contentEl) contentEl.innerHTML = html;
+}
+
+// =============================================================
+// FIND AVAILABILITY MODAL (v80)
+// =============================================================
+
+function openFindAvailabilityModal() {
+  const existing = document.getElementById('findAvailModal');
+  if (existing) existing.remove();
+  const html = `
+    <div class="modal-backdrop active" id="findAvailModal" onclick="closeFindAvailabilityModal(event)">
+      <div class="modal" style="max-width:900px;max-height:85vh;display:flex;flex-direction:column;" onclick="event.stopPropagation()">
+        <div style="display:flex;justify-content:space-between;align-items:center;padding-bottom:10px;border-bottom:1px solid var(--border);">
+          <h3 style="margin:0;">🔍 Find Availability</h3>
+          <button class="btn btn-sm" onclick="closeFindAvailabilityModal()">✕</button>
+        </div>
+        <div style="padding:8px 0;color:var(--text-dim);font-size:13px;">
+          Enter hours needed. Finds days where someone has at least that much capacity available, ranked by date and best fit.
+        </div>
+        <div class="fav-form-row">
+          <div>
+            <label>Hours needed</label>
+            <input type="number" id="favHoursInput" value="4" min="0.5" step="0.5" style="width:120px;" oninput="runFindAvailability()" />
+          </div>
+          <div>
+            <label>Scope</label>
+            <select id="favScopeSelect" onchange="runFindAvailability()">
+              <option value="all-projects">All Projects</option>
+              <option value="active-project">Active Project Only</option>
+            </select>
+          </div>
+          <div>
+            <label>Window</label>
+            <select id="favWindowSelect" onchange="runFindAvailability()">
+              <option value="this-week">This Week</option>
+              <option value="next-week">Next Week</option>
+              <option value="two-week" selected>Next 2 Weeks</option>
+              <option value="four-week">Next 4 Weeks</option>
+            </select>
+          </div>
+        </div>
+        <div class="fav-results" id="favResults" style="overflow:auto;flex:1;">
+        </div>
+      </div>
+    </div>
+  `;
+  document.body.insertAdjacentHTML('beforeend', html);
+  setTimeout(runFindAvailability, 50);
+}
+
+function closeFindAvailabilityModal(event) {
+  if (event && event.target && event.target.id !== 'findAvailModal' && event.type === 'click') return;
+  const m = document.getElementById('findAvailModal');
+  if (m) m.remove();
+}
+
+function runFindAvailability() {
+  const hoursInput = document.getElementById('favHoursInput');
+  const scopeSel = document.getElementById('favScopeSelect');
+  const windowSel = document.getElementById('favWindowSelect');
+  if (!hoursInput || !scopeSel || !windowSel) return;
+  const hoursNeeded = parseFloat(hoursInput.value);
+  const scope = scopeSel.value;
+  const window = windowSel.value;
+  const resultsEl = document.getElementById('favResults');
+  if (!resultsEl) return;
+  if (isNaN(hoursNeeded) || hoursNeeded <= 0) {
+    resultsEl.innerHTML = '<div class="fav-no-results">Enter a positive number of hours.</div>';
+    return;
+  }
+  const matches = _findAvailabilityForHours(hoursNeeded, { scope, window });
+  if (matches.length === 0) {
+    resultsEl.innerHTML = `<div class="fav-no-results">No matches found. Try fewer hours, a longer window, or checking team capacity settings.</div>`;
+    return;
+  }
+  const html = `
+    <div style="color:var(--text-dim);font-size:12px;margin-bottom:8px;">
+      ${matches.length} match${matches.length === 1 ? '' : 'es'} found · sorted by date, then by best fit
+    </div>
+    ${matches.slice(0, 50).map(m => `
+      <div class="fav-result-row">
+        <div class="fav-person">${escapeHtml(m.memberName)}</div>
+        <div class="fav-date">${escapeHtml(m.dayOfWeek)}, ${escapeHtml(formatDate(m.date))}</div>
+        <div class="fav-meta">Currently ${m.loadPct}% loaded</div>
+        <div class="fav-avail">${m.availableHrs}h free</div>
+      </div>
+    `).join('')}
+    ${matches.length > 50 ? `<div style="color:var(--text-dim);text-align:center;padding:10px;">Showing first 50 of ${matches.length} matches</div>` : ''}
+  `;
+  resultsEl.innerHTML = html;
+}
+
+// =============================================================
+// TEAM PERFORMANCE INSIGHTS VIEW (v82)
+// =============================================================
+
+function openTeamInsightsView() {
+  state.tiView = true;
+  state.teamWorkloadView = false;
+  state.projectTimelineView = false;
+  state.openSlotsView = false;
+  state.statusSnapshotView = false;
+  state.homeView = false;
+  const bar = document.getElementById('stickyCountdownBar');
+  const main = document.querySelector('.main');
+  if (bar) bar.style.display = 'none';
+  if (main) main.classList.remove('has-sticky-countdown');
+  saveState();
+  render();
+}
+
+function exitTeamInsightsView() {
+  state.tiView = false;
+  saveState();
+  render();
+}
+
+function refreshTeamInsightsView() {
+  renderTeamInsightsView();
+}
+
+function setTeamInsightsWindow(window) {
+  if (!['30d', '90d', 'quarter', 'all'].includes(window)) return;
+  state.tiWindow = window;
+  saveState();
+  renderTeamInsightsView();
+}
+
+function setTeamInsightsScope(scope) {
+  if (!['all-projects', 'active-project'].includes(scope)) return;
+  state.tiScope = scope;
+  saveState();
+  renderTeamInsightsView();
+}
+
+function renderTeamInsightsView() {
+  // Sync segmented controls
+  document.querySelectorAll('.tiv-window-btn').forEach(b => {
+    b.classList.toggle('active', b.dataset.tiwindow === (state.tiWindow || '90d'));
+  });
+  document.querySelectorAll('.tiv-scope-btn').forEach(b => {
+    b.classList.toggle('active', b.dataset.tiscope === (state.tiScope || 'all-projects'));
+  });
+
+  const stats = _aggregateTeamInsights();
+  const contentEl = document.getElementById('tivContent');
+  const emptyEl = document.getElementById('tivEmpty');
+  if (!contentEl) return;
+
+  // Filter to entries with actual data
+  const entries = Array.from(stats.values())
+    .filter(s => s.totalAssignedInWindow > 0 || s.onTimeDenominator > 0 || s.overdueCount > 0)
+    .sort((a, b) => a.name.localeCompare(b.name));
+
+  if (entries.length === 0) {
+    contentEl.innerHTML = '';
+    if (emptyEl) emptyEl.style.display = 'flex';
+    return;
+  }
+  if (emptyEl) emptyEl.style.display = 'none';
+
+  contentEl.innerHTML = entries.map(s => _renderTeamInsightsCard(s)).join('');
+}
+
+function _renderTeamInsightsCard(s) {
+  // Color helpers for the metric tiles. Higher % on-time = better; lower
+  // rework = better; lower latency = better; lower overdue = better.
+  // Bands are chosen to be informative without being judgmental.
+  const onTimeBand = s.onTimePct === null
+    ? 'tiv-band-na'
+    : (s.onTimePct >= 85 ? 'tiv-band-good'
+        : s.onTimePct >= 70 ? 'tiv-band-fair'
+          : 'tiv-band-poor');
+  const reworkBand = s.reworkPct === null
+    ? 'tiv-band-na'
+    : (s.reworkPct <= 5 ? 'tiv-band-good'
+        : s.reworkPct <= 15 ? 'tiv-band-fair'
+          : 'tiv-band-poor');
+  const ackBand = s.ackLatencyMedian === null
+    ? 'tiv-band-na'
+    : (s.ackLatencyMedian <= 1 ? 'tiv-band-good'
+        : s.ackLatencyMedian <= 3 ? 'tiv-band-fair'
+          : 'tiv-band-poor');
+  const overdueBand = s.overdueCount === 0 ? 'tiv-band-good'
+    : s.overdueCount <= 2 ? 'tiv-band-fair'
+      : 'tiv-band-poor';
+
+  const onTimeText = s.onTimePct === null ? '—' : s.onTimePct + '%';
+  const onTimeSub = s.onTimeDenominator === 0
+    ? 'No completed tasks in window'
+    : `${s.onTimeNumerator} of ${s.onTimeDenominator} on time` + (s.avgLateDays !== null ? ` · avg ${s.avgLateDays}d late when late` : '');
+
+  const reworkText = s.reworkPct === null ? '—' : s.reworkPct + '%';
+  const reworkSub = s.completedCount === 0
+    ? 'No completed tasks in window'
+    : `${s.reworkCount} of ${s.completedCount} sent back for rework`;
+
+  const ackText = s.ackLatencyMedian === null ? '—'
+    : (s.ackLatencyMedian < 1 ? '< 1 day' : s.ackLatencyMedian + ' days');
+  const ackSub = s.ackLatencies.length === 0
+    ? 'No acknowledged tasks in window'
+    : `Median latency from assignment to acknowledgment · ${s.ackLatencies.length} tasks`;
+
+  const overdueText = String(s.overdueCount);
+  const overdueSub = s.overdueCount === 0
+    ? 'Nothing past due'
+    : `${s.overdueCount} task${s.overdueCount === 1 ? '' : 's'} past due, not done`;
+
+  return `
+    <div class="tiv-person-card">
+      <div class="tiv-person-header">
+        <div class="tiv-person-name">${escapeHtml(s.name)}</div>
+        <div class="tiv-person-meta">${s.totalAssignedInWindow} task${s.totalAssignedInWindow === 1 ? '' : 's'} assigned in window · ${s.completedCount} completed</div>
+      </div>
+      <div class="tiv-metrics-grid">
+        <button class="tiv-metric ${onTimeBand}" onclick="openTeamInsightsDrilldown('${escapeAttr(s.name)}', 'late-completes')">
+          <div class="tiv-metric-label">ON-TIME COMPLETION</div>
+          <div class="tiv-metric-value">${onTimeText}</div>
+          <div class="tiv-metric-sub">${escapeHtml(onTimeSub)}</div>
+        </button>
+        <button class="tiv-metric ${reworkBand}" onclick="openTeamInsightsDrilldown('${escapeAttr(s.name)}', 'rework')">
+          <div class="tiv-metric-label">REWORK RATE</div>
+          <div class="tiv-metric-value">${reworkText}</div>
+          <div class="tiv-metric-sub">${escapeHtml(reworkSub)}</div>
+        </button>
+        <button class="tiv-metric ${ackBand}" onclick="openTeamInsightsDrilldown('${escapeAttr(s.name)}', 'ack')">
+          <div class="tiv-metric-label">ACKNOWLEDGMENT LATENCY</div>
+          <div class="tiv-metric-value">${ackText}</div>
+          <div class="tiv-metric-sub">${escapeHtml(ackSub)}</div>
+        </button>
+        <button class="tiv-metric ${overdueBand}" onclick="openTeamInsightsDrilldown('${escapeAttr(s.name)}', 'overdue')">
+          <div class="tiv-metric-label">CURRENTLY OVERDUE</div>
+          <div class="tiv-metric-value">${overdueText}</div>
+          <div class="tiv-metric-sub">${escapeHtml(overdueSub)}</div>
+        </button>
+      </div>
+      ${s.blockedCount > 0 ? `<div class="tiv-blocked-note">⚠️ ${s.blockedCount} blocked task${s.blockedCount === 1 ? '' : 's'} where ${escapeHtml(s.name)} is Lead. Blocked tasks need attention even if not technically overdue.</div>` : ''}
+    </div>
+  `;
+}
+
+// Drill-down: show the underlying tasks behind a metric
+function openTeamInsightsDrilldown(name, metric) {
+  const stats = _aggregateTeamInsights();
+  const s = stats.get(name);
+  if (!s) return;
+  let title = '';
+  let rows = [];
+  if (metric === 'late-completes') {
+    title = `Tasks completed late — ${name}`;
+    rows = s.recentLateCompletes.map(t => ({
+      taskId: t.taskId,
+      primary: t.title,
+      secondary: t.projectName,
+      meta: `Due ${formatDate(t.dueDate)} · ${t.lateDays}d late`
+    }));
+  } else if (metric === 'rework') {
+    title = `Tasks sent back for rework — ${name}`;
+    rows = s.recentReworkTasks.map(t => ({
+      taskId: t.taskId,
+      primary: t.title,
+      secondary: t.projectName,
+      meta: `Reason: ${t.rejectionReason || 'not specified'}`
+    }));
+  } else if (metric === 'ack') {
+    // No specific list — show histogram-style summary
+    if (s.ackLatencies.length === 0) {
+      alert(`No acknowledgment data available for ${name} in the selected window.`);
+      return;
+    }
+    const sorted = [...s.ackLatencies].sort((a, b) => a - b);
+    const p25 = sorted[Math.floor(sorted.length * 0.25)];
+    const p50 = sorted[Math.floor(sorted.length * 0.5)];
+    const p75 = sorted[Math.floor(sorted.length * 0.75)];
+    const max = sorted[sorted.length - 1];
+    alert(`Acknowledgment latency for ${name}:\n\n` +
+      `${s.ackLatencies.length} tasks measured\n\n` +
+      `25th percentile: ${Math.round(p25 * 10) / 10} days\n` +
+      `50th percentile (median): ${Math.round(p50 * 10) / 10} days\n` +
+      `75th percentile: ${Math.round(p75 * 10) / 10} days\n` +
+      `Slowest: ${Math.round(max * 10) / 10} days\n\n` +
+      `This measures the time from when a task was created (assigned) to when the assignee clicked "Acknowledge."`);
+    return;
+  } else if (metric === 'overdue') {
+    title = `Currently overdue tasks — ${name}`;
+    rows = s.recentOverdueTasks.map(t => ({
+      taskId: t.taskId,
+      primary: t.title,
+      secondary: t.projectName,
+      meta: `Due ${formatDate(t.dueDate)}`
+    }));
+  }
+  if (rows.length === 0) {
+    alert(`No ${metric} data available for ${name} in the selected window.`);
+    return;
+  }
+  // Render modal
+  const existing = document.getElementById('tivDrilldownModal');
+  if (existing) existing.remove();
+  const rowsHtml = rows.map(r => `
+    <div class="tiv-drill-row" onclick="openTaskModal('${escapeAttr(r.taskId)}')">
+      <div class="tiv-drill-primary">${escapeHtml(r.primary || '(untitled)')}</div>
+      <div class="tiv-drill-secondary">${escapeHtml(r.secondary || '')}</div>
+      <div class="tiv-drill-meta">${escapeHtml(r.meta || '')}</div>
+    </div>
+  `).join('');
+  const html = `
+    <div class="modal-backdrop active" id="tivDrilldownModal" onclick="closeTeamInsightsDrilldown(event)">
+      <div class="modal" style="max-width:720px;max-height:80vh;display:flex;flex-direction:column;" onclick="event.stopPropagation()">
+        <div style="display:flex;justify-content:space-between;align-items:center;padding-bottom:10px;border-bottom:1px solid var(--border);">
+          <h3 style="margin:0;">${escapeHtml(title)}</h3>
+          <button class="btn btn-sm" onclick="closeTeamInsightsDrilldown()">✕</button>
+        </div>
+        <div style="padding:8px 0;color:var(--text-dim);font-size:12px;">${rows.length} task${rows.length === 1 ? '' : 's'} · Click a row to open the task</div>
+        <div style="overflow:auto;flex:1;margin-top:6px;">
+          <div class="tiv-drill-list">${rowsHtml}</div>
+        </div>
+      </div>
+    </div>
+  `;
+  document.body.insertAdjacentHTML('beforeend', html);
+}
+
+function closeTeamInsightsDrilldown(event) {
+  if (event && event.target && event.target.id !== 'tivDrilldownModal' && event.type === 'click') return;
+  const m = document.getElementById('tivDrilldownModal');
+  if (m) m.remove();
+}
+
+function setProjectTimelineProject(projectId) {
+  state.ptvProjectId = projectId || '';
+  // Reset stage/assignee filters when switching project since their option
+  // lists are project-specific
+  state.ptvStageFilter = 'all';
+  state.ptvAssigneeFilter = 'all';
+  saveState();
+  renderProjectTimelineView();
+}
+
+function setProjectTimelineStageFilter(stage) {
+  state.ptvStageFilter = stage || 'all';
+  saveState();
+  renderProjectTimelineView();
+}
+
+function setProjectTimelineAssigneeFilter(assignee) {
+  state.ptvAssigneeFilter = assignee || 'all';
+  saveState();
+  renderProjectTimelineView();
+}
+
+function setProjectTimelineHideEmpty(hide) {
+  state.ptvHideEmpty = !!hide;
+  saveState();
+  renderProjectTimelineView();
+}
+
+// Build the data structure for the project timeline. Returns
+//   { project, orderedGroups, totalTasks, today, dateRange: {start, end}, counts }
+// or null if no project is available.
+function buildProjectTimelineData() {
+  // Resolve project — prefer state.ptvProjectId, fall back to active
+  let project = state.projects.find(p => p.id === state.ptvProjectId);
+  if (!project) {
+    project = state.projects.find(p => p.id === state.activeProjectId);
+    if (project) state.ptvProjectId = project.id;
+  }
+  if (!project) return null;
+
+  const today = new Date();
+  today.setHours(0, 0, 0, 0);
+  const todayStr = fmtLocalDate(today);
+
+  // Filter tasks
+  const stageFilter = state.ptvStageFilter || 'all';
+  const assigneeFilter = state.ptvAssigneeFilter || 'all';
+  const matchingTasks = [];
+  (project.tasks || []).forEach(task => {
+    if (!task.dueDate) return; // tasks without dates can't be plotted on a timeline
+    if (stageFilter !== 'all' && task.stage !== stageFilter) return;
+    if (assigneeFilter !== 'all') {
+      if (assigneeFilter === 'unassigned') {
+        if (task.assignee && task.assignee.trim()) return;
+      } else {
+        const isLead = (task.assignee || '').trim() === assigneeFilter;
+        const isSupport = isTaskSupport(task, assigneeFilter);
+        if (!isLead && !isSupport) return;
+      }
+    }
+    matchingTasks.push({ project, task });
+  });
+
+  // Group by date bucket — no "overdue" bucket here since we show real dates,
+  // not "next-to-do" priorities. Past tasks just appear on their actual dates.
+  const groups = new Map();
+  matchingTasks.forEach(item => {
+    const key = item.task.dueDate;
+    if (!groups.has(key)) groups.set(key, []);
+    groups.get(key).push(item);
+  });
+
+  // Determine date range: from earliest task to latest task. Always include
+  // today in the range so the user has a "you are here" anchor.
+  let minDateStr = todayStr;
+  let maxDateStr = todayStr;
+  matchingTasks.forEach(item => {
+    if (item.task.dueDate < minDateStr) minDateStr = item.task.dueDate;
+    if (item.task.dueDate > maxDateStr) maxDateStr = item.task.dueDate;
+  });
+
+  // Build ordered groups by walking each day in the range. Optionally hide
+  // empty days based on the state.ptvHideEmpty flag.
+  const orderedGroups = [];
+  const hideEmpty = !!state.ptvHideEmpty;
+  if (matchingTasks.length === 0) {
+    return {
+      project, orderedGroups: [], totalTasks: 0, today,
+      dateRange: { start: todayStr, end: todayStr },
+      counts: { past: 0, today: 0, future: 0, done: 0, overdue: 0 }
+    };
+  }
+  const cursor = new Date(minDateStr + 'T00:00:00');
+  const stop = new Date(maxDateStr + 'T00:00:00');
+  while (cursor.getTime() <= stop.getTime()) {
+    const key = fmtLocalDate(cursor);
+    if (groups.has(key)) {
+      orderedGroups.push({ key, items: groups.get(key) });
+    } else if (!hideEmpty) {
+      orderedGroups.push({ key, items: [] });
+    }
+    cursor.setDate(cursor.getDate() + 1);
+  }
+
+  // Compute summary counts
+  const counts = { past: 0, today: 0, future: 0, done: 0, overdue: 0 };
+  matchingTasks.forEach(item => {
+    const d = item.task.dueDate;
+    const status = item.task.status || 'not-started';
+    if (status === 'done') counts.done++;
+    if (d < todayStr) {
+      counts.past++;
+      if (status !== 'done') counts.overdue++;
+    } else if (d === todayStr) counts.today++;
+    else counts.future++;
+  });
+
+  return {
+    project, orderedGroups, totalTasks: matchingTasks.length, today,
+    dateRange: { start: minDateStr, end: maxDateStr },
+    counts
+  };
+}
+
+function renderProjectTimelineView() {
+  // Populate project selector with all non-archived projects
+  const projSel = document.getElementById('ptvProjectSelect');
+  if (projSel) {
+    const opts = state.projects
+      .filter(p => !p.archived)
+      .map(p => `<option value="${escapeAttr(p.id)}">${escapeHtml(p.name)}</option>`)
+      .join('');
+    projSel.innerHTML = opts || '<option value="">(no projects)</option>';
+  }
+
+  const data = buildProjectTimelineData();
+  if (!data) {
+    const contentEl = document.getElementById('ptvContent');
+    const emptyEl = document.getElementById('ptvEmpty');
+    if (contentEl) contentEl.innerHTML = '';
+    if (emptyEl) {
+      emptyEl.style.display = 'flex';
+      emptyEl.innerHTML = '<div class="ptv-empty-icon">📂</div><h3>No project selected</h3><p>Create a project or select one from the sidebar.</p>';
+    }
+    // Empty the summary panel too
+    const summaryEl = document.getElementById('ptvSummary');
+    if (summaryEl) summaryEl.innerHTML = '';
+    return;
+  }
+
+  // Sync the project selector to the resolved project
+  if (projSel) projSel.value = data.project.id;
+
+  // Populate stage filter — every stage that has at least one task in this project
+  const stageSel = document.getElementById('ptvStageFilter');
+  if (stageSel) {
+    const stageIds = Array.from(new Set((data.project.tasks || []).map(t => t.stage).filter(Boolean)));
+    const stageOpts = ['<option value="all">All Stages</option>']
+      .concat(stageIds.map(sid => {
+        const s = STAGES.find(x => x.id === sid);
+        const label = s ? `${s.icon} ${s.name}` : sid;
+        return `<option value="${escapeAttr(sid)}">${escapeHtml(label)}</option>`;
+      }))
+      .join('');
+    stageSel.innerHTML = stageOpts;
+    stageSel.value = state.ptvStageFilter;
+  }
+
+  // Populate assignee filter — leads + supports across this project's tasks
+  const asSel = document.getElementById('ptvAssigneeFilter');
+  if (asSel) {
+    const names = new Set();
+    (data.project.tasks || []).forEach(t => {
+      if (Array.isArray(t.leads)) t.leads.forEach(n => { if (n && n.trim()) names.add(n.trim()); });
+      else if (t.assignee && t.assignee.trim()) names.add(t.assignee.trim());
+      if (Array.isArray(t.supportMembers)) t.supportMembers.forEach(n => { if (n && n.trim()) names.add(n.trim()); });
+      else if (t.support && t.support.trim()) names.add(t.support.trim());
+    });
+    const sortedNames = Array.from(names).sort((a, b) => a.localeCompare(b));
+    const asOpts = ['<option value="all">All Assignees</option>', '<option value="unassigned">(Unassigned)</option>']
+      .concat(sortedNames.map(n => `<option value="${escapeAttr(n)}">${escapeHtml(n)}</option>`))
+      .join('');
+    asSel.innerHTML = asOpts;
+    asSel.value = state.ptvAssigneeFilter;
+  }
+
+  // Hide-empty checkbox state
+  const hideChk = document.getElementById('ptvHideEmptyDays');
+  if (hideChk) hideChk.checked = !!state.ptvHideEmpty;
+
+  // Render summary panel
+  const summaryEl = document.getElementById('ptvSummary');
+  if (summaryEl) {
+    summaryEl.innerHTML = `
+      <div class="ptv-stat is-range">
+        <div class="ptv-stat-range">${escapeHtml(formatDate(data.dateRange.start))} <span style="color:var(--text-dim);">→</span> ${escapeHtml(formatDate(data.dateRange.end))}</div>
+        <div class="ptv-stat-label">Timeline Span</div>
+      </div>
+      <div class="ptv-stat is-past">
+        <div class="ptv-stat-num">${data.counts.past}</div>
+        <div class="ptv-stat-label">Past Tasks</div>
+      </div>
+      <div class="ptv-stat is-today">
+        <div class="ptv-stat-num">${data.counts.today}</div>
+        <div class="ptv-stat-label">Due Today</div>
+      </div>
+      <div class="ptv-stat is-future">
+        <div class="ptv-stat-num">${data.counts.future}</div>
+        <div class="ptv-stat-label">Future Tasks</div>
+      </div>
+      <div class="ptv-stat is-done">
+        <div class="ptv-stat-num">${data.counts.done}</div>
+        <div class="ptv-stat-label">Completed</div>
+      </div>
+      <div class="ptv-stat is-overdue">
+        <div class="ptv-stat-num">${data.counts.overdue}</div>
+        <div class="ptv-stat-label">Overdue</div>
+      </div>
+    `;
+  }
+
+  const contentEl = document.getElementById('ptvContent');
+  const emptyEl = document.getElementById('ptvEmpty');
+  if (data.totalTasks === 0) {
+    if (contentEl) contentEl.innerHTML = '';
+    if (emptyEl) {
+      emptyEl.style.display = 'flex';
+      emptyEl.innerHTML = '<div class="ptv-empty-icon">📋</div><h3>No tasks match current filters</h3><p>Try adjusting the project, stage, or assignee filters above.</p>';
+    }
+    return;
+  }
+  if (emptyEl) emptyEl.style.display = 'none';
+
+  // Render day groups
+  const todayKey = fmtLocalDate(data.today);
+  let html = '';
+  data.orderedGroups.forEach(group => {
+    const groupKey = group.key;
+    let groupClass = 'ptv-day-group';
+    let tag = '';
+    if (groupKey < todayKey) {
+      groupClass += ' is-past';
+      tag = '<span class="ptv-day-tag tag-past">Past</span>';
+    } else if (groupKey === todayKey) {
+      groupClass += ' is-today';
+      tag = '<span class="ptv-day-tag tag-today">Today</span>';
+    } else {
+      groupClass += ' is-future';
+      tag = '<span class="ptv-day-tag tag-future">Future</span>';
+    }
+    // Format date with weekday for easy reading
+    const d = new Date(groupKey + 'T00:00:00');
+    const weekdays = ['Sun','Mon','Tue','Wed','Thu','Fri','Sat'];
+    const wd = weekdays[d.getDay()];
+    const dateLabel = `${wd}, ${formatDate(groupKey)}`;
+    const meta = group.items.length === 0
+      ? '<span class="ptv-day-meta">No tasks</span>'
+      : `<span class="ptv-day-meta">${group.items.length} task${group.items.length === 1 ? '' : 's'}</span>`;
+
+    html += `<div class="${groupClass}">`;
+    html += `<div class="ptv-day-header"><span class="ptv-day-date">${escapeHtml(dateLabel)}${tag}</span>${meta}</div>`;
+    if (group.items.length === 0) {
+      html += '<div class="ptv-day-empty">— no tasks scheduled —</div>';
+    } else {
+      group.items.forEach(item => {
+        html += _renderPtvTaskRow(item, groupKey, todayKey);
+      });
+    }
+    html += '</div>';
+  });
+  if (contentEl) contentEl.innerHTML = html;
+}
+
+function _renderPtvTaskRow(item, groupKey, todayKey) {
+  const t = item.task;
+  const status = t.status || 'not-started';
+  const isDone = status === 'done';
+  const isOverdue = (groupKey < todayKey) && !isDone;
+  const isCritical = !!t.critical;
+  const stage = STAGES.find(s => s.id === t.stage);
+  const stageLabel = stage ? `${stage.icon} ${stage.name}` : (t.stage || '');
+  const assignee = (Array.isArray(t.leads) && t.leads.length > 0)
+    ? t.leads.join(', ')
+    : (t.assignee || '—');
+  const statusLabelMap = {
+    'not-started': 'Not Started',
+    'in-progress': 'In Progress',
+    'blocked': 'Blocked',
+    'pending': 'Pending',
+    'done': 'Done'
+  };
+  const statusLabel = statusLabelMap[status] || status;
+  const rowClasses = ['ptv-task-row', `status-${status}`];
+  if (isDone) rowClasses.push('is-done');
+  if (isOverdue) rowClasses.push('is-overdue');
+  if (isCritical) rowClasses.push('is-critical');
+  return `
+    <div class="${rowClasses.join(' ')}" onclick="openTaskModal('${escapeAttr(t.id)}')">
+      <div class="ptv-task-status-dot status-${status}"></div>
+      <div>
+        <span class="ptv-task-title">${escapeHtml(t.title || '(untitled)')}</span>
+        ${t.stage ? `<span class="ptv-task-stage">${escapeHtml(stageLabel)}</span>` : ''}
+      </div>
+      <div class="ptv-task-assignee">${escapeHtml(assignee)}</div>
+      <div class="ptv-task-status-label status-${status}">${escapeHtml(statusLabel)}</div>
+    </div>
+  `;
+}
+
+// v76: expanded valid scopes
+const _WORKLOAD_VALID_SCOPES = ['this-week','next-week','two-week','four-week','this-month','next-month','all-open'];
+
 function setWorkloadDateScope(scope) {
-  if (!['this-week','next-week','two-week','all-open'].includes(scope)) return;
+  if (!_WORKLOAD_VALID_SCOPES.includes(scope)) return;
   state.workloadDateScope = scope;
   saveState();
-  // Update segmented button active state
   document.querySelectorAll('.twv-seg-btn').forEach(b => {
     b.classList.toggle('active', b.dataset.scope === scope);
   });
@@ -2853,33 +3824,65 @@ function toggleWorkloadShowInactive(show) {
 
 // Returns { startDate, endDate } as YYYY-MM-DD strings for the current
 // workload date scope, or null/null for 'all-open' which has no upper bound.
+// v76: Date-range helper now ALSO returns `weeks` (how many weeks the window
+// spans) and `label` for display. The weeks value drives capacity scaling so
+// the load percentage compares apples-to-apples: open hours in the window vs
+// per-week capacity × number of weeks in that window.
+//
+// Previous bug: every scope compared open hours in the window against per-week
+// capacity, so 2-week views showed 2x inflated load %, 8-week views showed 8x.
+//
+// For 'all-open' we use a synthetic 8-week comparison window since there's no
+// natural time bound — labeled clearly as "8-Week Backlog Comparison" in UI.
 function _workloadDateRange() {
   const today = new Date();
   today.setHours(0,0,0,0);
   const todayStr = formatDateForInput(today);
   const scope = state.workloadDateScope || 'two-week';
+
   if (scope === 'this-week') {
-    // Through end of this calendar week (Sat)
     const end = new Date(today);
     const dow = end.getDay();
     end.setDate(end.getDate() + (6 - dow));
-    return { startDate: todayStr, endDate: formatDateForInput(end) };
+    return { startDate: todayStr, endDate: formatDateForInput(end), weeks: 1, label: 'This Week' };
   }
   if (scope === 'next-week') {
     const start = new Date(today);
     const dow = start.getDay();
-    start.setDate(start.getDate() + (7 - dow)); // next Sunday
+    start.setDate(start.getDate() + (7 - dow));
     const end = new Date(start);
     end.setDate(end.getDate() + 6);
-    return { startDate: formatDateForInput(start), endDate: formatDateForInput(end) };
+    return { startDate: formatDateForInput(start), endDate: formatDateForInput(end), weeks: 1, label: 'Next Week' };
   }
   if (scope === 'two-week') {
     const end = new Date(today);
-    end.setDate(end.getDate() + 14);
-    return { startDate: todayStr, endDate: formatDateForInput(end) };
+    end.setDate(end.getDate() + 13);  // 14 days inclusive = 2 calendar weeks
+    return { startDate: todayStr, endDate: formatDateForInput(end), weeks: 2, label: 'Next 2 Weeks' };
   }
-  // all-open
-  return { startDate: null, endDate: null };
+  // v76 NEW: 4-week window (28 days)
+  if (scope === 'four-week') {
+    const end = new Date(today);
+    end.setDate(end.getDate() + 27);
+    return { startDate: todayStr, endDate: formatDateForInput(end), weeks: 4, label: 'Next 4 Weeks' };
+  }
+  // v76 NEW: This calendar month — from today through end of current month
+  if (scope === 'this-month') {
+    const end = new Date(today.getFullYear(), today.getMonth() + 1, 0); // last day of current month
+    // Compute weeks proportionally: days remaining / 7
+    const daysInWindow = Math.round((end.getTime() - today.getTime()) / (1000 * 60 * 60 * 24)) + 1;
+    const weeks = +(daysInWindow / 7).toFixed(2);
+    return { startDate: todayStr, endDate: formatDateForInput(end), weeks, label: 'This Month' };
+  }
+  // v76 NEW: Next calendar month — first to last of the next calendar month
+  if (scope === 'next-month') {
+    const start = new Date(today.getFullYear(), today.getMonth() + 1, 1);
+    const end = new Date(today.getFullYear(), today.getMonth() + 2, 0);
+    const daysInWindow = Math.round((end.getTime() - start.getTime()) / (1000 * 60 * 60 * 24)) + 1;
+    const weeks = +(daysInWindow / 7).toFixed(2);
+    return { startDate: formatDateForInput(start), endDate: formatDateForInput(end), weeks, label: 'Next Month' };
+  }
+  // all-open — no time bounds; use synthetic 8-week comparison for capacity math
+  return { startDate: null, endDate: null, weeks: 8, label: 'All Open (8-Week Comparison)' };
 }
 
 // Helper — formats a Date into YYYY-MM-DD (local time)
@@ -2921,8 +3924,10 @@ function _aggregateWorkloadByAssignee() {
         byProject: {},
         // All open tasks (for drill-down + reassignment) — capped to 200 per assignee
         openTasks: [],
-        // Hours per business day for next 14 days
-        hoursPerDay: {}
+        // Hours per day for chart (covers active window, capped at 60d for all-open)
+        hoursPerDay: {},
+        // v78: tasks per day for drill-down on click
+        tasksPerDay: {}
       });
     }
     return stats.get(name);
@@ -2987,11 +3992,29 @@ function _aggregateWorkloadByAssignee() {
               s.openHoursInRange += hrs;
             }
 
-            // Per-day bucket for the lookahead chart (within 14d)
-            const lookaheadEnd = new Date(); lookaheadEnd.setDate(lookaheadEnd.getDate() + 14);
-            const lookaheadEndStr = formatDateForInput(lookaheadEnd);
-            if (task.dueDate >= todayStr && task.dueDate <= lookaheadEndStr) {
+            // v78: Per-day bucket now covers the WHOLE active window (was
+            // hardcoded to 14 days). For 'all-open' (no range), fall back to
+            // a 60-day cap so we don't bloat memory with very distant tasks.
+            // We also capture each task with its date so the strip can drill
+            // down to "what's scheduled on this day?".
+            const chartEndStr = range.endDate || (function(){
+              const e = new Date(); e.setDate(e.getDate() + 60);
+              return formatDateForInput(e);
+            })();
+            const chartStartStr = range.startDate || todayStr;
+            if (task.dueDate >= chartStartStr && task.dueDate <= chartEndStr) {
               s.hoursPerDay[task.dueDate] = (s.hoursPerDay[task.dueDate] || 0) + hrs;
+              // Also remember which tasks fell on this date for drill-down
+              if (!s.tasksPerDay) s.tasksPerDay = {};
+              if (!s.tasksPerDay[task.dueDate]) s.tasksPerDay[task.dueDate] = [];
+              s.tasksPerDay[task.dueDate].push({
+                taskId: task.id,
+                projectId: project.id,
+                projectName: project.name,
+                title: task.title,
+                hours: hrs,
+                critical: !!task.critical
+              });
             }
           } else {
             // No due date — count toward open hours but not per-day
@@ -3034,14 +4057,18 @@ function _aggregateWorkloadByAssignee() {
 function _sortWorkloadList(statsArr) {
   const sort = state.workloadSort || 'load-desc';
   const sorted = [...statsArr];
+  // v76: scale capacity by window's week-count so the comparison is honest
+  const weeks = (typeof _workloadDateRange === 'function') ? _workloadDateRange().weeks : 1;
   if (sort === 'load-desc') {
     sorted.sort((a, b) => b.totalOpenHours - a.totalOpenHours || b.totalOpen - a.totalOpen);
   } else if (sort === 'name') {
     sorted.sort((a, b) => a.name.localeCompare(b.name));
   } else if (sort === 'capacity-pct') {
     sorted.sort((a, b) => {
-      const pctA = a.capacityHrs > 0 ? (a.openHoursInRange / a.capacityHrs) : -1;
-      const pctB = b.capacityHrs > 0 ? (b.openHoursInRange / b.capacityHrs) : -1;
+      const capA = (a.capacityHrs || 0) * weeks;
+      const capB = (b.capacityHrs || 0) * weeks;
+      const pctA = capA > 0 ? (a.openHoursInRange / capA) : -1;
+      const pctB = capB > 0 ? (b.openHoursInRange / capB) : -1;
       return pctB - pctA;
     });
   } else if (sort === 'overdue') {
@@ -3050,21 +4077,476 @@ function _sortWorkloadList(statsArr) {
   return sorted;
 }
 
-// Compute load color class — green/yellow/red based on capacity %
+// Compute load color class — green/yellow/red based on capacity %.
+// v76: now uses window-scaled capacity (capacityHrs × weeks) so the math
+// matches what's displayed.
 function _loadStatusClass(s) {
   if (!s.capacityHrs || s.capacityHrs <= 0) return 'load-untracked';
-  const pct = (s.openHoursInRange / s.capacityHrs) * 100;
+  const weeks = (typeof _workloadDateRange === 'function') ? _workloadDateRange().weeks : 1;
+  const effectiveCap = s.capacityHrs * weeks;
+  if (effectiveCap <= 0) return 'load-untracked';
+  const pct = (s.openHoursInRange / effectiveCap) * 100;
   if (pct >= 100) return 'load-over';
   if (pct >= 80) return 'load-high';
   if (pct >= 50) return 'load-med';
   return 'load-low';
 }
 
+// v76 helper: returns the active range's week count. Centralized so future
+// changes to how weeks are computed flow everywhere.
+function _activeWorkloadWeeks() {
+  const r = _workloadDateRange();
+  return (r && typeof r.weeks === 'number' && r.weeks > 0) ? r.weeks : 1;
+}
+
+// v76 helper: returns active range's display label
+function _activeWorkloadLabel() {
+  const r = _workloadDateRange();
+  return r && r.label ? r.label : 'Window';
+}
+
+// v78: Build the list of bucket entries for the chart, respecting the active
+// window AND the grain toggle (day vs week).
+// Returns an array of bucket objects with shape:
+//   { key, label, shortLabel, startDate, endDate, isToday, isHoliday }
+// 'day' grain: one entry per business day (skips weekends)
+// 'week' grain: one entry per calendar week starting Sunday, label "Week of MM/DD"
+//
+// For 'all-open' (no end date), we cap at 60 days to keep charts readable.
+function _buildWorkloadBuckets() {
+  const range = _workloadDateRange();
+  const today = new Date();
+  today.setHours(0, 0, 0, 0);
+  const todayStr = formatDateForInput(today);
+  // Resolve start/end dates for the bucket range
+  let start, end;
+  if (range.startDate) {
+    start = new Date(range.startDate + 'T00:00:00');
+  } else {
+    start = new Date(today);
+  }
+  if (range.endDate) {
+    end = new Date(range.endDate + 'T00:00:00');
+  } else {
+    end = new Date(today);
+    end.setDate(end.getDate() + 60);
+  }
+  const holidays = new Set(state.teamHolidays || []);
+  const grain = state.workloadGrain === 'week' ? 'week' : 'day';
+  const buckets = [];
+  if (grain === 'day') {
+    const cursor = new Date(start);
+    while (cursor.getTime() <= end.getTime()) {
+      const dow = cursor.getDay();
+      if (dow !== 0 && dow !== 6) { // skip weekends
+        const dateStr = formatDateForInput(cursor);
+        buckets.push({
+          key: dateStr,
+          startDate: dateStr,
+          endDate: dateStr,
+          label: cursor.toLocaleDateString('en-US', { weekday: 'short', month: 'numeric', day: 'numeric' }),
+          shortLabel: cursor.toLocaleDateString('en-US', { month: 'numeric', day: 'numeric' }),
+          isToday: dateStr === todayStr,
+          isHoliday: holidays.has(dateStr)
+        });
+      }
+      cursor.setDate(cursor.getDate() + 1);
+    }
+  } else {
+    // Week grain: bucket starts on Sunday of each week
+    const cursor = new Date(start);
+    cursor.setDate(cursor.getDate() - cursor.getDay()); // back up to Sunday
+    while (cursor.getTime() <= end.getTime()) {
+      const weekEnd = new Date(cursor);
+      weekEnd.setDate(weekEnd.getDate() + 6); // Saturday
+      const startStr = formatDateForInput(cursor);
+      const endStr = formatDateForInput(weekEnd);
+      // Detect if today falls within this week
+      const isToday = today.getTime() >= cursor.getTime() && today.getTime() <= weekEnd.getTime();
+      buckets.push({
+        key: startStr,
+        startDate: startStr,
+        endDate: endStr,
+        label: 'Week of ' + cursor.toLocaleDateString('en-US', { month: 'numeric', day: 'numeric' }),
+        shortLabel: cursor.toLocaleDateString('en-US', { month: 'numeric', day: 'numeric' }),
+        isToday,
+        isHoliday: false
+      });
+      cursor.setDate(cursor.getDate() + 7);
+    }
+  }
+  return buckets;
+}
+
+// v78: Sum a person's hours into the chart buckets.
+// Returns array of numbers, same length as buckets, in order.
+function _bucketizeHoursPerDay(hoursPerDay, buckets) {
+  if (!hoursPerDay) return buckets.map(() => 0);
+  return buckets.map(b => {
+    let total = 0;
+    // Sum every date entry that falls within [b.startDate, b.endDate]
+    Object.entries(hoursPerDay).forEach(([dateStr, hrs]) => {
+      if (dateStr >= b.startDate && dateStr <= b.endDate) total += hrs;
+    });
+    return total;
+  });
+}
+
+// =============================================================
+// OPEN SLOTS FINDER (v80)
+// Finds days where a team member is loaded at or below a threshold % of
+// their daily capacity. Reusable across:
+//   - Team Workload card badge ("X open days")
+//   - Open Slots sidebar page (full team view)
+//   - Find Availability modal (search for days matching N hours of need)
+// Returns array of slot objects:
+//   { date, dayOfWeek, hoursScheduled, capacityHrs, loadPct, availableHrs }
+// =============================================================
+
+function _findOpenSlots(memberName, opts) {
+  opts = opts || {};
+  const scope = opts.scope || state.openSlotsScope || 'all-projects';
+  const threshold = opts.threshold || state.openSlotsThreshold || 25;
+  const window = opts.window || state.openSlotsWindow || 'two-week';
+
+  // Resolve the date range
+  const today = new Date();
+  today.setHours(0, 0, 0, 0);
+  let endDate;
+  if (window === 'this-week') {
+    endDate = new Date(today);
+    endDate.setDate(endDate.getDate() + (6 - endDate.getDay()));
+  } else if (window === 'next-week') {
+    const nextWeekStart = new Date(today);
+    nextWeekStart.setDate(nextWeekStart.getDate() + (7 - nextWeekStart.getDay()));
+    endDate = new Date(nextWeekStart);
+    endDate.setDate(endDate.getDate() + 6);
+  } else if (window === 'two-week') {
+    endDate = new Date(today);
+    endDate.setDate(endDate.getDate() + 13);
+  } else { // 'four-week'
+    endDate = new Date(today);
+    endDate.setDate(endDate.getDate() + 27);
+  }
+  // For next-week scope, the start is also shifted
+  let startDate = new Date(today);
+  if (window === 'next-week') {
+    startDate.setDate(startDate.getDate() + (7 - startDate.getDay()));
+  }
+
+  // Resolve the team member's capacity (per-day = weekly / 5)
+  const member = (state.teamMembers || []).find(m => m.name === memberName);
+  const weeklyCapacity = member && member.capacityHrs > 0 ? member.capacityHrs : 0;
+  const dailyCapacity = weeklyCapacity / 5;
+  // If no capacity is set, we can't compute % so we return empty
+  if (dailyCapacity <= 0) return [];
+
+  // Determine which projects to walk
+  const sourceProjects = scope === 'active-project'
+    ? (state.projects || []).filter(p => p.id === state.activeProjectId)
+    : (state.projects || []).filter(p => !p.archived);
+
+  // Walk days in the window, sum hours scheduled per day for this member
+  const holidays = new Set(state.teamHolidays || []);
+  const slots = [];
+  const cursor = new Date(startDate);
+  while (cursor.getTime() <= endDate.getTime()) {
+    const dow = cursor.getDay();
+    // Skip weekends
+    if (dow !== 0 && dow !== 6) {
+      const dateStr = formatDateForInput(cursor);
+      // Skip holidays — they're not workdays
+      if (!holidays.has(dateStr)) {
+        let scheduledHrs = 0;
+        sourceProjects.forEach(project => {
+          (project.tasks || []).forEach(task => {
+            if (!task || task.status === 'done') return;
+            if (task.dueDate !== dateStr) return;
+            if (typeof task.estimatedHours !== 'number' || task.estimatedHours <= 0) return;
+            // Check if this member is a Lead on this task
+            const leads = (typeof getTaskLeads === 'function') ? getTaskLeads(task) : (task.assignee ? [task.assignee] : []);
+            const isLead = leads.includes(memberName);
+            const isSupport = (typeof isTaskSupport === 'function') ? isTaskSupport(task, memberName) : false;
+            if (isLead) {
+              // Multi-Lead split
+              scheduledHrs += task.estimatedHours / leads.length;
+            }
+            // Note: Support members aren't counted here — same convention as
+            // existing workload aggregator. Hours are leadership hours only.
+          });
+        });
+        const loadPct = (scheduledHrs / dailyCapacity) * 100;
+        if (loadPct <= threshold) {
+          const weekdays = ['Sun','Mon','Tue','Wed','Thu','Fri','Sat'];
+          slots.push({
+            date: dateStr,
+            dayOfWeek: weekdays[dow],
+            hoursScheduled: Math.round(scheduledHrs * 10) / 10,
+            capacityHrs: dailyCapacity,
+            loadPct: Math.round(loadPct),
+            availableHrs: Math.round((dailyCapacity - scheduledHrs) * 10) / 10
+          });
+        }
+      }
+    }
+    cursor.setDate(cursor.getDate() + 1);
+  }
+  return slots;
+}
+
+// v80: For a given hours requirement, find which (person, date) combinations
+// can absorb it across the team. Returns ranked array sorted by best fit.
+function _findAvailabilityForHours(hoursNeeded, opts) {
+  opts = opts || {};
+  const scope = opts.scope || 'all-projects';
+  const window = opts.window || 'two-week';
+
+  // For "can absorb X hours", we use a 100% threshold — any day with at
+  // least X hours of slack qualifies
+  const matches = [];
+  const members = (state.teamMembers || []).filter(m => !m.inactive && m.capacityHrs > 0);
+  members.forEach(member => {
+    // Find days where this person has >= hoursNeeded available
+    // Use threshold = 100 so we capture all days that aren't already full
+    const slots = _findOpenSlots(member.name, { scope, threshold: 100, window });
+    slots.forEach(slot => {
+      if (slot.availableHrs >= hoursNeeded) {
+        matches.push({
+          memberName: member.name,
+          date: slot.date,
+          dayOfWeek: slot.dayOfWeek,
+          availableHrs: slot.availableHrs,
+          loadPct: slot.loadPct,
+          fitScore: slot.availableHrs - hoursNeeded // closer to 0 = better fit
+        });
+      }
+    });
+  });
+  // Sort: best fit (least slack remaining after absorbing), then by date
+  matches.sort((a, b) => {
+    if (a.date !== b.date) return a.date.localeCompare(b.date);
+    return a.fitScore - b.fitScore;
+  });
+  return matches;
+}
+
+// =============================================================
+// TEAM PERFORMANCE INSIGHTS (v82)
+// Task-hygiene metrics per estimator. Reads existing task data:
+//   - on-time %: tasks done where completedAt <= dueDate
+//   - rework rate: tasks where completionRejection happened (rejected during review)
+//   - acknowledgment latency: median days from createdAt to acknowledgedAt
+//   - blocked-caused: tasks where this estimator is Lead and status==='blocked'
+//   - overdue carry: tasks past due date and not done
+//
+// IMPORTANT: these are task management metrics, NOT skill assessments.
+// The UI surfaces a caveat banner to prevent misuse.
+// =============================================================
+
+function _tiResolveWindowCutoff() {
+  const today = new Date();
+  today.setHours(0, 0, 0, 0);
+  const window = state.tiWindow || '90d';
+  if (window === 'all') return null;
+  if (window === '30d') {
+    const c = new Date(today); c.setDate(c.getDate() - 30);
+    return c;
+  }
+  if (window === '90d') {
+    const c = new Date(today); c.setDate(c.getDate() - 90);
+    return c;
+  }
+  if (window === 'quarter') {
+    // Current calendar quarter start
+    const month = today.getMonth();
+    const qStart = month - (month % 3);
+    return new Date(today.getFullYear(), qStart, 1);
+  }
+  return null;
+}
+
+function _tiSourceProjects() {
+  const scope = state.tiScope || 'all-projects';
+  if (scope === 'active-project') {
+    return (state.projects || []).filter(p => p.id === state.activeProjectId);
+  }
+  return (state.projects || []).filter(p => !p.archived);
+}
+
+// Build the per-estimator stats map.
+// Returns Map<name, statsObj>
+function _aggregateTeamInsights() {
+  const cutoff = _tiResolveWindowCutoff(); // Date or null
+  const cutoffMs = cutoff ? cutoff.getTime() : 0;
+  const today = new Date(); today.setHours(0, 0, 0, 0);
+  const todayStr = formatDateForInput(today);
+
+  const sourceProjects = _tiSourceProjects();
+  const stats = new Map();
+
+  function ensure(name) {
+    if (!stats.has(name)) {
+      stats.set(name, {
+        name,
+        // On-time
+        onTimeNumerator: 0,
+        onTimeDenominator: 0,
+        // Rework
+        reworkCount: 0,
+        completedCount: 0,
+        // Acknowledgment latency — list of latency-in-days values
+        ackLatencies: [],
+        // Currently overdue (past due + not done) on this person's plate
+        overdueCount: 0,
+        // Blocked tasks where this person is Lead
+        blockedCount: 0,
+        // Task counts for context
+        totalAssignedInWindow: 0,
+        // For drill-down lists
+        recentOverdueTasks: [],
+        recentReworkTasks: [],
+        recentLateCompletes: [],
+        // Per-task details for transparency
+        completedLateBy: [] // array of integer days late
+      });
+    }
+    return stats.get(name);
+  }
+
+  sourceProjects.forEach(project => {
+    (project.tasks || []).forEach(task => {
+      if (!task) return;
+      const leads = (typeof getTaskLeads === 'function')
+        ? getTaskLeads(task)
+        : (task.assignee ? [task.assignee] : []);
+      if (leads.length === 0) return;
+
+      const completedAtMs = task.completedAt || 0;
+      const inWindow = cutoff
+        ? (completedAtMs >= cutoffMs || (!completedAtMs && task.createdAt >= cutoffMs))
+        : true;
+
+      leads.forEach(name => {
+        const s = ensure(name);
+        if (inWindow) s.totalAssignedInWindow++;
+
+        // On-time accounting: only count completed tasks here, plus currently overdue
+        if (task.status === 'done' && task.completedAt && task.dueDate) {
+          if (!cutoff || task.completedAt >= cutoffMs) {
+            const compStr = formatDateForInput(new Date(task.completedAt));
+            s.onTimeDenominator++;
+            s.completedCount++;
+            if (compStr <= task.dueDate) {
+              s.onTimeNumerator++;
+            } else {
+              // Late
+              const dueMs = new Date(task.dueDate + 'T00:00:00').getTime();
+              const lateDays = Math.round((task.completedAt - dueMs) / (1000 * 60 * 60 * 24));
+              s.completedLateBy.push(lateDays);
+              if (s.recentLateCompletes.length < 25) {
+                s.recentLateCompletes.push({
+                  taskId: task.id,
+                  projectId: project.id,
+                  projectName: project.name,
+                  title: task.title,
+                  dueDate: task.dueDate,
+                  completedAt: task.completedAt,
+                  lateDays
+                });
+              }
+            }
+          }
+        }
+        // Overdue (currently past-due and not done)
+        if (task.status !== 'done' && task.dueDate && task.dueDate < todayStr) {
+          s.overdueCount++;
+          if (s.recentOverdueTasks.length < 25) {
+            s.recentOverdueTasks.push({
+              taskId: task.id,
+              projectId: project.id,
+              projectName: project.name,
+              title: task.title,
+              dueDate: task.dueDate
+            });
+          }
+        }
+        // Blocked count
+        if (task.status === 'blocked') s.blockedCount++;
+        // Rework: completionRejection happened on this task
+        // (a task that was once marked done then rejected)
+        if (task.completionRejectionReason) {
+          if (!cutoff || (task.completionRejectionAcknowledgedAt && task.completionRejectionAcknowledgedAt >= cutoffMs) || (task.completedAt && task.completedAt >= cutoffMs)) {
+            s.reworkCount++;
+            if (s.recentReworkTasks.length < 25) {
+              s.recentReworkTasks.push({
+                taskId: task.id,
+                projectId: project.id,
+                projectName: project.name,
+                title: task.title,
+                rejectionReason: task.completionRejectionReason || '',
+                rejectionNotes: task.completionRejectionNotes || ''
+              });
+            }
+          }
+        }
+        // Acknowledgment latency
+        if (task.acknowledgedAt && task.createdAt) {
+          if (!cutoff || task.acknowledgedAt >= cutoffMs) {
+            const latencyDays = (task.acknowledgedAt - task.createdAt) / (1000 * 60 * 60 * 24);
+            // Skip absurd values from clock issues; cap at 60 days
+            if (latencyDays >= 0 && latencyDays <= 60) {
+              s.ackLatencies.push(latencyDays);
+            }
+          }
+        }
+      });
+    });
+  });
+
+  // Compute derived metrics
+  stats.forEach(s => {
+    s.onTimePct = s.onTimeDenominator > 0
+      ? Math.round((s.onTimeNumerator / s.onTimeDenominator) * 100)
+      : null;
+    s.reworkPct = s.completedCount > 0
+      ? Math.round((s.reworkCount / s.completedCount) * 100)
+      : null;
+    // Median acknowledgment latency
+    if (s.ackLatencies.length > 0) {
+      const sorted = [...s.ackLatencies].sort((a, b) => a - b);
+      const mid = Math.floor(sorted.length / 2);
+      s.ackLatencyMedian = sorted.length % 2 === 0
+        ? (sorted[mid - 1] + sorted[mid]) / 2
+        : sorted[mid];
+      s.ackLatencyMedian = Math.round(s.ackLatencyMedian * 10) / 10;
+    } else {
+      s.ackLatencyMedian = null;
+    }
+    // Average late days when late
+    if (s.completedLateBy.length > 0) {
+      s.avgLateDays = Math.round(
+        s.completedLateBy.reduce((a, b) => a + b, 0) / s.completedLateBy.length
+      );
+    } else {
+      s.avgLateDays = null;
+    }
+  });
+
+  return stats;
+}
+
 // Render the entire workload page.
 function renderTeamWorkloadView() {
   // Sync controls to state
   document.querySelectorAll('.twv-seg-btn').forEach(b => {
-    b.classList.toggle('active', b.dataset.scope === (state.workloadDateScope || 'two-week'));
+    if (b.dataset.scope) {
+      b.classList.toggle('active', b.dataset.scope === (state.workloadDateScope || 'two-week'));
+    }
+  });
+  // v78: sync the grain toggle separately (different data attribute)
+  const activeGrain = state.workloadGrain === 'week' ? 'week' : 'day';
+  document.querySelectorAll('.twv-grain-btn').forEach(b => {
+    b.classList.toggle('active', b.dataset.grain === activeGrain);
   });
   const sortSel = document.getElementById('twvSortSelect');
   if (sortSel) sortSel.value = state.workloadSort || 'load-desc';
@@ -3074,20 +4556,38 @@ function renderTeamWorkloadView() {
   const stats = _aggregateWorkloadByAssignee();
   const sorted = _sortWorkloadList(Array.from(stats.values()));
 
+  // v76: window context for scaled capacity math + clear labels
+  const weeks = _activeWorkloadWeeks();
+  const windowLabel = _activeWorkloadLabel();
+
   // Team summary chips
   const totalOpen = sorted.reduce((sum, s) => sum + s.totalOpen, 0);
   const totalHrs = sorted.reduce((sum, s) => sum + s.totalOpenHours, 0);
   const totalCrit = sorted.reduce((sum, s) => sum + s.criticalCount, 0);
   const totalOver = sorted.reduce((sum, s) => sum + s.overdue, 0);
-  const totalCap = sorted.reduce((sum, s) => sum + (s.capacityHrs || 0), 0);
-  const overCapEstimators = sorted.filter(s => s.capacityHrs > 0 && s.openHoursInRange > s.capacityHrs).length;
+  // v76: team capacity is per-week × number of weeks in the active window
+  // (so for "Next 4 Weeks" with three 40h/wk estimators: 3 × 40 × 4 = 480h)
+  const totalCapPerWeek = sorted.reduce((sum, s) => sum + (s.capacityHrs || 0), 0);
+  const totalCapInWindow = totalCapPerWeek * weeks;
+  // v76: in-window hours (what the team is actually scheduled for in this window)
+  // matters more than total open hours when judging capacity for the window
+  const totalHrsInWindow = sorted.reduce((sum, s) => sum + s.openHoursInRange, 0);
+  // Over-capacity: scaled comparison
+  const overCapEstimators = sorted.filter(s => {
+    if (!s.capacityHrs || s.capacityHrs <= 0) return false;
+    return s.openHoursInRange > (s.capacityHrs * weeks);
+  }).length;
   const summaryEl = document.getElementById('twvTeamSummary');
   if (summaryEl) {
+    const capTooltip = `Team capacity for ${windowLabel}: ${totalCapPerWeek}h/week × ${weeks} week${weeks === 1 ? '' : 's'} = ${totalCapInWindow}h`;
+    const hrsInWindowTooltip = `Hours scheduled across the team for tasks due in this window`;
+    const totalHrsTooltip = `All open task hours (entire backlog, regardless of due date)`;
     summaryEl.innerHTML = `
       <div class="twv-summary-chip"><span class="chip-num">${sorted.length}</span> <span class="chip-label">${sorted.length === 1 ? 'estimator' : 'estimators'}</span></div>
       <div class="twv-summary-chip"><span class="chip-num">${totalOpen}</span> <span class="chip-label">open tasks</span></div>
-      <div class="twv-summary-chip"><span class="chip-num">${totalHrs}h</span> <span class="chip-label">total hours</span></div>
-      <div class="twv-summary-chip ${totalCap > 0 && totalHrs > totalCap ? 'chip-warn' : ''}"><span class="chip-num">${totalCap}h</span> <span class="chip-label">team capacity</span></div>
+      <div class="twv-summary-chip ${totalCapInWindow > 0 && totalHrsInWindow > totalCapInWindow ? 'chip-warn' : ''}" title="${hrsInWindowTooltip}"><span class="chip-num">${Math.round(totalHrsInWindow * 10) / 10}h</span> <span class="chip-label">in-window hours</span></div>
+      <div class="twv-summary-chip" title="${totalHrsTooltip}"><span class="chip-num">${Math.round(totalHrs * 10) / 10}h</span> <span class="chip-label">total open hours</span></div>
+      <div class="twv-summary-chip" title="${capTooltip}"><span class="chip-num">${totalCapInWindow}h</span> <span class="chip-label">team capacity (${weeks}wk)</span></div>
       <div class="twv-summary-chip ${totalCrit > 0 ? 'chip-critical' : ''}"><span class="chip-num">${totalCrit}</span> <span class="chip-label">🔥 critical</span></div>
       <div class="twv-summary-chip ${totalOver > 0 ? 'chip-warn' : ''}"><span class="chip-num">${totalOver}</span> <span class="chip-label">overdue</span></div>
       <div class="twv-summary-chip ${overCapEstimators > 0 ? 'chip-over' : ''}"><span class="chip-num">${overCapEstimators}</span> <span class="chip-label">over capacity</span></div>
@@ -3116,12 +4616,23 @@ function renderTeamWorkloadView() {
 
 function _buildEstimatorCardHtml(s) {
   const loadClass = _loadStatusClass(s);
-  const capPct = s.capacityHrs > 0 ? Math.round((s.openHoursInRange / s.capacityHrs) * 100) : null;
+  // v76: scale capacity by window weeks. Show both raw hours AND
+  // normalized weekly hours so user knows what's compared to what.
+  const weeks = _activeWorkloadWeeks();
+  const windowLabel = _activeWorkloadLabel();
+  const effectiveCap = (s.capacityHrs || 0) * weeks;
+  const capPct = effectiveCap > 0 ? Math.round((s.openHoursInRange / effectiveCap) * 100) : null;
+  // Normalized weekly: hours per week if work is spread evenly
+  const normalizedWkly = weeks > 0 ? +(s.openHoursInRange / weeks).toFixed(1) : 0;
   const projectCount = s.projectsLead.size + s.projectsSupport.size;
   const initials = s.name.split(/\s+/).map(x => x[0]).join('').slice(0, 2).toUpperCase();
   const projects = Object.entries(s.byProject)
     .sort((a, b) => b[1].hours - a[1].hours || b[1].tasks - a[1].tasks)
     .slice(0, 5);
+  // v76: build tooltip explaining the math
+  const capTooltip = s.capacityHrs > 0
+    ? `${s.openHoursInRange}h scheduled vs ${s.capacityHrs}h/wk × ${weeks} ${weeks === 1 ? 'wk' : 'wks'} = ${effectiveCap}h capacity (${windowLabel})`
+    : '';
   return `
     <div class="twv-card ${loadClass}" data-assignee="${escapeAttr(s.name)}">
       <div class="twv-card-header">
@@ -3134,14 +4645,17 @@ function _buildEstimatorCardHtml(s) {
       </div>
 
       ${s.capacityHrs > 0 ? `
-        <div class="twv-capacity-bar-wrap">
+        <div class="twv-capacity-bar-wrap" title="${escapeAttr(capTooltip)}">
           <div class="twv-capacity-label">
-            <span>${s.openHoursInRange}h / ${s.capacityHrs}h</span>
+            <span>${s.openHoursInRange}h / ${effectiveCap}h <span class="twv-capacity-window">(${weeks === 1 ? '1 wk' : weeks + ' wks'})</span></span>
             <span class="twv-capacity-pct">${capPct}%</span>
           </div>
           <div class="twv-capacity-bar">
             <div class="twv-capacity-fill" style="width:${Math.min(100, capPct)}%"></div>
             ${capPct > 100 ? `<div class="twv-capacity-over" title="${capPct - 100}% over capacity">+${capPct - 100}%</div>` : ''}
+          </div>
+          <div class="twv-capacity-normalized" title="Hours per week if work spreads evenly across this window">
+            ≈ <strong>${normalizedWkly}h/wk avg</strong> vs ${s.capacityHrs}h/wk capacity
           </div>
         </div>
       ` : `
@@ -3150,6 +4664,10 @@ function _buildEstimatorCardHtml(s) {
           <span class="twv-capacity-untracked-hint">(no capacity ceiling set)</span>
         </div>
       `}
+
+      ${_buildEstimatorStripHtml(s)}
+
+      ${_buildOpenSlotsBadgeHtml(s)}
 
       <div class="twv-card-stats">
         <div class="twv-stat"><span class="twv-stat-num">${s.totalOpen}</span> <span class="twv-stat-label">open</span></div>
@@ -3177,16 +4695,256 @@ function _buildEstimatorCardHtml(s) {
   `;
 }
 
+// v78: Build the per-estimator daily-or-weekly bar strip. Renders bars sized
+// proportional to hours, height capped relative to person's per-day capacity
+// (or per-week capacity in week mode). Clicking a bar opens a drill-down
+// popover listing the tasks for that bucket.
+function _buildEstimatorStripHtml(s) {
+  const buckets = _buildWorkloadBuckets();
+  if (buckets.length === 0) return '';
+  const values = _bucketizeHoursPerDay(s.hoursPerDay || {}, buckets);
+  const grain = state.workloadGrain === 'week' ? 'week' : 'day';
+  // Capacity per bucket: per-day cap = (weekly cap / 5); per-week cap = weekly cap
+  // Used as the "100%" line for bar fill so bars are interpretable against capacity.
+  const perBucketCap = s.capacityHrs > 0
+    ? (grain === 'week' ? s.capacityHrs : s.capacityHrs / 5)
+    : 0;
+  // For the visual scale: use max(perBucketCap × 1.25, peak hours in series) so
+  // empty/low-load bars don't blow up to 100%. If no capacity tracked, scale
+  // off peak only.
+  const peak = Math.max(...values, 0.01);
+  const scaleMax = perBucketCap > 0 ? Math.max(perBucketCap * 1.25, peak) : peak;
+  // Total in window for the strip header
+  const totalInStrip = values.reduce((a, b) => a + b, 0);
+  // Build label depending on grain
+  const grainLabel = grain === 'week' ? 'Weekly' : 'Daily';
+  // Decide whether to compress label (week mode → short labels)
+  const headerHtml = `
+    <div class="twv-strip-header">
+      <span class="twv-strip-title">${grainLabel} schedule</span>
+      <span class="twv-strip-total" title="Total projected hours across the active window">${Math.round(totalInStrip * 10) / 10}h scheduled</span>
+    </div>
+  `;
+  // Build bars
+  const barsHtml = buckets.map((b, i) => {
+    const hrs = values[i] || 0;
+    const fillPct = scaleMax > 0 ? Math.min(100, (hrs / scaleMax) * 100) : 0;
+    // Bar color based on whether hours exceed per-bucket capacity
+    let barClass = 'twv-strip-bar';
+    if (perBucketCap > 0) {
+      if (hrs > perBucketCap) barClass += ' bar-over';
+      else if (hrs >= perBucketCap * 0.75) barClass += ' bar-high';
+      else if (hrs > 0) barClass += ' bar-some';
+      else barClass += ' bar-empty';
+    } else {
+      // No capacity: simple presence/absence color
+      if (hrs > 0) barClass += ' bar-some';
+      else barClass += ' bar-empty';
+    }
+    if (b.isToday) barClass += ' is-today';
+    if (b.isHoliday) barClass += ' is-holiday';
+    const tipText = `${b.label}: ${Math.round(hrs * 10) / 10}h scheduled${perBucketCap > 0 ? ` (cap ${Math.round(perBucketCap * 10) / 10}h)` : ''}${b.isHoliday ? ' · 🎉 Holiday' : ''}`;
+    return `
+      <div class="twv-strip-col" title="${escapeAttr(tipText)}" onclick="openWorkloadDrilldown('${escapeAttr(s.name)}', '${escapeAttr(b.startDate)}', '${escapeAttr(b.endDate)}', '${escapeAttr(b.label)}')">
+        <div class="twv-strip-bar-wrap">
+          <div class="${barClass}" style="height:${fillPct}%"></div>
+          ${hrs > 0 ? `<div class="twv-strip-bar-num">${Math.round(hrs * 10) / 10}</div>` : ''}
+        </div>
+        <div class="twv-strip-col-label">${escapeHtml(b.shortLabel)}${b.isToday ? '<span class="twv-strip-today-dot"></span>' : ''}</div>
+      </div>
+    `;
+  }).join('');
+  return `
+    <div class="twv-strip">
+      ${headerHtml}
+      <div class="twv-strip-bars">${barsHtml}</div>
+    </div>
+  `;
+}
+
+// v80: Build an "open slots" pill for an estimator card. Shows the number of
+// days in the active workload window where they're at or below the threshold
+// % of capacity. Click opens a popover listing the dates.
+function _buildOpenSlotsBadgeHtml(s) {
+  const threshold = state.openSlotsThreshold || 25;
+  // Use the active workload window as the scan window, but cap at 4 weeks
+  const scopeMap = {
+    'this-week': 'this-week',
+    'next-week': 'next-week',
+    'two-week': 'two-week',
+    'four-week': 'four-week',
+    'this-month': 'four-week',  // approximate
+    'next-month': 'four-week',
+    'all-open': 'four-week'
+  };
+  const window = scopeMap[state.workloadDateScope] || 'two-week';
+  const slots = _findOpenSlots(s.name, {
+    scope: 'all-projects',
+    threshold,
+    window
+  });
+  if (slots.length === 0) {
+    // No open days at this threshold — show a "busy" indicator instead, but
+    // only if they have capacity tracked
+    if (!s.capacityHrs || s.capacityHrs <= 0) return '';
+    return `
+      <div class="twv-openslots-row">
+        <span class="twv-openslots-badge twv-openslots-none" title="No days at or below ${threshold}% capacity in this window">
+          🔒 No open slots (≤${threshold}%)
+        </span>
+      </div>
+    `;
+  }
+  return `
+    <div class="twv-openslots-row">
+      <button class="twv-openslots-badge" onclick="openSlotsBadgeDetail('${escapeAttr(s.name)}', ${threshold})" title="Click to see which days are open">
+        ✓ ${slots.length} open day${slots.length === 1 ? '' : 's'} <span class="twv-openslots-meta">(≤${threshold}% loaded)</span>
+      </button>
+    </div>
+  `;
+}
+
+// v80: Open a popover listing the specific open days for a person
+function openSlotsBadgeDetail(memberName, threshold) {
+  const scopeMap = {
+    'this-week': 'this-week',
+    'next-week': 'next-week',
+    'two-week': 'two-week',
+    'four-week': 'four-week',
+    'this-month': 'four-week',
+    'next-month': 'four-week',
+    'all-open': 'four-week'
+  };
+  const window = scopeMap[state.workloadDateScope] || 'two-week';
+  const slots = _findOpenSlots(memberName, { scope: 'all-projects', threshold, window });
+  const existing = document.getElementById('openSlotsDetailModal');
+  if (existing) existing.remove();
+  if (slots.length === 0) {
+    alert(`No open slots for ${memberName} at ≤${threshold}% capacity.`);
+    return;
+  }
+  const rowsHtml = slots.map(slot => `
+    <div class="osd-row">
+      <div class="osd-date">${escapeHtml(slot.dayOfWeek)}, ${escapeHtml(formatDate(slot.date))}</div>
+      <div class="osd-load">${slot.hoursScheduled}h / ${Math.round(slot.capacityHrs * 10) / 10}h scheduled</div>
+      <div class="osd-pct ${slot.loadPct <= 10 ? 'fully-open' : ''}">${slot.loadPct}% loaded</div>
+      <div class="osd-avail"><strong>${slot.availableHrs}h</strong> available</div>
+    </div>
+  `).join('');
+  const html = `
+    <div class="modal-backdrop active" id="openSlotsDetailModal" onclick="closeOpenSlotsDetail(event)">
+      <div class="modal" style="max-width:680px;max-height:80vh;display:flex;flex-direction:column;" onclick="event.stopPropagation()">
+        <div style="display:flex;justify-content:space-between;align-items:center;padding-bottom:10px;border-bottom:1px solid var(--border);">
+          <h3 style="margin:0;">📅 Open Slots — ${escapeHtml(memberName)}</h3>
+          <button class="btn btn-sm" onclick="closeOpenSlotsDetail()">✕</button>
+        </div>
+        <div style="padding:8px 0;color:var(--text-dim);font-size:12px;">
+          ${slots.length} day${slots.length === 1 ? '' : 's'} at ≤${threshold}% capacity (across all projects)
+        </div>
+        <div style="overflow:auto;flex:1;margin-top:6px;">
+          <div class="osd-list">${rowsHtml}</div>
+        </div>
+      </div>
+    </div>
+  `;
+  document.body.insertAdjacentHTML('beforeend', html);
+}
+
+function closeOpenSlotsDetail(event) {
+  if (event && event.target && event.target.id !== 'openSlotsDetailModal' && event.type === 'click') return;
+  const m = document.getElementById('openSlotsDetailModal');
+  if (m) m.remove();
+}
+
+// v78: Drill-down popover — opens when user clicks a bar in the per-card strip.
+// Lists the tasks scheduled in that bucket for the clicked person.
+function openWorkloadDrilldown(name, startDate, endDate, label) {
+  // Find the assignee's tasksPerDay
+  const stats = _aggregateWorkloadByAssignee();
+  const s = stats.get(name);
+  if (!s || !s.tasksPerDay) {
+    alert(`No tasks found for ${name} in ${label}.`);
+    return;
+  }
+  // Collect tasks within the date range
+  const tasks = [];
+  Object.entries(s.tasksPerDay).forEach(([dateStr, taskList]) => {
+    if (dateStr >= startDate && dateStr <= endDate) {
+      taskList.forEach(t => tasks.push({ ...t, date: dateStr }));
+    }
+  });
+  if (tasks.length === 0) {
+    alert(`No tasks for ${name} during ${label}.`);
+    return;
+  }
+  // Sort by date, then critical first within a date
+  tasks.sort((a, b) => {
+    if (a.date !== b.date) return a.date.localeCompare(b.date);
+    if (a.critical !== b.critical) return b.critical ? 1 : -1;
+    return 0;
+  });
+  // Build the modal markup and inject
+  const modalId = 'workloadDrilldownModal';
+  let existing = document.getElementById(modalId);
+  if (existing) existing.remove();
+  const rowsHtml = tasks.map(t => `
+    <div class="wlDrill-row" onclick="window.openTaskModal && openTaskModal('${escapeAttr(t.taskId)}')">
+      <div class="wlDrill-date">${escapeHtml(formatDate(t.date))}</div>
+      <div class="wlDrill-title">${t.critical ? '🔥 ' : ''}${escapeHtml(t.title || '(untitled)')}</div>
+      <div class="wlDrill-project">${escapeHtml(t.projectName || '')}</div>
+      <div class="wlDrill-hours">${Math.round(t.hours * 10) / 10}h</div>
+    </div>
+  `).join('');
+  const totalHrs = tasks.reduce((sum, t) => sum + t.hours, 0);
+  const modalHtml = `
+    <div class="modal-backdrop active" id="${modalId}" onclick="closeWorkloadDrilldown(event)">
+      <div class="modal" style="max-width:760px; max-height:80vh; display:flex; flex-direction:column;" onclick="event.stopPropagation()">
+        <div style="display:flex; justify-content:space-between; align-items:center; padding-bottom:10px; border-bottom:1px solid var(--border);">
+          <h3 style="margin:0;">${escapeHtml(name)} — ${escapeHtml(label)}</h3>
+          <button class="btn btn-sm" onclick="closeWorkloadDrilldown()">✕</button>
+        </div>
+        <div style="padding:8px 0; color:var(--text-dim); font-size:12px;">${tasks.length} task${tasks.length === 1 ? '' : 's'} · ${Math.round(totalHrs * 10) / 10}h total</div>
+        <div style="overflow:auto; flex:1; margin-top:6px;">
+          <div class="wlDrill-list">${rowsHtml}</div>
+        </div>
+      </div>
+    </div>
+  `;
+  document.body.insertAdjacentHTML('beforeend', modalHtml);
+}
+
+function closeWorkloadDrilldown(event) {
+  if (event && event.target && event.target.id !== 'workloadDrilldownModal' && event.type === 'click') return;
+  const m = document.getElementById('workloadDrilldownModal');
+  if (m) m.remove();
+}
+
+// v78: Toggle workload chart grain (day / week)
+function setWorkloadGrain(grain) {
+  if (grain !== 'day' && grain !== 'week') return;
+  state.workloadGrain = grain;
+  saveState();
+  document.querySelectorAll('.twv-grain-btn').forEach(b => {
+    b.classList.toggle('active', b.dataset.grain === grain);
+  });
+  renderTeamWorkloadView();
+}
+
 function _renderWorkloadTable(sorted) {
   const tableEl = document.getElementById('twvTable');
   if (!tableEl) return;
+  // v76: scale capacity by window weeks; show normalized weekly load
+  const weeks = _activeWorkloadWeeks();
+  const weeksLabel = weeks === 1 ? '1 wk' : `${weeks} wks`;
   let html = `
     <thead>
       <tr>
         <th>Estimator</th>
-        <th class="num">Capacity</th>
-        <th class="num">In Window</th>
-        <th class="num">Load %</th>
+        <th class="num" title="Per-week capacity ceiling set in Capacity & PTO modal">Cap/Wk</th>
+        <th class="num" title="Effective capacity for the active window (per-week × ${weeksLabel})">Cap × ${weeksLabel}</th>
+        <th class="num" title="Open task hours scheduled within the active window">In Window</th>
+        <th class="num" title="Hours per week if work spreads evenly across the window">Avg/Wk</th>
+        <th class="num" title="In-window hours ÷ effective capacity">Load %</th>
         <th class="num">Total Open</th>
         <th class="num">Total Hrs</th>
         <th class="num">🔥</th>
@@ -3201,12 +4959,18 @@ function _renderWorkloadTable(sorted) {
   `;
   sorted.forEach(s => {
     const loadClass = _loadStatusClass(s);
-    const capPct = s.capacityHrs > 0 ? Math.round((s.openHoursInRange / s.capacityHrs) * 100) + '%' : '—';
+    const effectiveCap = (s.capacityHrs || 0) * weeks;
+    const capPct = effectiveCap > 0 ? Math.round((s.openHoursInRange / effectiveCap) * 100) + '%' : '—';
+    const normalizedWkly = weeks > 0 ? +(s.openHoursInRange / weeks).toFixed(1) : 0;
+    // Color the avg/wk cell if it exceeds per-week capacity
+    const avgClass = (s.capacityHrs > 0 && normalizedWkly > s.capacityHrs) ? 'warn-cell' : '';
     html += `
       <tr class="${loadClass}">
         <td><strong>${escapeHtml(s.name)}</strong></td>
         <td class="num">${s.capacityHrs > 0 ? s.capacityHrs + 'h' : '—'}</td>
+        <td class="num">${effectiveCap > 0 ? effectiveCap + 'h' : '—'}</td>
         <td class="num">${s.openHoursInRange}h</td>
+        <td class="num ${avgClass}">${normalizedWkly}h</td>
         <td class="num">${capPct}</td>
         <td class="num">${s.totalOpen}</td>
         <td class="num">${s.totalOpenHours}h</td>
@@ -3226,43 +4990,58 @@ function _renderWorkloadTable(sorted) {
 function _renderLookaheadChart(stats) {
   const chartEl = document.getElementById('twvLookaheadChart');
   if (!chartEl) return;
-  // Aggregate hours per business day across whole team for next 14d
-  const dayTotals = {};
-  stats.forEach(s => {
-    Object.entries(s.hoursPerDay).forEach(([date, hrs]) => {
-      dayTotals[date] = (dayTotals[date] || 0) + hrs;
-    });
-  });
-  const today = new Date();
-  today.setHours(0,0,0,0);
-  const days = [];
-  for (let i = 0; i < 14; i++) {
-    const d = new Date(today);
-    d.setDate(d.getDate() + i);
-    const dow = d.getDay();
-    if (dow === 0 || dow === 6) continue; // skip weekends
-    const dateStr = formatDateForInput(d);
-    const isHoliday = (state.teamHolidays || []).includes(dateStr);
-    days.push({
-      date: dateStr,
-      label: d.toLocaleDateString('en-US', { weekday: 'short', month: 'numeric', day: 'numeric' }),
-      hours: dayTotals[dateStr] || 0,
-      isHoliday,
-      isToday: i === 0
-    });
+  // v78: chart now respects the active window (was hardcoded to 14 days) and
+  // the day/week grain toggle. Buckets are built by _buildWorkloadBuckets;
+  // each bucket sums hours across the whole team for that date range.
+  const buckets = _buildWorkloadBuckets();
+  if (buckets.length === 0) {
+    chartEl.innerHTML = '<div style="padding:24px;text-align:center;color:var(--text-dim);font-size:13px;">No date window selected.</div>';
+    return;
   }
-  const maxHours = Math.max(...days.map(d => d.hours), 8);
-  chartEl.innerHTML = days.map(d => {
-    const pct = maxHours > 0 ? (d.hours / maxHours) * 100 : 0;
-    const colorClass = d.hours >= 16 ? 'bar-high' : (d.hours >= 8 ? 'bar-med' : (d.hours > 0 ? 'bar-low' : 'bar-empty'));
+  // Sum team-wide hours per bucket
+  const teamValues = buckets.map(b => {
+    let total = 0;
+    stats.forEach(s => {
+      Object.entries(s.hoursPerDay || {}).forEach(([dateStr, hrs]) => {
+        if (dateStr >= b.startDate && dateStr <= b.endDate) total += hrs;
+      });
+    });
+    return total;
+  });
+  // Cap visualization at the team's combined daily / weekly capacity if known
+  const grain = state.workloadGrain === 'week' ? 'week' : 'day';
+  let teamPerBucketCap = 0;
+  (state.teamMembers || []).forEach(m => {
+    if (m.capacityHrs && m.capacityHrs > 0) {
+      teamPerBucketCap += (grain === 'week' ? m.capacityHrs : m.capacityHrs / 5);
+    }
+  });
+  const peak = Math.max(...teamValues, 0.01);
+  const scaleMax = teamPerBucketCap > 0 ? Math.max(teamPerBucketCap * 1.25, peak) : peak;
+  // Render bars
+  chartEl.innerHTML = buckets.map((b, i) => {
+    const hrs = teamValues[i] || 0;
+    const fillPct = scaleMax > 0 ? Math.min(100, (hrs / scaleMax) * 100) : 0;
+    // Color by load relative to team capacity
+    let colorClass;
+    if (teamPerBucketCap > 0) {
+      if (hrs > teamPerBucketCap) colorClass = 'bar-high';
+      else if (hrs >= teamPerBucketCap * 0.6) colorClass = 'bar-med';
+      else if (hrs > 0) colorClass = 'bar-low';
+      else colorClass = 'bar-empty';
+    } else {
+      // No capacity tracked — color by absolute thresholds
+      colorClass = hrs >= 16 ? 'bar-high' : (hrs >= 8 ? 'bar-med' : (hrs > 0 ? 'bar-low' : 'bar-empty'));
+    }
+    const tipText = `${b.label}: ${Math.round(hrs * 10) / 10}h team-wide${teamPerBucketCap > 0 ? ` (capacity ${Math.round(teamPerBucketCap)}h)` : ''}${b.isHoliday ? ' · 🎉 Holiday' : ''}`;
     return `
-      <div class="twv-lookahead-day ${d.isToday ? 'is-today' : ''} ${d.isHoliday ? 'is-holiday' : ''}">
+      <div class="twv-lookahead-day ${b.isToday ? 'is-today' : ''} ${b.isHoliday ? 'is-holiday' : ''}" title="${escapeAttr(tipText)}">
         <div class="twv-lookahead-bar-wrap">
-          <div class="twv-lookahead-bar ${colorClass}" style="height:${pct}%" title="${d.hours} hours due ${d.label}"></div>
-          ${d.hours > 0 ? `<div class="twv-lookahead-bar-label">${d.hours}h</div>` : ''}
-          ${d.isHoliday ? '<div class="twv-lookahead-holiday-marker">🎉</div>' : ''}
+          <div class="twv-lookahead-bar ${colorClass}" style="height:${fillPct}%"></div>
+          ${hrs > 0 ? `<div class="twv-lookahead-bar-label">${Math.round(hrs * 10) / 10}h</div>` : ''}
+          ${b.isHoliday ? '<div class="twv-lookahead-holiday-marker">🎉</div>' : ''}
         </div>
-        <div class="twv-lookahead-day-label">${d.label}${d.isToday ? ' (Today)' : ''}</div>
+        <div class="twv-lookahead-day-label">${escapeHtml(b.shortLabel)}${b.isToday ? ' (Today)' : ''}</div>
       </div>
     `;
   }).join('');
@@ -3328,8 +5107,14 @@ function _renderUnassignedPile() {
 function navigateToProjectFromWorkload(projectId) {
   state.activeProjectId = projectId;
   state.teamWorkloadView = false;
+  state.projectTimelineView = false;
+  state.openSlotsView = false;
+  state.tiView = false;
   state.homeView = false;
   state.teamWorkloadView = false;
+  state.projectTimelineView = false;
+  state.openSlotsView = false;
+  state.tiView = false;
   saveState();
   render();
 }
@@ -3337,8 +5122,14 @@ function navigateToProjectFromWorkload(projectId) {
 function openTaskFromWorkload(projectId, taskId) {
   state.activeProjectId = projectId;
   state.teamWorkloadView = false;
+  state.projectTimelineView = false;
+  state.openSlotsView = false;
+  state.tiView = false;
   state.homeView = false;
   state.teamWorkloadView = false;
+  state.projectTimelineView = false;
+  state.openSlotsView = false;
+  state.tiView = false;
   saveState();
   render();
   setTimeout(() => {
@@ -4656,6 +6447,9 @@ function renderHomeRejections(user) {
 function jumpToProjectFromHome(projectId) {
   state.homeView = false;
   state.teamWorkloadView = false;
+  state.projectTimelineView = false;
+  state.openSlotsView = false;
+  state.tiView = false;
   state.activeProjectId = projectId;
   state.activeStageId = 'all';
   state.activeAssignee = 'all';
@@ -4666,6 +6460,9 @@ function jumpToProjectFromHome(projectId) {
 function jumpToTaskFromHome(projectId, taskId) {
   state.homeView = false;
   state.teamWorkloadView = false;
+  state.projectTimelineView = false;
+  state.openSlotsView = false;
+  state.tiView = false;
   state.activeProjectId = projectId;
   state.activeStageId = 'all';
   state.activeAssignee = 'all';
@@ -4678,6 +6475,9 @@ function jumpToTaskFromHome(projectId, taskId) {
 function jumpToMessageFromHome(projectId) {
   state.homeView = false;
   state.teamWorkloadView = false;
+  state.projectTimelineView = false;
+  state.openSlotsView = false;
+  state.tiView = false;
   state.activeProjectId = projectId;
   saveState();
   render();
@@ -6379,20 +8179,29 @@ function renderProjectHoursRollup() {
     }
   });
 
-  // Per-assignee breakdown — multi-Lead aware (split equally between co-Leads)
+  // v77: Per-person breakdown — multi-Lead aware (split equally between
+  // co-Leads). Tracks total / done / remaining separately so the rollup
+  // shows the full accounting, not just remaining.
   const assigneeMap = {};
+  function ensureAssignee(key) {
+    if (!assigneeMap[key]) assigneeMap[key] = { total: 0, done: 0, remaining: 0 };
+    return assigneeMap[key];
+  }
   project.tasks.forEach(t => {
-    if (!t || t.status === 'done') return;
+    if (!t) return;
     if (typeof t.estimatedHours !== 'number' || t.estimatedHours <= 0) return;
     const leads = (typeof getTaskLeads === 'function') ? getTaskLeads(t) : (t.assignee ? [t.assignee] : []);
-    if (leads.length === 0) {
-      assigneeMap['__unassigned'] = (assigneeMap['__unassigned'] || 0) + t.estimatedHours;
-    } else {
-      const share = t.estimatedHours / leads.length;
-      leads.forEach(name => {
-        assigneeMap[name] = (assigneeMap[name] || 0) + share;
-      });
-    }
+    const targets = leads.length > 0 ? leads : ['__unassigned'];
+    const share = t.estimatedHours / targets.length;
+    targets.forEach(name => {
+      const a = ensureAssignee(name);
+      a.total += share;
+      if (t.status === 'done') {
+        a.done += share;
+      } else {
+        a.remaining += share;
+      }
+    });
   });
 
   // Capacity warning — if remaining hours / business days remaining > threshold,
@@ -6448,21 +8257,57 @@ function renderProjectHoursRollup() {
       }).join('')
     : '<div class="hours-empty-mini">All stages complete</div>';
 
-  // Assignee breakdown rows — sorted by hours desc
+  // v77: Per-person rows now show Total / Done / Remaining instead of just
+  // remaining. Sorted by TOTAL hours (largest budget first) so heaviest-
+  // committed people surface at top regardless of how much they've completed.
+  // Show all assignees, not just top 6 — user explicitly requested "full
+  // accounting" per person.
   const assigneeEntries = Object.keys(assigneeMap)
-    .map(k => ({ name: k === '__unassigned' ? 'Unassigned' : k, hours: assigneeMap[k], isUnassigned: k === '__unassigned' }))
-    .filter(e => e.hours > 0)
-    .sort((a, b) => b.hours - a.hours);
-  const maxAssigneeHours = assigneeEntries.length > 0 ? assigneeEntries[0].hours : 1;
+    .map(k => ({
+      name: k === '__unassigned' ? 'Unassigned' : k,
+      total: assigneeMap[k].total,
+      done: assigneeMap[k].done,
+      remaining: assigneeMap[k].remaining,
+      isUnassigned: k === '__unassigned'
+    }))
+    .filter(e => e.total > 0)
+    .sort((a, b) => b.total - a.total);
+  // For the bar width: scale each person's bar against the max total so the
+  // visual proportions are comparable across the team
+  const maxAssigneeTotal = assigneeEntries.length > 0 ? assigneeEntries[0].total : 1;
+  const assigneeHeaderHtml = assigneeEntries.length > 0
+    ? `<div class="hours-person-header">
+         <div>Lead</div>
+         <div>Progress</div>
+         <div>
+           <span class="hours-person-header-num" title="Total hours assigned to this person on this project">Total</span>
+           <span class="hours-person-header-num" title="Hours already completed (tasks marked done)">Done</span>
+           <span class="hours-person-header-num" title="Hours still ahead (open tasks)">Left</span>
+         </div>
+       </div>`
+    : '';
   const assigneeRowsHtml = assigneeEntries.length > 0
-    ? assigneeEntries.slice(0, 6).map(e => {
-        const pct = Math.round((e.hours / maxAssigneeHours) * 100);
-        const cls = e.isUnassigned ? 'hours-bar-row hours-bar-unassigned' : 'hours-bar-row';
+    ? assigneeEntries.map(e => {
+        // Bar widths: total fill = e.total / maxTotal; remaining fill = e.remaining / maxTotal.
+        // This means the dark "remaining" portion is a subset of the lighter "total" portion,
+        // so a person who's done 50% of their work shows a half-filled dark portion.
+        const totalPct = Math.round((e.total / maxAssigneeTotal) * 100);
+        const remainingPct = Math.round((e.remaining / maxAssigneeTotal) * 100);
+        const cls = e.isUnassigned ? 'hours-person-row hours-bar-unassigned' : 'hours-person-row';
+        const remFillCls = e.isUnassigned ? 'hours-person-fill-remaining hours-fill-unassigned' : 'hours-person-fill-remaining';
+        const tipText = `${e.name}: ${formatHours(e.total)} total assigned · ${formatHours(e.done)} done · ${formatHours(e.remaining)} remaining`;
         return `
-          <div class="${cls}" title="${escapeAttr(e.name + ': ' + formatHours(e.hours) + ' remaining')}">
-            <div class="hours-bar-label">${escapeHtml(e.name)}</div>
-            <div class="hours-bar-track"><div class="hours-bar-fill ${e.isUnassigned ? 'hours-bar-fill-unassigned' : ''}" style="width:${pct}%;"></div></div>
-            <div class="hours-bar-value">${escapeHtml(formatHours(e.hours))}</div>
+          <div class="${cls}" title="${escapeAttr(tipText)}">
+            <div class="hours-person-label">${escapeHtml(e.name)}</div>
+            <div class="hours-person-track">
+              <div class="hours-person-fill-total" style="width:${totalPct}%;"></div>
+              <div class="${remFillCls}" style="width:${remainingPct}%;"></div>
+            </div>
+            <div class="hours-person-numbers">
+              <span class="hours-person-num hours-person-num-total" title="Total assigned">${escapeHtml(formatHours(e.total))}</span>
+              <span class="hours-person-num hours-person-num-done" title="Done">${escapeHtml(formatHours(e.done))}</span>
+              <span class="hours-person-num hours-person-num-remaining" title="Remaining">${escapeHtml(formatHours(e.remaining))}</span>
+            </div>
           </div>
         `;
       }).join('')
@@ -6514,7 +8359,8 @@ function renderProjectHoursRollup() {
             ${stageRowsHtml}
           </div>
           <div class="hours-breakdown-col">
-            <div class="hours-breakdown-title">By Lead (remaining)</div>
+            <div class="hours-breakdown-title">By Lead — total assigned vs remaining</div>
+            ${assigneeHeaderHtml}
             ${assigneeRowsHtml || '<div class="hours-empty-mini">No assignments</div>'}
           </div>
         </div>
@@ -7817,12 +9663,22 @@ function unmarkLeadComplete(task, name, actor) {
 
 // Module-level state for the currently-selected anchor in the open modal.
 // Reset on every openTaskModal call. Mirrors task.dateAnchor.
+// Valid: 'bid-start', 'bid-day', 'pre-bid', 'rfi-due'
 let _modalDateAnchor = 'bid-start';
 
-// User clicked the S or B button — change the current anchor, update
+// Centralized anchor-label table — used for label text, hint, calc badge,
+// and warning messages so they all stay in sync if labels change later.
+const _TASK_ANCHOR_LABELS = {
+  'bid-start': { short: 'Bid Start', long: 'Bid Start',     dateField: 'startDate',  warnLabel: 'Bid Start' },
+  'bid-day':   { short: 'Bid Day',   long: 'Bid Day',       dateField: 'dueDate',    warnLabel: 'Bid Day'   },
+  'pre-bid':   { short: 'Pre-Bid',   long: 'Pre-Bid Walk',  dateField: 'prebidDate', warnLabel: 'Pre-Bid Date' },
+  'rfi-due':   { short: 'RFI Due',   long: 'RFI Cutoff',    dateField: 'rfiDueDate', warnLabel: 'RFI Cutoff' }
+};
+
+// User clicked the S/B/P/R button — change the current anchor, update
 // the visible toggle, label, and re-run the offset → due calc.
 function setTaskAnchor(anchor) {
-  if (anchor !== 'bid-start' && anchor !== 'bid-day') return;
+  if (!_TASK_ANCHOR_LABELS[anchor]) return;
   _modalDateAnchor = anchor;
   // Update toggle button visual state
   document.querySelectorAll('#taskAnchorToggle .task-anchor-btn').forEach(btn => {
@@ -7831,12 +9687,14 @@ function setTaskAnchor(anchor) {
   // Update the label + hint text
   const labelEl = document.getElementById('taskDayOffsetLabel');
   const hintEl = document.getElementById('taskDayOffsetHint');
-  if (anchor === 'bid-day') {
-    if (labelEl) labelEl.textContent = 'Days From Bid Day';
-    if (hintEl) hintEl.textContent = 'Negative = before bid (e.g., -5). Positive = after bid.';
-  } else {
-    if (labelEl) labelEl.textContent = 'Days From Bid Start';
-    if (hintEl) hintEl.textContent = 'Auto-calculates due date from Bid Start';
+  const longLabel = _TASK_ANCHOR_LABELS[anchor].long;
+  if (labelEl) labelEl.textContent = `Days From ${longLabel}`;
+  if (hintEl) {
+    if (anchor === 'bid-start') {
+      hintEl.textContent = 'Auto-calculates due date from Bid Start';
+    } else {
+      hintEl.textContent = `Negative = before ${longLabel} (e.g., -5). Positive = after.`;
+    }
   }
   // Re-run the calc with the new anchor
   updateDueFromOffset();
@@ -7849,6 +9707,12 @@ function _getModalAnchorDate(project) {
   if (_modalDateAnchor === 'bid-day') {
     return (project.dueDate || '').trim() || null;
   }
+  if (_modalDateAnchor === 'pre-bid') {
+    return (project.prebidDate || '').trim() || null;
+  }
+  if (_modalDateAnchor === 'rfi-due') {
+    return (project.rfiDueDate || '').trim() || null;
+  }
   // bid-start uses the effective bid start (revised-aware)
   if (typeof getEffectiveBidStart === 'function') {
     return getEffectiveBidStart(project) || null;
@@ -7856,12 +9720,17 @@ function _getModalAnchorDate(project) {
   return (project.startDate || '').trim() || null;
 }
 
-// Show/hide the "⚠ Bid Day not set" warning based on the current anchor +
-// whether the project has the relevant date.
+// Show/hide the warning based on the current anchor + whether the project has
+// the relevant date set. Warning text updates to reflect the specific anchor.
 function _refreshModalAnchorWarning(project) {
   const warning = document.getElementById('taskAnchorWarning');
   if (!warning) return;
-  if (_modalDateAnchor === 'bid-day' && (!project || !(project.dueDate || '').trim())) {
+  const info = _TASK_ANCHOR_LABELS[_modalDateAnchor];
+  if (!info) { warning.style.display = 'none'; return; }
+  const fieldName = info.dateField;
+  const dateVal = project ? (project[fieldName] || '').trim() : '';
+  if (_modalDateAnchor !== 'bid-start' && !dateVal) {
+    warning.textContent = `⚠ ${info.warnLabel} not set`;
     warning.style.display = 'inline-block';
   } else {
     warning.style.display = 'none';
@@ -7875,12 +9744,11 @@ function updateDueFromOffset() {
   _refreshModalAnchorWarning(project);
   // The anchor date for the current anchor selection
   const anchorDate = _getModalAnchorDate(project);
-  const anchorLabel = (_modalDateAnchor === 'bid-day') ? 'Bid Day' : 'Bid Start';
+  const info = _TASK_ANCHOR_LABELS[_modalDateAnchor] || _TASK_ANCHOR_LABELS['bid-start'];
+  const anchorLabel = info.short;
   if (offset === '' || !project || !anchorDate) {
     if (!anchorDate) {
-      badge.textContent = (_modalDateAnchor === 'bid-day')
-        ? 'Set Bid Due Date to auto-calculate'
-        : 'Set bid start to auto-calculate';
+      badge.textContent = `Set ${info.warnLabel} to auto-calculate`;
     }
     badge.classList.remove('has-date');
     badge.classList.remove('has-shift');
@@ -7909,11 +9777,10 @@ function updateOffsetFromDue() {
   const badge = document.getElementById('dateCalcBadge');
   _refreshModalAnchorWarning(project);
   const anchorDate = _getModalAnchorDate(project);
-  const anchorLabel = (_modalDateAnchor === 'bid-day') ? 'Bid Day' : 'Bid Start';
+  const info = _TASK_ANCHOR_LABELS[_modalDateAnchor] || _TASK_ANCHOR_LABELS['bid-start'];
+  const anchorLabel = info.short;
   if (!due || !project || !anchorDate) {
-    badge.textContent = anchorDate ? '—' : ((_modalDateAnchor === 'bid-day')
-      ? 'Set Bid Due Date to auto-calculate'
-      : 'Set bid start to auto-calculate');
+    badge.textContent = anchorDate ? '—' : `Set ${info.warnLabel} to auto-calculate`;
     badge.classList.remove('has-date');
     return;
   }
@@ -7972,10 +9839,13 @@ function openTaskModal(defaultStatus='not-started', taskId=null) {
     document.getElementById('taskStatus').value = t.status||'not-started';
     document.getElementById('taskDueDate').value = t.dueDate||'';
     document.getElementById('taskDayOffset').value = (typeof t.dayOffset === 'number') ? t.dayOffset : '';
-    // v63: restore date anchor selection from the task. Defaults to bid-start
-    // for tasks that haven't had the field set explicitly.
+    // v63 / v82+: restore date anchor selection from the task. Defaults to
+    // bid-start for tasks that haven't had the field set explicitly or that
+    // have an unrecognized value.
     if (typeof setTaskAnchor === 'function') {
-      setTaskAnchor(t.dateAnchor === 'bid-day' ? 'bid-day' : 'bid-start');
+      const validAnchors = ['bid-start','bid-day','pre-bid','rfi-due'];
+      const anchor = validAnchors.includes(t.dateAnchor) ? t.dateAnchor : 'bid-start';
+      setTaskAnchor(anchor);
     }
     document.getElementById('taskStartByDate').value = t.startByDate || '';
     // Projected hours — load existing value if present, leave blank if null
@@ -9635,7 +11505,7 @@ function saveTaskToMasterTemplate() {
   const offset = (offsetParsed === null || isNaN(offsetParsed)) ? 0 : offsetParsed;
   // v63: capture current modal anchor selection so the saved template task
   // remembers whether the offset is from Bid Start or Bid Day.
-  const dateAnchor = (typeof _modalDateAnchor !== 'undefined' && _modalDateAnchor === 'bid-day') ? 'bid-day' : 'bid-start';
+  const dateAnchor = (typeof _modalDateAnchor !== 'undefined' && ['bid-start','bid-day','pre-bid','rfi-due'].includes(_modalDateAnchor)) ? _modalDateAnchor : 'bid-start';
 
   if (!Array.isArray(state.taskTemplates) || state.taskTemplates.length === 0) {
     alert('No templates exist. Open Manage Task Templates to create one first.');
@@ -9725,7 +11595,7 @@ function doSaveTaskToTemplate(templateId, taskData) {
     duplicate.priority = data.priority;
     duplicate.offset = data.offset;
     // v63: also update anchor
-    duplicate.dateAnchor = (data.dateAnchor === 'bid-day') ? 'bid-day' : 'bid-start';
+    duplicate.dateAnchor = (['bid-start','bid-day','pre-bid','rfi-due'].includes(data.dateAnchor)) ? data.dateAnchor : 'bid-start';
     tmpl.updatedAt = Date.now();
     syncLegacyMasterTasks();
     saveState();
@@ -9762,7 +11632,7 @@ function doSaveTaskToTemplate(templateId, taskData) {
     priority: data.priority,
     offset: data.offset,
     // v63: propagate anchor choice to the new template task
-    dateAnchor: (data.dateAnchor === 'bid-day') ? 'bid-day' : 'bid-start'
+    dateAnchor: (['bid-start','bid-day','pre-bid','rfi-due'].includes(data.dateAnchor)) ? data.dateAnchor : 'bid-start'
   });
   tmpl.updatedAt = Date.now();
   syncLegacyMasterTasks();
@@ -9809,8 +11679,8 @@ function saveTask() {
     status: document.getElementById('taskStatus').value,
     dueDate: document.getElementById('taskDueDate').value,
     dayOffset: isNaN(dayOffset) ? null : dayOffset,
-    // v63: persist the per-task date anchor (Bid Start vs Bid Day)
-    dateAnchor: (_modalDateAnchor === 'bid-day') ? 'bid-day' : 'bid-start',
+    // v63 / v82+: persist the per-task date anchor (Bid Start / Bid Day / Pre-Bid / RFI Due)
+    dateAnchor: (['bid-start','bid-day','pre-bid','rfi-due'].includes(_modalDateAnchor)) ? _modalDateAnchor : 'bid-start',
     startByDate: (document.getElementById('taskStartByDate') ? document.getElementById('taskStartByDate').value : '') || null,
     // Projected hours — read from modal, normalize to quarter-hour precision.
     // null when blank so the rollup can distinguish "no estimate" from "0 hours."
@@ -12358,6 +14228,28 @@ function getDefaultAdvancements() {
     advImplemented('polish', 'Dashboard segmentation — visual hierarchy for Alerts, Countdown, Snapshot, etc.', 'The project dashboard felt cluttered with sections stacked one after another with no visual hierarchy or grouping', 'Shipped May 3, 2026 in response to "can you put segmental blocks around main dashboard major sections... it looks cluttered". Three-tier visual hierarchy. (1) Each pv-section now gets a colored 4px left rail via `::before` pseudo-element keyed to its category — red for Alerts, gold for Countdown and Addendums, green for Milestones, navy by default — so the eye reads the sections as distinct *kinds* of information rather than identical boxes. Each section gets a subtle drop-shadow when expanded (`box-shadow: 0 2px 6px`) so it lifts off the page like a card; hover deepens the shadow. Section margin increased from 12px to 20px so they breathe. Header backgrounds get a gradient wash matching the section\'s rail color (subtle tint, fading to surface-2 at 50%) so each header is identifiably "Alerts" or "Countdown" at a glance. Critical-pulse sections also get a soft red glow shadow so urgent items stand out even more. (2) Project Snapshot is now a proper pv-section (📊 Project Snapshot) with the same chrome — collapsible, has a quieter dim-gray rail since it\'s reference data not action items. Previously the metrics grid was naked cards floating between the milestones section and the toolbar with no segmentation. (3) Workspace Controls panel — the View Switcher (Board/Table/Calendar/Schedule/Look Ahead), action buttons (Acknowledge All / Print), Group By switcher, and Stage filter pills are now wrapped in a single bordered panel with a "WORKSPACE" corner label and a subtle gradient background. A dashed divider separates the view-mode cluster from the grouping cluster inside the panel. This visually says: "above this is your dashboard; below this is your workspace." The reading sequence top-to-bottom is now: project header → dashboard sections (Snapshot, Alerts, Countdown, Addendums, Milestones, each visually distinct) → activity log → workspace controls panel → board/table/calendar. The "Dashboard sections:" controller (Collapse All / Expand All) gets a navy left border so it acts as a clear group header for the dashboard tier.'),
     advImplemented('high-impact', 'Status Snapshot — In Progress / Due Soon / At Risk single-page rollup', 'Quickly see what is currently being worked on, what is due within the next 1 and 2 days, and alert for tasks not yet started but due soon', 'Shipped May 3, 2026 in response to "can you provide an In Progress Snapshot or Alert. I would like to see a single page that gives In Progress, Due in 1 Day, Due in 2 Days reporting." Dedicated full-page view accessible from the sidebar via a new gold-themed 🎯 Status Snapshot button. Four buckets, all cross-project by default. (1) **At Risk** — overdue tasks OR tasks due within 2 days that are still "Not Started" or have unfinished required items. Red rail. This goes first by default because it needs attention. (2) **In Progress Now** — every task with status `in-progress` regardless of due date, so the team can see what\'s actually happening this minute. Cyan rail. (3) **Due Today / Tomorrow** — every open task due in the next 24h (overdue tasks also surface here). Gold rail. (4) **Due in 2 Days** — open tasks due 24-48h out. Purple rail. Tasks that satisfy multiple buckets appear in each, with a subtle "also: in progress" / "also: due soon" overlap hint so users get cross-context without clicks. Headline strip at the top shows the four counts as clickable stat cards (each scrolls + highlight-pulses the matching section). Scope toggle: All Projects (default) / Active Project Only / Mine Only — Mine Only filters to current user\'s assigned + support tasks across all in-scope projects. Each row shows project chip (cross-project context), task title, full subtask/deliverable/tip chips matching the rest of the app, status pill, assignee avatar+name, and a humanized due-time badge that color-codes by urgency (red pulsing for overdue, red filled for <1h, navy outline for OK). Click any row to open the task modal in place. Drag-and-drop section reordering — grab the ⋮⋮ handle on any section header and drop on another to rearrange; persists to state.statusSnapshotSectionOrder. Reset button restores the default order (At Risk → In Progress → Due 1 → Due 2). Per-section collapse memory persists. Sidebar button shows a live badge with the total cross-project count so you see at-a-glance from anywhere if attention is needed. Sections internal collapse, refresh button, and close button round out the surface. Updated May 3, 2026 to fix two issues: (a) added a 5th "📋 All Open Tasks" section so the page never shows empty when none of the strict buckets match — this is the floor view of every open task across the scope, sorted by due date; (b) drag-drop wasn\'t firing because making the entire section draggable conflicted with click handlers on inner rows — switched to grip-armed pattern where the ⋮⋮ handle\'s mousedown flips draggable=true on the parent section, then back to false on dragend, so dragstart only fires from the grip and inner clicks/rows work normally.'),
     advImplemented('high-impact', 'Projected hours per task with project-level capacity rollup', 'Track projected effort per task with quarter-hour precision. Project view shows total/done/remaining hours, per-stage breakdown, per-Lead workload split, and a capacity warning when daily-per-person hours exceed sustainable thresholds.', "Shipped May 3, 2026 in response to 'how would you suggest implementing a Projected hours needed to complete task? I would like to see overall hours required to complete project from start to finish'. Defaults: Meaning A (projected/estimated hours, not actual time tracking), quarter-hour precision (0.25, 0.5, 0.75, 1, 1.25...), auto-populate new tasks from per-stage defaults. Built as opt-in via a global toggle so existing users see no UI change until they enable it from sidebar. Eight coordinated pieces. (1) **Schema** — task.estimatedHours (number, nullable), state.hoursStageDefaults (per-stage default hours), state.hoursEnabled (firm-level toggle, default off). All backfilled on load. (2) **Helper functions** — normalizeHours (rounds to quarter-hour, clamps 0-200), getSuggestedHoursForStage, sumProjectedHours (multi-Lead aware: hours split equally between co-Leads when scoped to one person), formatHours (compact display 4h / 4.5h / 4.25h), getProjectHoursRollup (returns total/done/remaining/withEstimate/withoutEstimate), autoSuggestHours, clearEstimatedHours, refreshHoursFieldVisibility. (3) **Edit Task modal — Hours field** with number input (step 0.25), 🔮 Auto-suggest button (populates from stage default), and ✕ Clear button. Hidden entirely when state.hoursEnabled is false. New tasks auto-populate from stage default; existing tasks load their stored value. (4) **Card chip** — purple-toned ⏱ 4h chip alongside other task chips. Hidden when no estimate or feature off. Overdue cards recolor for legibility. (5) **Project-level rollup panel** — new pvHoursRollupMount sits between the project header and the Alerts section. Four-stat strip: Projected Total, Complete, Remaining, Tasks Estimated (e.g. 12/47). Two-column breakdown: per-stage horizontal bars (sorted by remaining hours desc, top 6) and per-Lead horizontal bars (multi-Lead tasks split equally between co-Leads, sorted by hours desc, top 6, unassigned shown in red). When zero estimates exist, shows a getting-started prompt instead of confusing 0h. (6) **Capacity warning** — when remaining hours / business days remaining > 6h/person/day, a red warning banner appears at the top of the rollup with concrete numbers ('120h remaining across 5 business days = 8.0h per person per day. This exceeds typical capacity'). Calculated from project end date or latest task due date, with rough 5-of-7 calendar-to-business-day conversion. (7) **Settings modal** — sidebar button (⏱ Projected Hours) opens a dedicated modal with global enable/disable toggle and per-stage default editor. Quarter-hour-step inputs per stage with reset-to-suggested-defaults button. Suggested defaults calibrated for typical commercial GC precon: estimating 8h (heavy lift), document-review 4h, scope-leveling 4h, post-bid 2h, trade-solicitation 2h (mostly tracking), bid-day-prep 2h, special-project 2h, project-setup 1h, bid-day 1h. (8) **Multi-Lead awareness** — sumProjectedHours and the rollup's per-Lead breakdown both split hours equally between co-Leads on multi-Lead tasks, matching v24's design philosophy that co-Leads share accountability fully. So a 6h task with two co-Leads counts as 3h toward each Lead's workload. The build deliberately stops short of time tracking (Meaning C) — actual hours logging is flagged as a separate v27+ feature since it has its own design surface. Possible future extensions noted: actual-vs-estimate calibration tool, per-Lead manual hour estimates per task, range-based estimates (120-180h projected, mid 142h) when N is large, completion velocity metrics, hours-aware due-date warnings."),
+    advImplemented('high-impact', 'Two new task anchors: Pre-Bid Walk Date + RFI Cutoff Date',
+      'Tasks can now anchor their day-offset to four reference dates instead of two: Bid Start (S), Bid Day (B), Pre-Bid Walk Date (P), or RFI Cutoff Date (R). The S/B toggle in Edit Task and Template editor is now an S/B/P/R picker with distinct colors per anchor. Project Edit modal has two new date fields (both optional). When any of the four anchor dates change on a project, tasks anchored to that date auto-reanchor.',
+      "Shipped June 4, 2026 in response to: 'Can I also create an anchor to the following: Prebid Date, RFI Due Date'. User chose Phase 1 only (project-level fields rather than the generalized milestone-anchor architecture), both Pre-Bid and RFI Due, reactive reanchor on date change. Seven pieces. (1) Schema — project.prebidDate and project.rfiDueDate added to project records with empty-string defaults; backfilled at state load. Task and template-task dateAnchor field validator expanded from 2 values ('bid-start','bid-day') to 4 ('bid-start','bid-day','pre-bid','rfi-due'); legacy or unrecognized values still default to 'bid-start' for backward compatibility. (2) resolveTaskAnchorDate extended — central function that takes (project, task) and returns the right anchor date string. New cases for 'pre-bid' (reads project.prebidDate) and 'rfi-due' (reads project.rfiDueDate). Returns null if the relevant date isn't set, so the UI can show a warning. (3) Project Edit modal — new form-row with two date inputs: Mandatory Pre-Bid Walk Date and RFI Cutoff Date (to design team). Both have hint text explaining usage. Load/save wired into openProjectModal + saveProject; new fields included in new-project clear-list. (4) Reanchor trigger extended — saveProject now tracks oldPrebidDate / oldRfiDueDate before Object.assign and computes prebidChanged / rfiDueChanged. The combined reanchor condition is now {start, mode, revised, due, prebid, rfiDue}Changed. When any fires, the confirmation dialog shows a per-anchor breakdown (how many tasks of each type would recompute) and the resolved values for all four anchor dates that matter to the affected tasks. Routes through reanchorProjectTaskDates which honors per-task dateAnchor. (5) Edit Task modal UI — anchor toggle expanded from 2 buttons (S/B) to 4 (S/B/P/R). New centralized _TASK_ANCHOR_LABELS table drives label text, hint text, calc-badge format, and warning messages so they stay in sync. setTaskAnchor validates against the table, _getModalAnchorDate reads the correct project field per anchor, _refreshModalAnchorWarning shows '⚠ Pre-Bid Date not set' or '⚠ RFI Cutoff not set' when the relevant project date is missing. Color coding: S=navy, B=red, P=gold, R=purple. (6) Template editor — same 4-button toggle on each template task row, with the new _mttAnchorLabel helper providing tooltip text per anchor. setMasterTaskAnchor validation expanded. Each anchor has a distinct color (matches Edit Task). The template Preview Date column shows a real preview date for bid-start/bid-day (using per-template previewBidStart/previewBidDay), or a 'P+Nd' / 'R+Nd' labeled placeholder for pre-bid/rfi-due (since those resolve from project-specific dates, not template-level preview dates). (7) Template loading — _addTemplateTasksToProject now reads x.dateAnchor with 4-way validation and picks the right project date field (prebidDate / rfiDueDate / dueDate / startDate). Export/Import preserves the field with 4-way validation. Markdown export shows 'Pre-Bid +3d' or 'RFI Due -1d' in the task tag line. Recommendations modal row labels updated similarly. CSS — added distinct active colors for [data-anchor='pre-bid'] and [data-anchor='rfi-due'] on both .task-anchor-btn (Edit Task modal) and .mtt-anchor-btn (template editor). The template editor's per-button width tightened from 16px to 14px to fit 4 buttons in the same column. Backward compatible — existing tasks with dateAnchor='bid-start' or 'bid-day' work unchanged; existing templates work unchanged; new projects load with empty prebidDate/rfiDueDate so no pre-bid/rfi-due anchored tasks compute against missing data. All 37 verification checks pass. JS clean."),
+    advImplemented('high-impact', 'BUG FIX — Bid Due Date changes now reanchor Bid-Day-anchored task due dates',
+      'Two related bugs fixed in date-anchor reactive updates: (1) Editing a project\'s Bid Due Date did not trigger any task recalculation, so Bid-Day-anchored tasks kept stale due dates. (2) The new-project template-load path inlined a duplicate of the template-loading code that ignored each template task\'s dateAnchor field, so Bid-Day-anchored template tasks loaded into new projects with no anchor set.',
+      "Shipped May 16, 2026 in response to: 'taskdue dates tied to Bid Due Date are not calculating correctly' / 'don\'t update when I change the Bid Due Date' / 'tasks loaded from a template'. Root cause analysis: the reactive reanchor logic in saveProject was guarded by `if (startChanged || modeChanged || revisedChanged)` — dueChanged was deliberately excluded under the pre-v63 assumption that ALL tasks anchored to Bid Start only. When v63 introduced per-task anchor (Bid Start vs Bid Day), the saveProject reanchor was never updated. Bid-Day-anchored tasks were eligible for reanchor in theory (the reanchorProjectTaskDates helper does the right thing per-task) but the helper was never called when only the Bid Due Date changed. Separately, the template-load code path on new-project creation inlined a duplicate of the canonical _addTemplateTasksToProject logic — but the duplicate predated v63 and never read x.dateAnchor on incoming template tasks, so Bid-Day-anchored template tasks dropped into new projects with dateAnchor=undefined which defaults to 'bid-start'. Two fixes. (1) saveProject reanchor trigger now fires on dueChanged too, and routes through reanchorProjectTaskDates(p) which correctly walks each task and resolves its individual anchor. The confirmation dialog now shows a breakdown of how many tasks are Bid-Start vs Bid-Day anchored, plus both effective dates, so the user knows exactly what's about to recalculate. (2) The new-project template-load path now calls _addTemplateTasksToProject(p, pendingTemplateTasks, '(initial)') instead of inlining duplicate code. That helper has been correct since v63 — it reads x.dateAnchor and computes the right anchor per task. Side benefit: role auto-assignment (Senior + Lead 1 + Lead 2) also now works correctly on initial project creation since it goes through the canonical helper. Backward compatible — tasks created before the fix keep their existing dateAnchor field (or default to 'bid-start' via backfill); the fix only changes behavior on future Bid Due Date edits and future new-project template loads. JS syntax check passes. RECOMMENDATION TO USER: on existing projects where tasks were supposed to be Bid-Day-anchored but weren't, the dateAnchor field will need to be reset manually via the Edit Task modal's S/B toggle — the fix doesn't retroactively rewrite stored data. Once corrected, future Bid Due Date edits will reanchor correctly."),
+    advImplemented('high-impact', 'Team Performance Insights — task hygiene metrics per estimator (NOT skill assessment)', 'New sidebar view showing four task-management metrics per estimator: on-time completion %, rework rate, acknowledgment latency, and currently-overdue count. Configurable time window (30d / 90d / quarter / all-time) and project scope. Drill-down on any metric reveals the underlying tasks. Prominent caveat banner makes clear these are workflow metrics, not skill or competency evaluations.',
+      "Shipped May 16, 2026 in response to: 'I would like some sort of tracking available in order to score or rate assignees based on thier task completion proficiency'. User chose Option A (task hygiene only, framed honestly), Option 'Just me' for use, and disregarded password protection. Five pieces. (1) Sidebar nav — new 📊 Team Insights button below Find Availability, with subtitle 'Task hygiene metrics by estimator' and a long tooltip emphasizing NOT a skill assessment. (2) Schema — three new state fields backfilled: tiView (boolean), tiWindow ('30d'/'90d'/'quarter'/'all', default '90d'), tiScope ('all-projects'/'active-project', default 'all-projects'). All validated at load and persisted across sessions. (3) Aggregator — _aggregateTeamInsights() walks source projects, builds per-Lead stats. For each task it computes: on-time accounting (denominator = tasks completed in window with both completedAt+dueDate; numerator = completedAt <= dueDate); rework (any task with completionRejectionReason set, scoped to window); acknowledgment latency (acknowledgedAt - createdAt, capped at 60d to filter clock issues); currently overdue (status != done AND dueDate < today); blocked count (status === 'blocked'); recent task lists for drill-down (capped at 25 each). Median latency computed instead of mean to resist outliers. Multi-Lead tasks count for every Lead (not split). _tiResolveWindowCutoff() handles the four time windows: 30d/90d are simple offsets, 'quarter' returns calendar quarter start, 'all' returns null (no cutoff). (4) Full-page view — new #teamInsightsView container. Layout: header with title+close/refresh, prominent gold-bordered caveat banner explaining what these metrics ARE and ARE NOT for, toolbar with two segmented controls (window + scope), per-estimator card grid. Each card: name + meta line + 4 metric tiles (On-Time, Rework Rate, Ack Latency, Currently Overdue) shown as clickable buttons with color-coded left borders (green/gold/red bands based on thresholds — 85%/70% for on-time, 5%/15% for rework, 1d/3d for latency, 0/2 for overdue) plus a per-card blocked-tasks warning note when applicable. Empty state shown when no estimators have any data. (5) Drill-down — openTeamInsightsDrilldown(name, metric) shows the underlying tasks. 'late-completes', 'rework', and 'overdue' open a modal task list with project context, click-through to standard task edit modal. 'ack' opens an alert with percentile distribution (25th/50th/75th/max) of latency in days since detailed task drill-down doesn't make sense for that metric. View dispatch: render() now checks state.tiView FIRST (highest precedence), then openSlots, then projectTimeline, then teamWorkload. Mutually exclusive — opening any other view resets tiView=false via regex propagation through 22 existing view-open functions, plus manual fixes for openOpenSlotsView and openProjectTimelineView which were missing the prior view-mutex propagations. CSS family .tiv-* for the page including .tiv-caveat with gold border and warning emoji, .tiv-metric tiles with band variants (.tiv-band-good/-fair/-poor/-na) using SBG palette (green #2e7d52, gold #c07f00, red #c8322b), .tiv-blocked-note for blocked-tasks warning, .tiv-drill-* for the drill-down modal task list. Responsive grid collapses 4-col metrics to 2-col on narrow viewports. Bands chosen to be informative without being judgmental — borders + value color only, not background fills, so the page reads more like a dashboard than a report card. Backward compatible — new state fields default safely; existing saves continue to work. JS check passes; jsdom verifies module loads. Convention preserved: Lead-only counting (matching existing workload pages); multi-Lead tasks count for every Lead, not split. The caveat banner cannot be dismissed — by design. If user finds themselves wanting to dismiss it, that's exactly when they're at risk of misusing the metrics."),
+    advImplemented('high-impact', 'Project Health Score — composite gauge inline with project action buttons', 'Each project header now has a small circular gauge showing a 0–100 composite health score combining four equally-weighted components: % on-time completion, % acknowledged, days-to-bid (as schedule buffer), and blocked count. Click the gauge to see the breakdown. Per-project toggle in Edit Project lets you hide it.',
+      "Shipped May 16, 2026 in response to: 'Project health score — Composite metric (% on-time, % acknowledged, days-to-bid, blocked count) shown as a gauge on the project header'. User chose: inline with action buttons (Option 2), equal weighting / configurable later (Option 4), per-project toggle in Edit Project (Option 4). Five pieces. (1) Compute function — computeProjectHealthScore(project) returns {score, components, excluded}. Each of the four components is normalized to 0–100: on-time % uses past-due-or-done tasks as denominator (numerator = tasks where status=done AND completedAt <= dueDate); acknowledged % counts only currently-assigned, not-done tasks (strict definition); days-to-bid converts to a banded score (>=30d=100, 14-30d=75, 7-14d=50, 1-7d=25); blocked count uses inverse penalty (0=100, 1-2=75, 3-5=50, 6+=25). Components that can't be computed (no past tasks, no bid date, no assignments) are excluded from the composite — the remaining components re-weight to fill 100%. So a project with no past-due tasks yet still gets a meaningful score from the other three components. (2) Schema — added project.healthScoreVisible (boolean, default true) backfilled at load alongside archived/archivedAt/archivedBy. (3) Markup — new #pvHealthScoreGauge button inserted as the first item in #pvActionButtons. Display:none by default, shown only after computation succeeds AND toggle is on. SVG-based circular gauge (34px) with stroke-dasharray driven by score. Three color bands: green (>=75), gold (50-74), red (<50). Inner shows score number + 'HEALTH' label. (4) Render — renderProjectHealthGauge(p) called from renderProjectHeader; reads p.healthScoreVisible, computes score, builds SVG. Click handler toggleHealthScorePopover opens a 360px popover positioned below the gauge listing all four components with their raw text, value, mini progress bar, and excluded status if applicable. Footer notes how many components contributed. Popover closes on outside click via single-use document handler. (5) Edit Project modal — new checkbox 'Show Project Health Score gauge in header' with hint text explaining the components. Wired into openProjectModal (load) and saveProject (save). Existing projects load with healthScoreVisible=true via backfill. CSS family .pv-health-gauge-* for the gauge button (with band classes health-high/med/low using SBG palette: green #2e7d52, gold #c07f00, red #c8322b) and .hsp-* for the popover (overall score block, component cards with per-component bands, footer note). The gauge is unobtrusive (28px height fits comfortably with btn-sm) but visible at a glance. Equal weighting (25% each) is the v1 default; future enhancement could expose state.healthScoreWeights for configurability. Backward compatible — existing projects auto-show the gauge after the backfill; users who don't want it toggle off via Edit Project. JS check passes; jsdom verifies module loads without error."),
+    advImplemented('high-impact', 'Open Slots — find days where people have available capacity (badge + page + find tool)', 'Three new ways to spot scheduling availability: a badge on each Team Workload card showing "X open days", a dedicated Open Slots sidebar page with all team members grouped, and a Find Availability modal that takes "I need X hours" and returns ranked person/date matches. Configurable threshold (10/25/50/75% of capacity). Per-project or across-all-projects scope.',
+      "Shipped May 14, 2026 in response to: '1) According to task what are open dates that people have no work due and are at 25% or less capacity for that day' with the framing 'per project and across all projects'. User chose: both project/all-projects toggle, all three placements (badge + page + find tool), configurable threshold. Five pieces. (1) Schema — 4 new state fields backfilled: openSlotsView (bool), openSlotsThreshold (10/25/50/75, default 25), openSlotsScope ('all-projects'/'active-project', default all-projects), openSlotsWindow (this-week/next-week/two-week/four-week, default two-week). (2) Shared aggregator — _findOpenSlots(memberName, opts) is the core function. Walks business days in the resolved window, sums Lead-hours scheduled per day for the member across the source projects (filtered by scope), compares to per-day capacity (weeklyCap/5), returns slot objects {date, dayOfWeek, hoursScheduled, capacityHrs, loadPct, availableHrs} for days at or below the threshold. Skips weekends and holidays. Returns empty array if no capacity is set. _findAvailabilityForHours(hoursNeeded, opts) layers on top: walks every active team member with capacity, calls _findOpenSlots with 100% threshold to find every day with any slack, filters to days with >= hoursNeeded available, sorts by date then by best fit (least slack remaining). Used by the Find Availability modal. (3) Team Workload card badge — _buildOpenSlotsBadgeHtml inserted between the strip and the stat row on each estimator card. Shows '✓ N open days (≤T% loaded)' as a clickable green pill (or '🔒 No open slots' as a muted gray pill if zero results). Click opens openSlotsBadgeDetail popover — a modal listing the specific dates with hours scheduled, % loaded, and available hours. Uses 'all-projects' scope. Maps the active workload date-scope to the open-slots window (this-month/next-month/all-open all map to four-week for practical scanning). (4) Open Slots sidebar page — full-page view with: title + close/refresh/find-hours actions, toolbar with three controls (Scope segmented buttons: All Projects / Active Project Only; Window segmented buttons: This Week / Next Week / 2 Weeks / 4 Weeks; Threshold dropdown: 10/25/50/75%). Summary panel with 4 chips (window + scope label, people-with-slots count, total open days, total available hours). Per-person cards in a vertical list — each card shows name + capacity meta + a grid of slot cards. Slot cards left-bordered green (with 'fully open' for ≤10% and 'mostly open' for >50%), showing date, scheduled/loaded info, and available hours. Empty state if no team members have capacity set. (5) Find Availability modal — input form (Hours needed numeric input + Scope dropdown + Window dropdown) with live results below. Results sorted by date then best fit, shown as rows with person, date, current load %, and available hours. Caps at 50 visible results with overflow notice. Each input change runs the search live. Render dispatch: render() now checks state.openSlotsView FIRST (highest precedence), then projectTimelineView, then teamWorkloadView. Mutually exclusive — opening any other view resets openSlotsView=false via regex propagation through 22 existing view-open functions. CSS family .osv-* for the page, .osd-* for the badge popover, .fav-* for the find availability modal, .twv-openslots-* for the card badge. All buttons styled consistently with existing app aesthetics (navy/red/gold palette). Backward compatible — new state fields default safely; existing saves continue to work. JS check passes; jsdom verifies module loads. Convention preserved: hours counted are Lead-only (not Support), matching existing workload page aggregation."),
+    advImplemented('high-impact', 'Export / Import — full state backup to portable JSON, with merge/replace import', 'New sidebar buttons (💾 Export All Data, 📂 Import Data) save and load the entire tracker state to/from a JSON file. Export downloads SBG_Tracker_Backup_YYYY-MM-DD.json with all projects, tasks, templates, team members, settings, and metadata. Import accepts both wrapped and raw state JSON, offers Merge (additive, current wins on ID conflicts) or Replace (wholesale overwrite). This is the data-safety backbone and the migration prerequisite for any future backend (Firebase, etc).',
+      "Shipped May 14, 2026 in response to: 'now prepare for firebase with instructions' + user-confirmed need for portability before any backend migration. User chose: build Export/Import in this conversation, plus Firebase decision doc. Four pieces. (1) Sidebar buttons — two new dark-styled buttons inserted between Projected Hours and Settings & Logo: 💾 Export All Data + 📂 Import Data. Tooltips explain purpose. Buttons styled consistently with existing sidebar (full-width dark) so they sit comfortably. (2) Export — exportTrackerStateToJson packs the live state object into a wrapped payload with metadata (_schema, _schemaVersion=1, _exportedAt ISO timestamp, _exportedFrom user-agent, _projectCount, _templateCount, _teamMemberCount, STORAGE_KEY). The full state is in payload.state — nothing stripped, so future schema additions automatically round-trip. Blob created from JSON.stringify(payload, null, 2), URL.createObjectURL drives a download via temporary <a> click. Filename: SBG_Tracker_Backup_YYYY-MM-DD.json. Post-download alert shows project/template/member counts plus a OneDrive backup hint. (3) Import — openImportTrackerDialog creates an on-the-fly hidden <input type=file accept=application/json>, FileReader.readAsText parses the JSON, validates against both shapes (wrapped payload OR raw state object — the raw shape supports manual DevTools exports like the V20 recovery path). _confirmAndApplyImport renders a confirmation modal with metadata, current vs imported counts, and three buttons: Cancel / Merge / Replace All. Replace gets a second confirm dialog because it's destructive. Pending import is stashed on window._pendingImportState to keep the apply function pure. (4) Apply — applyImport(mode) handles both branches. Replace: clears state in-place (delete every key), then copies imported keys onto state. Merge: _mergeImportedArrays adds projects/templates by ID, team members by name, dedupes holidays, and conservatively merges hoursStageDefaults only when current is empty. Auto-saves, closes modal, alerts user, then forces a full page reload via window.location.reload() to ensure all UI state rebuilds cleanly from the new data. Error handling: any parse/apply failure shows a clear alert without mutating state — failed imports leave the user's current data untouched. The export format is the foundation for future migrations: any Firebase migration script will read this exact JSON. JS check passes; jsdom verifies module loads. NOT YET TESTED: round-trip of full state through export + import in a real browser — the user will be the first to validate this in production. Recommendation: export once immediately after install, save to OneDrive, then re-export weekly or after major template changes."),
+    advImplemented('high-impact', 'Team Workload — per-card daily/weekly hours strip + window-synced team chart + click-to-drill-down', 'Each estimator card now shows a small bar chart strip with actual hours scheduled per day (or per week) across the active window. Day/Week grain toggle in the toolbar. The existing team-wide chart now respects the active window (was hardcoded at 14 days). Click any bar to see which tasks are scheduled in that bucket.',
+      "Shipped May 14, 2026 in response to: 'for the workload tracker, I want to be able to see actual assigned hours based on task during the specifed duration, averages are nice but not showing me actual projected hours each day, week, 2 weeks etc'. User chose: per-card strip (Option A), day/week toggle (Option 3), team chart respects window (Option 1). The previous page surfaced summary numbers and averages but had no per-person per-bucket visualization, so 'who's heavy on Wednesday' was invisible. Seven pieces. (1) Schema — new state.workloadGrain ('day' or 'week', default 'day'), persisted across sessions. Validated on load. (2) Aggregator extended — hoursPerDay was capped at 14 days; now captures the FULL active window (capped at 60 days for 'all-open' to avoid runaway memory). New tasksPerDay map captures the actual task list per date so the drill-down can show what's scheduled. Both maps are pre-seeded in the ensure() helper so they're always defined. (3) Bucket builder — _buildWorkloadBuckets returns an array of {key, label, shortLabel, startDate, endDate, isToday, isHoliday} bucket entries respecting the active window AND grain. Day grain skips weekends (existing convention). Week grain starts each bucket on Sunday with 'Week of MM/DD' labels. _bucketizeHoursPerDay sums an assignee's hours into the buckets. (4) Per-card strip — _buildEstimatorStripHtml renders 30-72px tall bar chart inline on every estimator card, between capacity bar and stat row. Bars color-coded: gray (empty), navy (some), gold (>=75% of per-bucket capacity), red (over). Capacity is computed as capacityHrs/5 in day mode, capacityHrs in week mode. Today gets a gold inset border. Holidays get a 🎉 marker. Hour values shown when > 0. Hover tooltip explains the math (e.g., '8.0h scheduled (cap 8.0h)'). Click handler opens drill-down. (5) Team chart rewrite — _renderLookaheadChart now uses _buildWorkloadBuckets so it respects the active window AND grain. Bars colored relative to team-wide per-bucket capacity (sum of all member capacities). For 'all-open' (no end date) caps at 60 days. (6) Day/Week toolbar toggle — new .twv-grain-btn segmented control in the toolbar with 'Day' and 'Week' buttons. Persists via state.workloadGrain. setWorkloadGrain updates state, syncs button class, re-renders. Existing date-scope sync logic updated to only match data-scope buttons (so grain buttons don't accidentally toggle date scope). (7) Drill-down modal — openWorkloadDrilldown(name, startDate, endDate, label) collects all tasks from the assignee's tasksPerDay map that fall within the clicked bucket. Renders a modal-backdrop with task list (date · title · project · hours). Rows are click-through to standard task edit modal. Sort: date ascending, critical-first within same date. Closed by clicking the X button or outside the modal. CSS family .wlDrill-* for the table-like list. The build is fully additive — strip appears between existing capacity bar and stat row; nothing existing was removed. Backward compatible: state.workloadGrain defaults to 'day' on first load; existing saves work unchanged. JS check passes; jsdom verifies modal opens correctly."),
+    advImplemented('high-impact', 'Project Hours rollup — show Total / Done / Remaining per Lead (full assignment accounting)', 'The per-Lead breakdown in the Projected Hours panel now shows three numbers for each person (Total assigned, Done, Remaining) instead of just remaining. Sorted by total descending. Shows ALL assignees, not just top 6. Adds a header row labeling the columns. Two-layer progress bar visually shows total vs remaining at a glance.',
+      "Shipped May 14, 2026 in response to: 'projected hours on dashboard for each project, i need to see total hours assigned per person as well as the existing hours remaing. This gives me a full acccounting of how many hours I am assigning to each project for each person'. User chose: three numbers (Total · Done · Remaining), Lead only counting, show all assignees. Five pieces. (1) Aggregation rebuilt — the per-assignee map used to skip done tasks entirely (the comment even said 'remaining only'). Now it walks every task with an estimate, splits hours equally across co-Leads (multi-Lead aware, unchanged), and accumulates into three buckets per person: total (every task assigned), done (tasks with status=done), remaining (everything else). Unassigned tasks still credit to '__unassigned' bucket. (2) Row rendering rewrites — old single-bar rows replaced by .hours-person-row with three numeric chips (Total/Done/Remaining) and a two-layer progress bar. Lighter rgba(navy) fill behind shows total proportion, darker solid fill in front shows remaining proportion — so the gap visually represents work completed. Each chip color-coded: Total neutral, Done green-tinted, Remaining purple-tinted (red for unassigned). Hover tooltip on the row gives the full accounting in plain English. (3) Header row added above the rows — small uppercase labels showing 'Total · Done · Left' so users know what each number means at a glance. Hover tooltips on each header explain in more detail. (4) Sort rule changed — sorted by total assigned (descending) instead of remaining. This puts the person with the biggest budget at top regardless of completion progress, which matches the user's mental model of 'how am I allocating'. (5) Top-6 cap removed — shows all assignees with a remaining > 0 OR done > 0 OR total > 0. User's small team (~6 estimators) was already at the cap; removing it ensures everyone shows up regardless of team size. Column title changed from 'By Lead (remaining)' to 'By Lead — total assigned vs remaining'. CSS additions: .hours-person-row (3-col grid 110px/1fr/168px), .hours-person-label, .hours-person-track with two stacked fills .hours-person-fill-total and .hours-person-fill-remaining, .hours-person-numbers chip strip, .hours-person-num color variants (total/done/remaining + unassigned), .hours-person-header. Backward-compatible: existing project tasks load unchanged; the panel renders if state.hoursEnabled is on (no change). The per-stage breakdown is unchanged — only the per-Lead block was rebuilt. JS check passes; jsdom verifies the module loads without throwing."),
+    advImplemented('high-impact', 'Team Workload — fix capacity math + add 4-Week / Monthly windows + show normalized weekly load', 'The Team Workload page was comparing in-window hours against per-week capacity regardless of how many weeks the window spans, making everyone appear over-capacity in 2-week views. Now capacity is scaled to match the window length. Three new windows added (Next 4 Weeks, This Month, Next Month). Each card and table row now shows normalized weekly load (e.g., "≈ 21h/wk avg") alongside raw hours so the comparison is honest. All Open backlog uses an 8-week comparison since there is no natural time bound.',
+      "Shipped May 14, 2026 in response to: 'when I look at the workload page i need to disticnly tell for each week how many hours per capasity (right now it almost seems like is is compring all hours for project vs 40 on the 2 week vs I need to see comparison and workload weekly / monthly etc'. Confirmed bug: _workloadDateRange returned only startDate/endDate; the per-card and per-row math then did openHoursInRange / capacityHrs without scaling, so a 2-week window inflated load % 2x and All Open inflated it 8x+. User chose: all-of-the-above fix (scale + new windows + clearer labels), 8-week comparison for All Open, normalized weekly load always shown. Six pieces. (1) _workloadDateRange now returns {startDate, endDate, weeks, label} for every scope. weeks is 1 for this-week/next-week, 2 for two-week, 4 for four-week, fractional for monthly (days/7), 8 for all-open. label is the human-readable name shown in tooltips. (2) Three new scopes: 'four-week' (today + 27 days), 'this-month' (today through end of current calendar month), 'next-month' (1st through last of next calendar month). Toolbar gets 3 new segmented buttons + tooltip on All Open explaining the 8-week comparison. _WORKLOAD_VALID_SCOPES constant centralizes the valid list. State validator updated to accept new scopes. (3) Helper _activeWorkloadWeeks() returns the active range's week count; _activeWorkloadLabel() returns the label. Centralized so all consumers use the same math. (4) _loadStatusClass and _sortWorkloadList by capacity-pct now use effectiveCap = capacityHrs * weeks instead of capacityHrs directly. The whole grid/table now compares apples-to-apples: in-window hours vs total capacity available for that window. (5) Card display: capacity label reads '${inWindow}h / ${effectiveCap}h (2 wks)' instead of '${inWindow}h / 40h'. New .twv-capacity-normalized line below the bar shows 'approx. ${normalizedWkly}h/wk avg vs ${capacityHrs}h/wk capacity' — the weekly-normalized view the user asked for. Tooltip on the bar explains the math: '${inWindow}h scheduled vs ${capacityHrs}h/wk x ${weeks} wks = ${effectiveCap}h capacity (${windowLabel})'. (6) Table updated from 12 to 14 columns: split 'Capacity' into 'Cap/Wk' (per-week ceiling) and 'Cap x Nwks' (effective for window); added new 'Avg/Wk' column showing normalized weekly hours (colored warn when above per-week capacity). All column headers got tooltips explaining what they represent. (7) Team summary chips renamed/expanded: 'Total Hours' split into 'In-Window Hours' (scheduled for this window) and 'Total Open Hours' (entire backlog regardless of date). 'Team Capacity' now scales: shows the scaled value with '(${weeks}wk)' suffix and a tooltip explaining the math. Over-capacity count uses scaled comparison so it stays consistent. Backward compatible: existing saved state with workloadDateScope='two-week' continues to work; new scopes are additive. The display numbers will look different (generally smaller load %) after this ships — that's the bug fix landing, not a regression. JS check passes; jsdom verifies modal still opens."),
+    advImplemented('high-impact', 'Project Timeline view — new sidebar page with full chronological project view', 'New 📅 Project Timeline view in the sidebar shows every task in a single project on its real date — past, present, and future — regardless of status. Date-bucketed list format (same as Look Ahead) with past tasks displayed in full color with status indicators (green = done, red = blocked, navy = in-progress, etc.), so the entire bid lifecycle is visible at a glance from kickoff through post-bid.', "Shipped May 14, 2026 in response to: 'I would like an option maybe placed elsewhere that gives me a full project timeline and showing actual days each task is due regardless of past due or not, show the real project timeline'. User chose: sidebar view (Option A), date-bucketed list (Option B), past tasks full color with status indicator (Option B). Eight pieces. (1) Sidebar nav button — new 📅 Project Timeline button added below Team Workload using the same .snapshot-sidebar-btn pattern. Subtitle: 'Full chronological view per project'. (2) Markup — full-page #projectTimelineView container with header (title + actions), toolbar (project selector, stage filter, assignee filter, hide-empty-days checkbox), summary panel (6 stat tiles: Timeline Span, Past Tasks, Due Today, Future Tasks, Completed, Overdue), scrollable content area. (3) CSS — full .ptv-* styling family: ptv-header/title/subtitle, ptv-toolbar with .ptv-toolbar-group labeled controls, ptv-summary with 6 ptv-stat tiles in 5 variants (is-past, is-today, is-future, is-done, is-overdue, is-range), ptv-content with .ptv-day-group day-bucket structure (is-past, is-today, is-future variants), .ptv-day-header with .ptv-day-tag pills (tag-past, tag-today, tag-future), .ptv-task-row 4-column grid (status dot + title + assignee + status label), .ptv-task-status-dot in 5 status variants, .ptv-task-stage chip, .ptv-task-status-label with color-coded statuses, .ptv-day-empty for empty-day rows. (4) Schema — 5 new state fields backfilled at load: projectTimelineView (boolean), ptvProjectId (string, empty = default to active), ptvStageFilter (string, default 'all'), ptvAssigneeFilter (string, default 'all'), ptvHideEmpty (boolean, default true). All persisted across sessions. (5) View dispatch — render() now checks state.projectTimelineView FIRST (highest precedence) and routes to renderProjectTimelineView(). Includes the standard pattern of hiding sticky countdown bar and other view containers. The teamWorkloadView flag is mutually-exclusive (openProjectTimelineView resets teamWorkloadView and vice versa), and 14+ other view-open functions throughout the file were updated to set projectTimelineView=false so navigation always lands cleanly. (6) JS module — openProjectTimelineView/exitProjectTimelineView/refreshProjectTimelineView/setProjectTimelineProject/setProjectTimelineStageFilter/setProjectTimelineAssigneeFilter/setProjectTimelineHideEmpty for state mutations. buildProjectTimelineData walks the resolved project's tasks (filtered by stage + assignee), groups by dueDate, computes timeline span from earliest to latest task, computes 5 summary counts (past/today/future/done/overdue), returns ordered groups with optional empty-day hiding. renderProjectTimelineView populates 3 dropdowns (project, stage, assignee — last two auto-populated from project-specific data), renders summary panel, renders day groups with past/today/future tag styling. _renderPtvTaskRow renders individual task rows with status dot, title (line-through if done, red+bold if overdue, fire emoji if critical), stage chip, assignee, and color-coded status label. Click-through opens the standard task edit modal. (7) Look Ahead unchanged — Project Timeline is a separate, complementary view. Look Ahead remains forward-only for 'what's next' planning. Project Timeline shows the full chronological project for 'what is this project' visibility. (8) Past task visual treatment — tasks past their due date render in FULL COLOR (not greyed). Status dot color + status label communicate state instantly. Overdue (past + not done) tasks get red bold title. Done tasks get strikethrough. Today's tasks get a gold left-border highlight on the day-header. The whole project lifecycle is visible at a glance from earliest task to latest. JS check passes; jsdom verifies all functions are defined and the view container activates on open call."),
+    advImplemented('high-impact', 'Look Ahead view — 30-Day, 45-Day, and full Project Duration windows added', 'Three new look-ahead range buttons join the existing Today / 2 Days / 1 Week / 2 Weeks: 30 Days, 45 Days, and Project (forward-only from today to the latest task in the active project). The 30+ windows hide empty days entirely to keep scanning practical.', "Shipped May 14, 2026 in response to: 'I would like to have a look ahead group similar to my existing that gets me to 30 days, 45 days and a Start to finish look ahead from first task to last task completion so i can see look ahead for entire project duration during the bid process to post bid etc'. User chose Option A across all three questions: Project = forward-only from today (consistent with existing 7/14-day model), hide empty days for 30+, single-row toolbar of 7 buttons. Five pieces. (1) Toolbar — three new .la-window-btn buttons added after the existing 2 Weeks button: 30 Days (data-lawindow=30), 45 Days (data-lawindow=45), Project (data-lawindow=project). The Project button has a tooltip explaining 'forward-only from today to the latest task in the active project'. Total now 7 buttons in single row. (2) setLookAheadWindow updated to handle the 'project' string sentinel alongside integers. Stores state.laWindow as either an integer (1, 2, 7, 14, 30, 45) or the literal string 'project'. Active button matching compares both shapes correctly. (3) Title labels — windowLabel map extended with 30-Day, 45-Day, and Project entries. Title now reads e.g. 'Project Look Ahead · NPC Dallas' or '30-Day Look Ahead · All Active Projects'. (4) buildLookAheadData rewritten to compute windowDays and endDate from either the integer windows or the project sentinel. For 'project', walks every task in all source projects to find the max future dueDate, then computes windowDays as the day count from today through that endDate. If no future tasks exist, endDate falls back to today and windowDays to 1 (renders just today's empty state). For integer windows, behavior is unchanged. (5) Empty-day handling now branches on window length: short windows (1, 2, 7, 14) keep the existing 'show empty days in the first week or on the final day' behavior so calendar structure is visible. Long windows (30, 45, Project) hide empty days entirely — only days that actually have tasks render, making 30+ day views practical to scan. The isLongWindow flag drives this branch. (6) Schema validation — laWindow now defensively coerced on state load: integers must be one of the valid values (1, 2, 7, 14, 30, 45) or the string 'project'; anything else (null, NaN, stale '7' string) coerces back to integer 7. Backward-compatible with all existing saved state. No new state fields needed; the existing state.laWindow just accepts a string in addition to integers. JS syntax check passes; jsdom runtime test confirms the look-ahead view continues to render."),
     advImplemented('high-impact', 'Proposal Assembly + Bid Day Prep recommendations — 18 new tasks for proposal-package workflow', 'New "Proposal Assembly" stage added to recommended stages, plus 18 new tasks (3 in bid-day-prep for decisions/review, 15 in the new proposal-assembly stage for document creation and packaging). Covers internal bid review meeting, markup strategy finalization, cover letter, bid form, clarifications/qualifications/exclusions, alternates/VE, schedule, qualifications package, attachments, signature block, format compliance, second-person QC review, master PDF assembly, version control, and submission delivery confirmation.', "Shipped May 11, 2026 in response to: 'I need these put into recommendations task list, also review and add any more and evaluate' (with user-provided 10 proposal-prep tasks). User chose: full evaluation adds (19 total), split between bid-day-prep + new proposal-assembly stage, cascade -5 to -1. Three pieces. (1) New stage definition — RECOMMENDED_STAGES gains 'proposal-assembly' entry with 📋 icon and description framing it as 'document preparation and packaging that turns the priced estimate into a submittable proposal'. Positioned between rfi-period and post-bid-activity in the stage list. Auto-creates on adoption per the standard new-stage flow. (2) bid-day-prep additions (3 tasks for decisions/review/sign-off): Internal Bid Review Meeting (-2d, critical, 5-item attendance/recap checklist), Finalize markup strategy (-2d, critical, deliverable: markup memo), Final Go/No-Go executive sign-off (-1d, critical, requiresSenior). All Bid-Day-anchored. (3) proposal-assembly additions (16 tasks cascading -5 to -1): Required attachments (-5d, critical, COI/MWBE/EMR/OSHA checklist), Qualifications package (-5d, team bios + project sheets + references), Preliminary schedule (-4d, CPM/Gantt), Cover letter on letterhead (-3d, SBG branding), Alternates/VE list (-3d, pricing + schedule + scope), Clarifications/Qualifications/Exclusions list (-3d, critical, single most important post-award protection), Bid form/SOV (-2d, critical, exact ITB compliance), Pricing format compliance check (-2d), Signature block confirmation (-1d, critical, signatory + signature locations), Bid bond + P&P bond in package (-1d, critical), Owner-specific format check (-1d, fonts/page numbers/headers/tabs), Second-person QC review (-1d, critical, requiresSenior, single highest-leverage QC moment), Master PDF assembly with bookmarks (-1d, critical, 8-item table of contents checklist), Internal version control (-1d, FINAL filename + archive drafts), Confirm submission delivery details (-1d, critical, portal/email/address verification). Eight tasks marked critical. All Bid-Day-anchored to keep the cascade obvious. Source mix: 4 OneDrive, 4 Excel Form, 2 Outlook, 1 Bluebeam, 5 generic Other. Two tasks pre-tagged requiresSenior (Final Go/No-Go, QC review, Bid bonds). Multiple tasks include deliverables and checklists. Total: 19 tasks added — your 10 listed + 9 evaluation adds (second-person QC review, signature block, format compliance, owner-specific format requirements, bid bond confirmation, version control, submission delivery confirmation, final Go/No-Go, schedule milestone confirmation). All strings double-quoted. JS check passes; jsdom verifies modal opens."),
     advImplemented('high-impact', 'Recommendations library — 6 high-impact RFI Stage tasks added', 'Added 6 new RFI / Clarification stage recommendations to the Recommendations library covering the highest-risk points in the RFI workflow: master log creation, sub-RFI aggregation, internal review gate, response verification, bid-time assumption documentation, and final log closure. All tasks open for user adoption via the Recommendations modal (filter to RFI / Clarification stage).', "Shipped May 11, 2026 in response to: 'I need a recommendation task list for: RFI Stage'. User chose: highest-impact only (5-6 must-haves), mixed sources, no role flags pre-tagged. Delivered 6 new tasks complementing the existing 2 generic RFI tasks (Submit clarifying RFIs, Track RFI responses) — total now 8 RFI tasks in the library. Each new task targets a real failure mode in commercial GC precon RFI workflow. Tasks: (1) Create / maintain Master RFI Log — central register; offset -7d from bid day; critical; OneDrive source; includes deliverable (RFI Log) and 3-item checklist for setup. (2) Aggregate sub-submitted RFIs into Master RFI Log — captures sub questions centrally before submission to owner; offset -6d; Building Connected source; high impact. (3) Internal RFI review before submission — senior + estimator walkthrough gate; offset -6d; critical; Outlook source; rationale notes this is highest-leverage RFI workflow gate. (4) Verify each RFI response actually answers the question — re-RFI loop for non-answers like 'refer to drawings'; offset -3d; Other source; high impact. (5) Document bid-time assumptions for unresolved RFIs — CYA bid form clarifications page; offset -1d; critical; Excel Form source; includes deliverable. (6) Final RFI log review — closure status confirmation before bid submission; offset -1d; OneDrive source; medium impact; includes deliverable. All tasks Bid-Day-anchored with negative offsets (cascading from -7 down to -1), reflecting the natural RFI timeline — log setup early, internal review mid-window, verification near response deadline, final closure on bid eve. No role flags pre-tagged per user spec. Source mix: 1 Building Connected, 1 Outlook, 1 Excel Form, 2 OneDrive (SBG), 1 generic Other. All strings double-quoted to avoid apostrophe escape issues. JS check passes; jsdom runtime verifies modal still opens correctly."),
     advImplemented('polish', 'Task Templates modal + Edit Task modal — bigger, screen-filling sizing', 'Three modal-size bumps to give the template editor and edit task surfaces more breathing room: Master Task Templates modal grew from 1400px/95vw/92vh to 1700px/98vw/96vh. Edit Task modal grew from 1700px/98vw/96vh to 1900px/98vw/97vh. Recommendations modal grew from 1100px/92vh to 1400px/96vw/94vh.', "Shipped May 11, 2026 in response to: 'I want within edit task templates for the edit modol to be larger and fill screen, after all this is most important backbone of my whole program. and need to have task template editing as visible and easy to use as possible'. User confirmed: both modals in priority order, modal-style (not full-bleed), permanent (not toggleable). Three changes. (1) Master Task Templates modal — primary surface for authoring templates. Bumped max-width 1400px to 1700px and max-height 92vh to 96vh; width stays at 98vw so it still respects the viewport edges with a tiny gutter. Practical effect: more horizontal space for the 12-column task row (especially the Preview Date column from v69) and more vertical space for the schedule pane and the expanded rich-fields panels. (2) Edit Task modal — already big at 1700px/96vh, bumped modestly to 1900px/97vh. The 1500px breakpoint for the 3-column grid layout (Task | Assignees | Dates) is unchanged so the responsive layout still kicks in correctly; the bump just gives users on big monitors more breathing room. (3) Recommendations modal — bumped 1100px to 1400px for visual proportionality with the larger Templates modal it opens from. Same modal-style aesthetic (rounded corners, shadow, dim backdrop) — no full-bleed, no toggle, permanent sizing per user request. No JS or behavior changes; pure CSS sizing updates. Backward compatible: existing responsive breakpoints continue to handle smaller screens correctly."),
@@ -13926,16 +15818,19 @@ function _addTemplateTasksToProject(project, templateTasks, tmplName) {
   }
   let count = 0;
   templateTasks.forEach(x => {
-    // v63: Compute due date using per-task anchor (Bid Start or Bid Day).
-    // Template tasks now carry x.dateAnchor — if it's 'bid-day' and project
-    // has dueDate, due date = bidDay + offset; otherwise bidStart + offset.
+    // v63 / v82+: Compute due date using per-task anchor. Four valid values:
+    // 'bid-start' (project.startDate), 'bid-day' (project.dueDate),
+    // 'pre-bid' (project.prebidDate), 'rfi-due' (project.rfiDueDate).
     // If the relevant anchor isn't set on the project, dueDate stays empty.
-    const anchor = (x.dateAnchor === 'bid-day') ? 'bid-day' : 'bid-start';
-    const anchorDate = (anchor === 'bid-day')
-      ? ((project.dueDate || '').trim() || '')
-      : (project.startDate || '');
+    const validAnchors = ['bid-start','bid-day','pre-bid','rfi-due'];
+    const anchor = validAnchors.includes(x.dateAnchor) ? x.dateAnchor : 'bid-start';
+    let anchorDate = '';
+    if (anchor === 'bid-day')      anchorDate = (project.dueDate || '').trim();
+    else if (anchor === 'pre-bid') anchorDate = (project.prebidDate || '').trim();
+    else if (anchor === 'rfi-due') anchorDate = (project.rfiDueDate || '').trim();
+    else                            anchorDate = (project.startDate || '').trim();
     // v63b: coerce offset to a number; missing/invalid → 0 (= due on anchor date).
-    // Per user spec: 0 offset means the task is due ON the bid start (or bid day).
+    // Per user spec: 0 offset means the task is due ON the anchor date.
     const xOffset = (typeof x.offset === 'number' && !isNaN(x.offset)) ? x.offset : 0;
     const dueDate = anchorDate ? addBusinessDays(anchorDate, xOffset).date : '';
     // v60: build the leads array based on what roles the template marks
@@ -14821,6 +16716,63 @@ function render() {
   const projectViewEl = document.getElementById('projectView');
   const emptyEl = document.getElementById('emptyProjects');
   const workloadViewEl = document.getElementById('teamWorkloadView');
+  const projectTimelineViewEl = document.getElementById('projectTimelineView');
+  const openSlotsViewEl = document.getElementById('openSlotsView');
+  const teamInsightsViewEl = document.getElementById('teamInsightsView');
+  // v82: Team Insights view takes precedence over all others
+  if (state.tiView) {
+    if (emptyEl) emptyEl.classList.add('hidden');
+    if (projectViewEl) projectViewEl.classList.add('hidden');
+    if (homeViewEl) homeViewEl.classList.add('hidden');
+    if (snapshotEl) snapshotEl.classList.add('hidden');
+    if (workloadViewEl) workloadViewEl.classList.add('hidden');
+    if (projectTimelineViewEl) projectTimelineViewEl.classList.add('hidden');
+    if (openSlotsViewEl) openSlotsViewEl.classList.add('hidden');
+    if (teamInsightsViewEl) teamInsightsViewEl.classList.remove('hidden');
+    const _scbBar5 = document.getElementById('stickyCountdownBar');
+    const _scbMain5 = document.querySelector('.main');
+    if (_scbBar5) _scbBar5.style.display = 'none';
+    if (_scbMain5) _scbMain5.classList.remove('has-sticky-countdown');
+    renderTeamInsightsView();
+    applySidebarState();
+    return;
+  }
+  if (teamInsightsViewEl) teamInsightsViewEl.classList.add('hidden');
+  // v80: Open Slots view takes precedence
+  if (state.openSlotsView) {
+    if (emptyEl) emptyEl.classList.add('hidden');
+    if (projectViewEl) projectViewEl.classList.add('hidden');
+    if (homeViewEl) homeViewEl.classList.add('hidden');
+    if (snapshotEl) snapshotEl.classList.add('hidden');
+    if (workloadViewEl) workloadViewEl.classList.add('hidden');
+    if (projectTimelineViewEl) projectTimelineViewEl.classList.add('hidden');
+    if (openSlotsViewEl) openSlotsViewEl.classList.remove('hidden');
+    const _scbBar4 = document.getElementById('stickyCountdownBar');
+    const _scbMain4 = document.querySelector('.main');
+    if (_scbBar4) _scbBar4.style.display = 'none';
+    if (_scbMain4) _scbMain4.classList.remove('has-sticky-countdown');
+    renderOpenSlotsView();
+    applySidebarState();
+    return;
+  }
+  if (openSlotsViewEl) openSlotsViewEl.classList.add('hidden');
+  // v75: Project Timeline view takes precedence over other views when active
+  if (state.projectTimelineView) {
+    if (emptyEl) emptyEl.classList.add('hidden');
+    if (projectViewEl) projectViewEl.classList.add('hidden');
+    if (homeViewEl) homeViewEl.classList.add('hidden');
+    if (snapshotEl) snapshotEl.classList.add('hidden');
+    if (workloadViewEl) workloadViewEl.classList.add('hidden');
+    if (projectTimelineViewEl) projectTimelineViewEl.classList.remove('hidden');
+    const _scbBar3 = document.getElementById('stickyCountdownBar');
+    const _scbMain3 = document.querySelector('.main');
+    if (_scbBar3) _scbBar3.style.display = 'none';
+    if (_scbMain3) _scbMain3.classList.remove('has-sticky-countdown');
+    renderProjectTimelineView();
+    applySidebarState();
+    return;
+  }
+  if (projectTimelineViewEl) projectTimelineViewEl.classList.add('hidden');
   // Team Workload view takes precedence over project/home views
   if (state.teamWorkloadView) {
     if (emptyEl) emptyEl.classList.add('hidden');
@@ -16063,6 +18015,269 @@ function updateMilestoneTypeDaysBefore(typeId, value) {
   if (project) renderMilestonesStrip(project);
 }
 
+// =============================================================
+// PROJECT HEALTH SCORE (v81)
+// Composite 0–100 score combining four components:
+//   1. % on-time — past tasks done on or before their due date
+//   2. % acknowledged — currently-assigned (not-done) tasks acknowledged
+//   3. Days-to-bid buffer — converted to 0–100 score
+//   4. Blocked count — penalty-based 0–100 score
+// Default weighting is equal (25% each). Returns { score, components,
+// excluded } where components is an array of { key, label, value,
+// rawText, weight } for the breakdown popover. excluded lists components
+// that couldn't be computed (e.g., no past tasks → no on-time %).
+// =============================================================
+function computeProjectHealthScore(project) {
+  if (!project) return null;
+  const today = new Date();
+  today.setHours(0, 0, 0, 0);
+  const todayStr = formatDateForInput(today);
+  const tasks = Array.isArray(project.tasks) ? project.tasks : [];
+
+  // --- Component 1: % on-time ---
+  // Past tasks that are done, completed on or before due date.
+  // Denominator = tasks with a due date that's already passed AND are
+  // either done or overdue.
+  let onTimeNumerator = 0;
+  let onTimeDenominator = 0;
+  tasks.forEach(t => {
+    if (!t.dueDate) return;
+    const isPastDue = t.dueDate < todayStr;
+    const isDone = t.status === 'done';
+    if (isPastDue || isDone) {
+      onTimeDenominator++;
+      if (isDone) {
+        // Use completedAt if available, else dueDate as proxy
+        const completedDate = t.completedAt
+          ? formatDateForInput(new Date(t.completedAt))
+          : t.dueDate;
+        if (completedDate <= t.dueDate) onTimeNumerator++;
+      }
+      // Tasks that are past-due and not done get 0 (no increment)
+    }
+  });
+  const onTimePct = onTimeDenominator > 0
+    ? Math.round((onTimeNumerator / onTimeDenominator) * 100)
+    : null;
+
+  // --- Component 2: % acknowledged ---
+  // Currently assigned (has leads/assignee), not-done tasks.
+  // Numerator = those that have acknowledgedAt set OR acknowledged=true.
+  let ackNumerator = 0;
+  let ackDenominator = 0;
+  tasks.forEach(t => {
+    if (t.status === 'done') return;
+    const leads = (typeof getTaskLeads === 'function') ? getTaskLeads(t) : (t.assignee ? [t.assignee] : []);
+    if (leads.length === 0) return; // Unassigned tasks can't be ack'd
+    ackDenominator++;
+    if (t.acknowledgedAt || t.acknowledged === true) ackNumerator++;
+  });
+  const ackPct = ackDenominator > 0
+    ? Math.round((ackNumerator / ackDenominator) * 100)
+    : null;
+
+  // --- Component 3: Days-to-bid buffer ---
+  // Convert days remaining to a 0–100 score.
+  //   >= 30d → 100, 14–30d → 75, 7–14d → 50, 1–7d → 25, past bid → null (excluded)
+  let daysToBid = null;
+  let daysToBidScore = null;
+  if (project.bidDate) {
+    const bidDate = new Date(project.bidDate + 'T00:00:00');
+    const diffMs = bidDate.getTime() - today.getTime();
+    daysToBid = Math.round(diffMs / (1000 * 60 * 60 * 24));
+    if (daysToBid >= 0) {
+      if (daysToBid >= 30) daysToBidScore = 100;
+      else if (daysToBid >= 14) daysToBidScore = 75;
+      else if (daysToBid >= 7) daysToBidScore = 50;
+      else daysToBidScore = 25;
+    }
+    // else: past bid, excluded from score
+  }
+
+  // --- Component 4: Blocked count ---
+  // 0 blocked → 100; 1-2 → 75; 3-5 → 50; 6+ → 25
+  const blockedCount = tasks.filter(t => t.status === 'blocked').length;
+  let blockedScore;
+  if (blockedCount === 0) blockedScore = 100;
+  else if (blockedCount <= 2) blockedScore = 75;
+  else if (blockedCount <= 5) blockedScore = 50;
+  else blockedScore = 25;
+
+  // Build components array — equal weights for v81
+  // Future: read weights from state.healthScoreWeights if user configures.
+  const W = 0.25;
+  const components = [];
+  components.push({
+    key: 'on-time',
+    label: 'On-Time Completion',
+    value: onTimePct,
+    rawText: onTimePct === null
+      ? 'No past-due tasks yet'
+      : `${onTimeNumerator} of ${onTimeDenominator} past-due tasks on time`,
+    weight: W,
+    excluded: onTimePct === null
+  });
+  components.push({
+    key: 'acknowledged',
+    label: 'Acknowledgment',
+    value: ackPct,
+    rawText: ackPct === null
+      ? 'No assigned open tasks'
+      : `${ackNumerator} of ${ackDenominator} assigned tasks acknowledged`,
+    weight: W,
+    excluded: ackPct === null
+  });
+  components.push({
+    key: 'days-to-bid',
+    label: 'Schedule Buffer',
+    value: daysToBidScore,
+    rawText: daysToBidScore === null
+      ? (daysToBid !== null && daysToBid < 0 ? `Bid day passed (${Math.abs(daysToBid)} days ago)` : 'No bid date set')
+      : `${daysToBid} day${daysToBid === 1 ? '' : 's'} until bid`,
+    weight: W,
+    excluded: daysToBidScore === null
+  });
+  components.push({
+    key: 'blocked',
+    label: 'No Blocked Tasks',
+    value: blockedScore,
+    rawText: blockedCount === 0
+      ? 'No blocked tasks'
+      : `${blockedCount} blocked task${blockedCount === 1 ? '' : 's'}`,
+    weight: W,
+    excluded: false
+  });
+
+  // Composite score — re-weight if any component is excluded so the others
+  // make up 100% (e.g., past-bid project: 3 components × 33.3% each).
+  const included = components.filter(c => !c.excluded);
+  let score = null;
+  if (included.length > 0) {
+    const reweight = 1 / included.length;
+    const sum = included.reduce((s, c) => s + (c.value * reweight), 0);
+    score = Math.round(sum);
+  }
+
+  return { score, components, excluded: components.filter(c => c.excluded).map(c => c.key) };
+}
+
+// v81: Project Health Score gauge renderer.
+// Reads project.healthScoreVisible (per-project toggle) to decide whether
+// to show. Computes the composite score and renders a small circular gauge
+// using SVG. Click handler opens a breakdown popover.
+function renderProjectHealthGauge(p) {
+  const el = document.getElementById('pvHealthScoreGauge');
+  if (!el) return;
+  if (!p || p.healthScoreVisible === false) {
+    el.style.display = 'none';
+    return;
+  }
+  const result = computeProjectHealthScore(p);
+  if (!result || result.score === null) {
+    el.style.display = 'none';
+    return;
+  }
+  const score = result.score;
+  // Color band
+  let band = 'health-low';
+  if (score >= 75) band = 'health-high';
+  else if (score >= 50) band = 'health-med';
+  el.className = `pv-health-gauge ${band}`;
+  el.style.display = 'inline-flex';
+  el.dataset.healthScore = String(score);
+  // SVG gauge: 32px circle, stroke arc proportional to score
+  const radius = 14;
+  const circumference = 2 * Math.PI * radius;
+  const strokeOffset = circumference * (1 - score / 100);
+  el.innerHTML = `
+    <span class="pv-health-gauge-svg">
+      <svg width="34" height="34" viewBox="0 0 34 34" aria-hidden="true">
+        <circle cx="17" cy="17" r="${radius}" fill="none" stroke="var(--surface-3)" stroke-width="3"></circle>
+        <circle cx="17" cy="17" r="${radius}" fill="none" stroke="currentColor" stroke-width="3"
+                stroke-dasharray="${circumference}" stroke-dashoffset="${strokeOffset}"
+                stroke-linecap="round" transform="rotate(-90 17 17)"></circle>
+      </svg>
+    </span>
+    <span class="pv-health-gauge-body">
+      <span class="pv-health-gauge-num">${score}</span>
+      <span class="pv-health-gauge-label">Health</span>
+    </span>
+  `;
+  el.title = `Project Health Score: ${score}/100 · Click for breakdown`;
+}
+
+function toggleHealthScorePopover(event) {
+  event.stopPropagation();
+  const existing = document.getElementById('healthScorePopover');
+  if (existing) {
+    existing.remove();
+    return;
+  }
+  const project = state.projects.find(pr => pr.id === state.activeProjectId);
+  if (!project) return;
+  const result = computeProjectHealthScore(project);
+  if (!result) return;
+  const componentsHtml = result.components.map(c => {
+    const excludedCls = c.excluded ? ' is-excluded' : '';
+    let bandCls = 'band-low';
+    if (!c.excluded && c.value >= 75) bandCls = 'band-high';
+    else if (!c.excluded && c.value >= 50) bandCls = 'band-med';
+    const valueDisplay = c.excluded
+      ? '—'
+      : (c.key === 'on-time' || c.key === 'acknowledged' ? c.value + '%' : c.value);
+    return `
+      <div class="hsp-component${excludedCls}">
+        <div class="hsp-comp-header">
+          <span class="hsp-comp-label">${escapeHtml(c.label)}</span>
+          <span class="hsp-comp-value ${bandCls}">${valueDisplay}</span>
+        </div>
+        <div class="hsp-comp-raw">${escapeHtml(c.rawText)}</div>
+        ${c.excluded ? '' : `
+          <div class="hsp-comp-bar">
+            <div class="hsp-comp-fill ${bandCls}" style="width:${c.value}%"></div>
+          </div>
+        `}
+      </div>
+    `;
+  }).join('');
+  const popover = document.createElement('div');
+  popover.id = 'healthScorePopover';
+  popover.className = 'hsp-popover';
+  popover.onclick = (e) => e.stopPropagation();
+  popover.innerHTML = `
+    <div class="hsp-header">
+      <span class="hsp-title">Project Health Score</span>
+      <button class="hsp-close" onclick="document.getElementById('healthScorePopover').remove()" title="Close">✕</button>
+    </div>
+    <div class="hsp-overall">
+      <span class="hsp-overall-num">${result.score}</span>
+      <span class="hsp-overall-label">of 100<br><span class="hsp-overall-sub">Composite score</span></span>
+    </div>
+    <div class="hsp-components">${componentsHtml}</div>
+    <div class="hsp-footer">
+      Equal-weighted average across ${result.components.length - result.excluded.length} of ${result.components.length} components.
+      ${result.excluded.length > 0 ? `<br><em>Excluded: ${result.excluded.join(', ')} (not applicable to this project)</em>` : ''}
+    </div>
+  `;
+  document.body.appendChild(popover);
+  // Position popover below the gauge
+  const gauge = document.getElementById('pvHealthScoreGauge');
+  if (gauge) {
+    const rect = gauge.getBoundingClientRect();
+    popover.style.top = (rect.bottom + window.scrollY + 6) + 'px';
+    popover.style.left = Math.max(8, rect.left + window.scrollX) + 'px';
+  }
+  // Close on outside click
+  setTimeout(() => {
+    document.addEventListener('click', _hspOutsideClick, { once: true });
+  }, 50);
+}
+
+function _hspOutsideClick() {
+  const p = document.getElementById('healthScorePopover');
+  if (p) p.remove();
+}
+
 function renderProjectHeader(p) {
   document.getElementById('pvName').textContent = p.name;
   // Subtitle shows key identity info
@@ -16071,6 +18286,9 @@ function renderProjectHeader(p) {
   if (p.delivery) subParts.push(p.delivery);
   if (p.client) subParts.push(`Owner: ${p.client}`);
   document.getElementById('pvSubtitle').textContent = subParts.join(' · ');
+
+  // v81: Project Health Score gauge — inline with action buttons
+  renderProjectHealthGauge(p);
 
   // Lead Estimator banner chip — prominent display at the top of the project header
   const leChip = document.getElementById('pvLeadEstimatorChip');
@@ -18557,11 +20775,17 @@ function jumpToSearchResult(idx) {
   if (result.type === 'project') {
     state.homeView = false;
     state.teamWorkloadView = false;
+    state.projectTimelineView = false;
+    state.openSlotsView = false;
+    state.tiView = false;
     saveState();
     render();
   } else if (result.type === 'task' || result.type === 'task-message') {
     state.homeView = false;
     state.teamWorkloadView = false;
+    state.projectTimelineView = false;
+    state.openSlotsView = false;
+    state.tiView = false;
     saveState();
     render();
     // Open the task modal
@@ -18569,6 +20793,9 @@ function jumpToSearchResult(idx) {
   } else if (result.type === 'message') {
     state.homeView = false;
     state.teamWorkloadView = false;
+    state.projectTimelineView = false;
+    state.openSlotsView = false;
+    state.tiView = false;
     saveState();
     render();
     // Open the project messages thread if available
@@ -18578,6 +20805,9 @@ function jumpToSearchResult(idx) {
   } else if (result.type === 'addendum') {
     state.homeView = false;
     state.teamWorkloadView = false;
+    state.projectTimelineView = false;
+    state.openSlotsView = false;
+    state.tiView = false;
     saveState();
     render();
     // Scroll to the addendum log section if it exists
@@ -18588,6 +20818,9 @@ function jumpToSearchResult(idx) {
   } else if (result.type === 'scope') {
     state.homeView = false;
     state.teamWorkloadView = false;
+    state.projectTimelineView = false;
+    state.openSlotsView = false;
+    state.tiView = false;
     saveState();
     render();
     // Optionally filter to that scope package — for now just open the project
@@ -18598,6 +20831,9 @@ function jumpToSearchResult(idx) {
       state.activeAssignee = result.memberName;
       state.homeView = false;
       state.teamWorkloadView = false;
+      state.projectTimelineView = false;
+      state.openSlotsView = false;
+      state.tiView = false;
       saveState();
       render();
     }
@@ -20551,9 +22787,20 @@ function filterCalTasks(project) {
 // =============================================================
 
 function setLookAheadWindow(days) {
-  state.laWindow = parseInt(days, 10);
+  // v74: accept the string 'project' as a sentinel for "all remaining tasks in active project"
+  // Stored as either an integer or the string 'project'. Buttons compare both.
+  if (days === 'project') {
+    state.laWindow = 'project';
+  } else {
+    state.laWindow = parseInt(days, 10);
+  }
   saveState();
-  document.querySelectorAll('.la-window-btn').forEach(b => b.classList.toggle('active', parseInt(b.dataset.lawindow, 10) === state.laWindow));
+  document.querySelectorAll('.la-window-btn').forEach(b => {
+    const btnVal = b.dataset.lawindow;
+    const isActive = (btnVal === 'project' && state.laWindow === 'project') ||
+                     (btnVal !== 'project' && parseInt(btnVal, 10) === state.laWindow);
+    b.classList.toggle('active', isActive);
+  });
   const project = state.projects.find(p => p.id === state.activeProjectId);
   if (project) renderLookAheadView(project);
 }
@@ -20645,15 +22892,32 @@ function buildLookAheadData() {
   const today = new Date();
   today.setHours(0, 0, 0, 0);
   const todayStr = fmtLocalDate(today);
-  const windowDays = state.laWindow || 7;
 
-  // End date is today + (windowDays - 1) days inclusive
-  // e.g. window=1 → just today; window=7 → today + next 6 days
-  const endDate = new Date(today);
-  endDate.setDate(endDate.getDate() + windowDays - 1);
-  const endStr = fmtLocalDate(endDate);
-
+  // v74: Window can be a number (1, 2, 7, 14, 30, 45) OR the string 'project'.
+  // For 'project', the end date is the max dueDate across all tasks in the
+  // source projects (so we cover the entire remaining bid lifecycle).
+  let windowDays;
+  let endDate;
   const sourceProjects = getLookAheadSourceProjects();
+
+  if (state.laWindow === 'project') {
+    // Walk every task in the source projects, find the max future dueDate
+    let maxDueStr = todayStr;
+    sourceProjects.forEach(p => {
+      (p.tasks || []).forEach(t => {
+        if (t.dueDate && t.dueDate > maxDueStr) maxDueStr = t.dueDate;
+      });
+    });
+    endDate = new Date(maxDueStr + 'T00:00:00');
+    // Compute windowDays as days between today and endDate, inclusive
+    const diffMs = endDate.getTime() - today.getTime();
+    windowDays = Math.max(1, Math.round(diffMs / (1000 * 60 * 60 * 24)) + 1);
+  } else {
+    windowDays = state.laWindow || 7;
+    endDate = new Date(today);
+    endDate.setDate(endDate.getDate() + windowDays - 1);
+  }
+  const endStr = fmtLocalDate(endDate);
 
   // Collect tasks meeting the filter criteria
   const matchingTasks = []; // {project, task, isOverdue, dateBucket}
@@ -20689,12 +22953,17 @@ function buildLookAheadData() {
 
   // Group by date bucket
   const groups = new Map();
-  // Always create overdue bucket first if there are any overdue
   matchingTasks.forEach(item => {
     const key = item.dateBucket;
     if (!groups.has(key)) groups.set(key, []);
     groups.get(key).push(item);
   });
+
+  // v74: For long windows (30+, 45, project), hide empty days entirely to
+  // reduce noise. For shorter windows (1, 2, 7, 14), keep the existing
+  // behavior of showing empty days within the first week for calendar
+  // structure visibility.
+  const isLongWindow = (state.laWindow === 'project' || (typeof state.laWindow === 'number' && state.laWindow >= 30));
 
   // Build ordered groups: overdue first (if present), then date buckets in chronological order
   const orderedGroups = [];
@@ -20709,19 +22978,26 @@ function buildLookAheadData() {
     const key = fmtLocalDate(date);
     if (groups.has(key)) {
       orderedGroups.push({ key, items: groups.get(key) });
-    } else if (d < 7 || d === windowDays - 1) {
-      // Show empty days too within the first week or on the final day, so the structure is visible.
-      // Skip showing empty days beyond the first week of a 2-week view to reduce noise.
+    } else if (!isLongWindow && (d < 7 || d === windowDays - 1)) {
+      // Short windows: show empty days within the first week or on the final
+      // day, so the calendar structure is visible.
       orderedGroups.push({ key, items: [] });
     }
+    // Long windows (30+, Project): empty days are skipped entirely. Only
+    // days with actual tasks render. Makes scanning practical.
   }
 
   return { orderedGroups, totalTasks: matchingTasks.length, windowDays, today, endDate };
 }
 
 function renderLookAheadView(project) {
-  // Update sub-control button states
-  document.querySelectorAll('.la-window-btn').forEach(b => b.classList.toggle('active', parseInt(b.dataset.lawindow, 10) === state.laWindow));
+  // Update sub-control button states (v74: handle 'project' string)
+  document.querySelectorAll('.la-window-btn').forEach(b => {
+    const btnVal = b.dataset.lawindow;
+    const isActive = (btnVal === 'project' && state.laWindow === 'project') ||
+                     (btnVal !== 'project' && parseInt(btnVal, 10) === state.laWindow);
+    b.classList.toggle('active', isActive);
+  });
   const projSel = document.getElementById('laProjectSelect');
   if (projSel) projSel.value = state.laProjectScope || 'active';
   const incOver = document.getElementById('laIncludeOverdue');
@@ -20734,7 +23010,16 @@ function renderLookAheadView(project) {
   // Title text
   const titleEl = document.getElementById('laTitle');
   if (titleEl) {
-    const windowLabel = ({ 1: 'Today', 2: '2-Day', 7: '1-Week', 14: '2-Week' })[state.laWindow] || `${state.laWindow}-Day`;
+    // v74: extended window labels for 30/45/Project
+    const windowLabel = ({
+      1: 'Today',
+      2: '2-Day',
+      7: '1-Week',
+      14: '2-Week',
+      30: '30-Day',
+      45: '45-Day',
+      'project': 'Project'
+    })[state.laWindow] || `${state.laWindow}-Day`;
     const scopeLabel = state.laProjectScope === 'all'
       ? 'All Active Projects'
       : (project ? escapeHtml(project.name) : '(no project selected)');
@@ -21855,12 +24140,20 @@ function toggleMTTRoleReq(index, fieldName, checked) {
 // 'bid-start' (default — offset is relative to project kickoff) or
 // 'bid-day' (offset relative to bid submission deadline).
 function setMasterTaskAnchor(index, anchor) {
-  if (anchor !== 'bid-start' && anchor !== 'bid-day') return;
+  if (!['bid-start','bid-day','pre-bid','rfi-due'].includes(anchor)) return;
   const task = state.masterTasks[index];
   if (!task) return;
   task.dateAnchor = anchor;
   saveState();
   renderMasterTasks();
+}
+
+// Anchor → human-readable tooltip label used in template editor rows.
+function _mttAnchorLabel(anchor) {
+  if (anchor === 'bid-day') return 'Days from Bid Day (negative = before bid, positive = after)';
+  if (anchor === 'pre-bid') return 'Days from Pre-Bid Walk (negative = before walk)';
+  if (anchor === 'rfi-due') return 'Days from RFI Cutoff (negative = before cutoff)';
+  return 'Days from Bid Start Date';
 }
 
 // =============================================================
@@ -21904,9 +24197,24 @@ function _getActiveTemplatePreviewDates() {
 // Render the Preview Date cell for a single template task. Returns HTML.
 function _renderMttPreviewCell(t) {
   const { start, day } = _getActiveTemplatePreviewDates();
-  const anchor = (t.dateAnchor === 'bid-day') ? day : start;
+  // v82+: preview dates exist only for bid-start and bid-day. For pre-bid /
+  // rfi-due, the actual project dates are project-specific, so we show a
+  // helpful placeholder rather than a fabricated preview.
+  let anchor = null;
+  if (t.dateAnchor === 'bid-day')      anchor = day;
+  else if (t.dateAnchor === 'pre-bid') anchor = null;   // no template preview
+  else if (t.dateAnchor === 'rfi-due') anchor = null;   // no template preview
+  else                                  anchor = start;
   const offset = (typeof t.offset === 'number' && !isNaN(t.offset)) ? t.offset : 0;
   if (!anchor) {
+    // For pre-bid / rfi-due, render a labeled placeholder so the user
+    // understands why no preview date is shown.
+    if (t.dateAnchor === 'pre-bid') {
+      return '<div class="mtt-preview-cell no-anchor" title="Pre-Bid anchor — preview date will resolve from project Pre-Bid date when this template is loaded">P+' + offset + 'd</div>';
+    }
+    if (t.dateAnchor === 'rfi-due') {
+      return '<div class="mtt-preview-cell no-anchor" title="RFI Due anchor — preview date will resolve from project RFI Cutoff date when this template is loaded">R+' + offset + 'd</div>';
+    }
     return '<div class="mtt-preview-cell no-anchor">—</div>';
   }
   // Use addDays (calendar days) for preview, not addBusinessDays — the
@@ -21917,7 +24225,7 @@ function _renderMttPreviewCell(t) {
   const cellClass = isWeekend ? 'mtt-preview-cell weekend' : 'mtt-preview-cell';
   const title = isWeekend
     ? `${formatted} — falls on a weekend; actual project dates will auto-shift to a business day`
-    : `${formatted} (preview only — actual project dates use real Bid Start / Bid Day)`;
+    : `${formatted} (preview only — actual project dates use real anchor dates)`;
   return `<div class="${cellClass}" title="${escapeAttr(title)}">${escapeHtml(formatted)}</div>`;
 }
 
@@ -22179,8 +24487,8 @@ function _buildTemplateExportPayload(tmpl) {
       source:          t.source || '',
       priority:        t.priority || 'medium',
       offset:          (typeof t.offset === 'number' && !isNaN(t.offset)) ? t.offset : 0,
-      // v63: anchor — preserve so import recreates the same calc behavior
-      dateAnchor:      (t.dateAnchor === 'bid-day') ? 'bid-day' : 'bid-start',
+      // v63 / v82+: anchor — preserve so import recreates the same calc behavior
+      dateAnchor:      (['bid-start','bid-day','pre-bid','rfi-due'].includes(t.dateAnchor)) ? t.dateAnchor : 'bid-start',
       // v37+: critical + hours + tips + deliverables + checklist
       critical:        !!t.critical,
       estimatedHours:  (typeof t.estimatedHours === 'number' && t.estimatedHours > 0) ? t.estimatedHours : null,
@@ -22285,8 +24593,11 @@ function _appendTaskMarkdown(t, lines, extraSuffix = '') {
   if (t.requiresSenior) roles.push('Senior');
   if (t.requiresLead1)  roles.push('Lead 1');
   if (t.requiresLead2)  roles.push('Lead 2');
-  // Offset readout — explicit about anchor
-  const anchor = (t.dateAnchor === 'bid-day') ? 'Bid Day' : 'Bid Start';
+  // Offset readout — explicit about anchor (v82+: 4 anchor types)
+  let anchor = 'Bid Start';
+  if (t.dateAnchor === 'bid-day')      anchor = 'Bid Day';
+  else if (t.dateAnchor === 'pre-bid') anchor = 'Pre-Bid';
+  else if (t.dateAnchor === 'rfi-due') anchor = 'RFI Due';
   const offsetVal = (typeof t.offset === 'number' && !isNaN(t.offset)) ? t.offset : 0;
   const signed = offsetVal >= 0 ? `+${offsetVal}` : `${offsetVal}`;
   const offsetTxt = `${anchor} ${signed}d`;
@@ -22471,7 +24782,7 @@ function confirmImportTemplate(mode) {
     source:         t.source || '',
     priority:       t.priority || 'medium',
     offset:         (typeof t.offset === 'number' && !isNaN(t.offset)) ? t.offset : 0,
-    dateAnchor:     (t.dateAnchor === 'bid-day') ? 'bid-day' : 'bid-start',
+    dateAnchor:     (['bid-start','bid-day','pre-bid','rfi-due'].includes(t.dateAnchor)) ? t.dateAnchor : 'bid-start',
     critical:       !!t.critical,
     estimatedHours: (typeof t.estimatedHours === 'number' && t.estimatedHours > 0) ? t.estimatedHours : null,
     tips:           t.tips || '',
@@ -22736,7 +25047,11 @@ function _renderRecommendationRow(r) {
   const disabled = r._alreadyInTemplate;
   // Build flags
   const impactDot = r.impact === 'high' ? '🔴' : r.impact === 'medium' ? '🟡' : '🟢';
-  const anchor = (r.dateAnchor === 'bid-day') ? 'Bid Day' : 'Bid Start';
+  // v82+: 4 anchor types
+  let anchor = 'Bid Start';
+  if (r.dateAnchor === 'bid-day')      anchor = 'Bid Day';
+  else if (r.dateAnchor === 'pre-bid') anchor = 'Pre-Bid';
+  else if (r.dateAnchor === 'rfi-due') anchor = 'RFI Due';
   const offsetVal = (typeof r.offset === 'number') ? r.offset : 0;
   const signed = offsetVal >= 0 ? `+${offsetVal}` : `${offsetVal}`;
   const offsetTxt = `${anchor} ${signed}d`;
@@ -22857,7 +25172,7 @@ function applyRecommendations() {
       source:         r.source || '',
       priority:       'medium',
       offset:         (typeof r.offset === 'number') ? r.offset : 0,
-      dateAnchor:     (r.dateAnchor === 'bid-day') ? 'bid-day' : 'bid-start',
+      dateAnchor:     (['bid-start','bid-day','pre-bid','rfi-due'].includes(r.dateAnchor)) ? r.dateAnchor : 'bid-start',
       critical:       !!r.critical,
       estimatedHours: (typeof r.estimatedHours === 'number' && r.estimatedHours > 0) ? r.estimatedHours : null,
       tips:           r.tips || '',
@@ -23426,12 +25741,14 @@ function renderMasterTasks() {
         <!-- v63: Inline anchor toggle (S/B) + number input. Anchor decides
              whether the offset is from Bid Start or Bid Day. The number
              input's title text updates to reflect the current anchor. -->
-        <div class="mtt-offset-row" title="${t.dateAnchor === 'bid-day' ? 'Days from Bid Day (negative = before bid, positive = after bid)' : 'Days from Bid Start Date'}">
+        <div class="mtt-offset-row" title="${_mttAnchorLabel(t.dateAnchor)}">
           <div class="mtt-anchor-toggle">
-            <button type="button" class="mtt-anchor-btn ${t.dateAnchor !== 'bid-day' ? 'active' : ''}" data-anchor="bid-start" onclick="setMasterTaskAnchor(${t._index}, 'bid-start')" title="Anchor from Bid Start">S</button>
+            <button type="button" class="mtt-anchor-btn ${t.dateAnchor === 'bid-start' || !t.dateAnchor ? 'active' : ''}" data-anchor="bid-start" onclick="setMasterTaskAnchor(${t._index}, 'bid-start')" title="Anchor from Bid Start">S</button>
             <button type="button" class="mtt-anchor-btn ${t.dateAnchor === 'bid-day' ? 'active' : ''}" data-anchor="bid-day" onclick="setMasterTaskAnchor(${t._index}, 'bid-day')" title="Anchor from Bid Day">B</button>
+            <button type="button" class="mtt-anchor-btn ${t.dateAnchor === 'pre-bid' ? 'active' : ''}" data-anchor="pre-bid" onclick="setMasterTaskAnchor(${t._index}, 'pre-bid')" title="Anchor from Pre-Bid Date">P</button>
+            <button type="button" class="mtt-anchor-btn ${t.dateAnchor === 'rfi-due' ? 'active' : ''}" data-anchor="rfi-due" onclick="setMasterTaskAnchor(${t._index}, 'rfi-due')" title="Anchor from RFI Cutoff">R</button>
           </div>
-          <input type="number" value="${t.offset||0}" onchange="updateMasterTaskField(${t._index}, 'offset', this.value)" title="${t.dateAnchor === 'bid-day' ? 'Days from Bid Day (negative = before bid)' : 'Days from Bid Start Date'}">
+          <input type="number" value="${t.offset||0}" onchange="updateMasterTaskField(${t._index}, 'offset', this.value)" title="${_mttAnchorLabel(t.dateAnchor)}">
         </div>
         ${_renderMttPreviewCell(t)}
         <button class="mtt-remove-btn" onclick="removeMasterTask(${t._index})" title="Remove">✕</button>
@@ -23766,9 +26083,12 @@ function renderMttSchedule() {
     const critClass = t.critical ? ' is-critical' : '';
     // Bar minimum width: 60px so a 1-day block can hold a readable title
     const barWidth = Math.max(dayWidth, 60);
-    // Tooltip shows raw offset + anchor (Bid Start or Bid Day) for clarity
+    // Tooltip shows raw offset + anchor (v82+: 4 anchor types) for clarity
     const rawOffset = parseInt(t.offset) || 0;
-    const anchorLabel = (t.dateAnchor === 'bid-day') ? 'Bid Day' : 'Bid Start';
+    let anchorLabel = 'Bid Start';
+    if (t.dateAnchor === 'bid-day')      anchorLabel = 'Bid Day';
+    else if (t.dateAnchor === 'pre-bid') anchorLabel = 'Pre-Bid';
+    else if (t.dateAnchor === 'rfi-due') anchorLabel = 'RFI Due';
     const signedRaw = rawOffset === 0 ? '0' : (rawOffset > 0 ? '+' + rawOffset : '' + rawOffset);
     const tooltipTxt = `${t.title} — ${anchorLabel} ${signedRaw}d`;
     bodyHtml += `
@@ -23836,7 +26156,10 @@ function attachMttSchedDragHandlers(minOffset, dayWidth) {
         // Update tooltip live so user can see the proposed offset + anchor
         bar.setAttribute('data-pending-offset', newOffset);
         const signedNew = newOffset === 0 ? '0' : (newOffset > 0 ? '+' + newOffset : '' + newOffset);
-        const anchorLabel = (anchor === 'bid-day') ? 'Bid Day' : 'Bid Start';
+        let anchorLabel = 'Bid Start';
+        if (anchor === 'bid-day')      anchorLabel = 'Bid Day';
+        else if (anchor === 'pre-bid') anchorLabel = 'Pre-Bid';
+        else if (anchor === 'rfi-due') anchorLabel = 'RFI Due';
         bar.title = `${bar.textContent.replace(/^🔥\s*/, '')} — ${anchorLabel} ${signedNew}d`;
       }
 
@@ -26787,16 +29110,3 @@ if (typeof openHomeView === 'function') {
 }
 maybeShowTourWelcome();
 
-
-// After the first paint, try to pull the canonical state from the backend.
-if (typeof syncStateFromServer === 'function') {
-  syncStateFromServer().then(updated => {
-    if (updated) {
-      try { document.body.setAttribute('data-hours-enabled', state.hoursEnabled ? 'true' : 'false'); } catch(e){}
-      state.sidebarCollapsed = true;
-      if (typeof renderCompanyLogo === 'function') renderCompanyLogo();
-      if (typeof render === 'function') render();
-      if (typeof openHomeView === 'function') openHomeView();
-    }
-  });
-}

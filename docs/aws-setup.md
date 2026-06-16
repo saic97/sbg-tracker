@@ -1,5 +1,67 @@
 # AWS deployment walkthrough
 
+Current production layout (since June 2026):
+
+| Piece | Where | URL |
+| ----- | ----- | --- |
+| Frontend (static SPA) | **AWS Amplify Hosting** (CloudFront CDN, HTTPS, gzip) | <https://main.dg9k1rui1t6m1.amplifyapp.com> |
+| REST API + Socket.IO + SQLite + uploads | **EC2 `t3.micro`** (us-east-2) behind Caddy HTTPS | `https://3-144-241-147.nip.io` |
+
+Why the backend is NOT on Amplify: Amplify Hosting serves static files and
+SSR frameworks -- it cannot run a long-lived Express + Socket.IO (WebSocket)
+server with a SQLite file and disk uploads. The EC2 box is the right home
+for that; Amplify is the right home for the static frontend. The two halves
+already speak over CORS.
+
+## AWS Amplify Hosting (frontend)
+
+The Amplify app is `sbg-tracker` (appId `dg9k1rui1t6m1`, us-east-1, branch
+`main`). Deploys are zip uploads -- no GitHub connection required.
+
+**Auto-deploy from GitHub Actions** (`.github/workflows/amplify-deploy.yml`)
+runs on every push to `main` that touches `frontend/`. It needs two repo
+secrets (Settings -> Secrets and variables -> Actions -> Secrets):
+
+- `AWS_ACCESS_KEY_ID` / `AWS_SECRET_ACCESS_KEY` -- an IAM user with
+  `amplify:CreateDeployment`, `amplify:StartDeployment`, `amplify:GetJob`
+  on the app. Until these are added the workflow skips with a notice and
+  the site simply keeps serving the previous deploy.
+
+**Manual deploy from any machine with AWS credentials:**
+
+```bash
+cd sbg-tracker
+mkdir -p _site && cp -r frontend/* _site/
+sed -i 's|<meta name="api-base" content="">|<meta name="api-base" content="https://3-144-241-147.nip.io">|' _site/index.html
+(cd _site && zip -qr ../site.zip .)
+DEP=$(aws amplify create-deployment --app-id dg9k1rui1t6m1 --branch-name main)
+curl -sf -X PUT -T site.zip "$(echo "$DEP" | jq -r .zipUploadUrl)"
+aws amplify start-deployment --app-id dg9k1rui1t6m1 --branch-name main \
+  --job-id "$(echo "$DEP" | jq -r .jobId)"
+```
+
+(On Windows, build the zip with `tar.exe -a -c -f site.zip -C _site index.html css js`
+-- PowerShell's `Compress-Archive` writes backslash paths Amplify can't read.)
+
+**Custom domain / subdomain** (e.g. `tracker.sourcebuild.net`): Amplify
+console -> the app -> Hosting -> Custom domains -> Add domain. Amplify gives
+you a CNAME record to add wherever sourcebuild.net's DNS is managed, and
+issues the TLS certificate automatically. Point a second subdomain (e.g.
+`api.sourcebuild.net`) at the EC2 IP `3.144.241.147` and set
+`CADDY_DOMAIN=api.sourcebuild.net` on the instance if you also want the API
+off the nip.io URL -- then update the `API_BASE` repo variable and redeploy.
+
+**Connecting the repo directly to Amplify instead** (optional): the repo
+contains an `amplify.yml` build spec, so you can use the Amplify console's
+"Connect branch" to build from GitHub pushes natively (set the `API_BASE`
+environment variable in Amplify's app settings). If you do that, disable the
+zip workflow to avoid double deploys.
+
+---
+
+The rest of this guide covers the backend EC2 host: launch, auto-deploy
+from `main`, HTTPS, and backups.
+
 Goal: host the SBG Tracker backend (and optionally serve the frontend from
 the same box) on a free-tier AWS EC2 instance, with auto-deploy from `main`.
 

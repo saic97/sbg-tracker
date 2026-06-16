@@ -207,6 +207,12 @@ function audit(action, entity, entityId, payload) {
 // their changes.
 // ---------------------------------------------------------------------------
 const SNAPSHOT_RETENTION = 50;
+// Snapshot cadence for incremental (subdomain) writes. Snapshotting every
+// save serialized the FULL state blob on every keystroke-burst (CPU + 50x
+// blob-size on disk). Whole-state PUTs and project deletes still always
+// snapshot (those are the writes you want a restore point right before);
+// routine incremental saves snapshot every Nth version.
+const SNAPSHOT_EVERY = 10;
 
 function getStateVersion() {
   const v = kv.get('state_version');
@@ -216,6 +222,109 @@ function bumpStateVersion() {
   const v = getStateVersion() + 1;
   kv.set('state_version', v);
   return v;
+}
+
+// ---------------------------------------------------------------------------
+// Per-subdomain write tracking.
+//
+// The global version alone makes ANY two concurrent writers conflict, even
+// when they touch unrelated subdomains (user A saves project X, user B's
+// save of project Y half a second later carries a stale expectedVersion and
+// gets a 409). That false conflict drops B's edit and forces a full-state
+// refresh -- the "lag" users feel when two people work at once.
+//
+// We record, per subdomain key, the global version at which it was last
+// written. A subdomain PUT with a stale expectedVersion is then only a
+// conflict if THAT subdomain changed after expectedVersion; otherwise the
+// write is accepted and the global version advances.
+//
+// Keys are HIERARCHICAL:
+//   '*'                          whole-state writes (bulk PUT /api/state)
+//   'project:<id>'               whole-project writes (create / bulk fallback)
+//   'project:<id>:task:<tid>'    a single task
+//   'project:<id>:meta'          a project's non-task fields
+//   'teamMembers' / 'templates' / 'settings:<group>'
+//
+// Conflict checks honor the hierarchy so there are no lost updates:
+//   - a task/meta write conflicts if its own key, its parent 'project:<id>',
+//     or '*' moved since the client's version;
+//   - a whole-project write conflicts if the project key, '*', OR ANY of its
+//     child task/meta keys moved (so a per-task edit can't be clobbered by a
+//     concurrent whole-project replace).
+// A whole-project write supersedes (clears) its child keys; '*' clears all.
+//
+// On first run after upgrade the map doesn't exist; we seed it with
+// {'*': currentVersion} so pre-upgrade history is conservatively treated as
+// "everything changed" and stale tabs still conflict exactly as before.
+//
+// The map lives in one kv JSON row, so we cap it (oldest/lowest-version child
+// keys evicted first) to keep that row small. Eviction only risks a missed
+// conflict for a client more than ~thousands of versions stale writing the
+// exact evicted task -- pathological, and such a client is already caught by
+// the global guards on any bulk op.
+// ---------------------------------------------------------------------------
+const MAX_SUBDOMAIN_KEYS = 4000;
+const SUBDOMAIN_PRUNE_TO = 3000;
+
+function getSubdomainVersions() {
+  let map = kv.get('subdomain_versions');
+  if (!map || typeof map !== 'object') {
+    map = { '*': getStateVersion() };
+    kv.set('subdomain_versions', map);
+  }
+  return map;
+}
+
+function pruneSubdomainVersions(map) {
+  const keys = Object.keys(map);
+  if (keys.length <= MAX_SUBDOMAIN_KEYS) return;
+  const evictable = keys.filter(k => k !== '*').sort((a, b) => (map[a] || 0) - (map[b] || 0));
+  const dropCount = keys.length - SUBDOMAIN_PRUNE_TO;
+  for (let i = 0; i < dropCount && i < evictable.length; i++) delete map[evictable[i]];
+}
+
+function markSubdomainsWritten(keys, version) {
+  const map = getSubdomainVersions();
+  for (const k of keys) {
+    map[k] = version;
+    // A whole-project write supersedes its child task/meta keys.
+    if (/^project:[^:]+$/.test(k)) {
+      const prefix = k + ':';
+      for (const existing of Object.keys(map)) {
+        if (existing.startsWith(prefix)) delete map[existing];
+      }
+    }
+  }
+  // A whole-state write supersedes every per-key entry.
+  if (keys.includes('*')) {
+    for (const k of Object.keys(map)) if (k !== '*') delete map[k];
+  }
+  pruneSubdomainVersions(map);
+  kv.set('subdomain_versions', map);
+}
+
+function subdomainChangedSince(key, sinceVersion) {
+  const map = getSubdomainVersions();
+  let maxV = typeof map['*'] === 'number' ? map['*'] : 0;
+  if (typeof map[key] === 'number' && map[key] > maxV) maxV = map[key];
+  // Child (task/meta) -> also covered by a whole-project write on its parent.
+  const child = /^(project:[^:]+):/.exec(key);
+  if (child && typeof map[child[1]] === 'number' && map[child[1]] > maxV) maxV = map[child[1]];
+  // Parent project -> also covered by ANY child task/meta write.
+  if (/^project:[^:]+$/.test(key)) {
+    const prefix = key + ':';
+    for (const k of Object.keys(map)) {
+      if (k.startsWith(prefix) && typeof map[k] === 'number' && map[k] > maxV) maxV = map[k];
+    }
+  }
+  return maxV > sinceVersion;
+}
+
+// Cheap wrapper for incremental writes: only assembles + stores the full
+// blob on the SNAPSHOT_EVERY cadence so routine saves stay light.
+function maybeRecordSnapshot(version, userId) {
+  if (version % SNAPSHOT_EVERY !== 0) return;
+  recordStateSnapshot(version, userId, loadStateBlob());
 }
 
 function recordStateSnapshot(version, userId, state) {
@@ -239,8 +348,38 @@ function recordStateSnapshot(version, userId, state) {
   }
 }
 
+// Everything in this list is the source-of-truth responsibility of a real
+// table; loadStateBlob() always overwrites these keys from the tables, so
+// copies of them inside the kv 'state' row are pure dead weight. Historically
+// the full incoming blob (projects + tasks + embedded files included) was
+// rewritten into kv on every save -- a multi-MB write per keystroke-burst.
+const TABLE_BACKED_KEYS = [
+  'projects', 'teamMembers', 'taskTemplates', 'stages', 'holidays',
+  'ballInCourtOptions', 'csiDivisions', 'sourceOptions', 'milestoneTypes',
+];
+
+function stripTableBackedKeys(state) {
+  const out = { ...state };
+  for (const k of TABLE_BACKED_KEYS) delete out[k];
+  return out;
+}
+
+// Per-device / per-tab UI preferences that the server must never store or
+// emit. Each browser owns its own copy in localStorage. Persisting these
+// workspace-wide meant one user toggling their sidebar (or picking who they
+// "act as") bumped the shared version and pushed that UI state onto everyone
+// else. They are scrubbed on both read (loadStateBlob) and write
+// (saveSettingsState) so no stale copy can leak back out.
+const DEVICE_LOCAL_KEYS = ['sidebarCollapsed', 'homeView', 'currentUser'];
+
+function stripDeviceLocalKeys(state) {
+  const out = { ...state };
+  for (const k of DEVICE_LOCAL_KEYS) delete out[k];
+  return out;
+}
+
 function loadStateBlob() {
-  const blob = kv.get('state') || {};
+  const blob = stripDeviceLocalKeys(kv.get('state') || {});
   return {
     ...blob,
     projects: projects.list().map(p => ({ ...p, tasks: tasks.list('project_id=?', [p.id]) })),
@@ -264,11 +403,14 @@ function saveStateBlob(state, opts = {}) {
   // ---- Guard 1: optimistic concurrency ------------------------------------
   // expectedVersion is required. Missing it == client predates this check
   // (cached older bundle); reject before doing anything destructive.
+  // NOTE: conflict errors deliberately do NOT carry the full current state.
+  // Embedding it meant every conflict response shipped the entire workspace
+  // (multi-MB) back to the client; clients now refetch via GET /api/state,
+  // which is gzip-compressed at the proxy and cheap to serve.
   if (typeof expectedVersion !== 'number') {
     const err = new Error('expectedVersion is required (your tab may be running an outdated version)');
     err.code = 'EXPECTED_VERSION_REQUIRED';
     err.currentVersion = currentVersion;
-    err.currentState = loadStateBlob();
     throw err;
   }
   if (expectedVersion !== currentVersion) {
@@ -276,7 +418,6 @@ function saveStateBlob(state, opts = {}) {
     err.code = 'VERSION_CONFLICT';
     err.expectedVersion = expectedVersion;
     err.currentVersion = currentVersion;
-    err.currentState = loadStateBlob();
     throw err;
   }
 
@@ -294,7 +435,6 @@ function saveStateBlob(state, opts = {}) {
       err.code = 'DESTRUCTIVE_DELETE';
       err.droppedProjects = droppedProjects.map(p => ({ id: p.id, name: p.name }));
       err.currentVersion = currentVersion;
-      err.currentState = loadStateBlob();
       throw err;
     }
   }
@@ -360,12 +500,13 @@ function saveStateBlob(state, opts = {}) {
     if (Array.isArray(state.sourceOptions)) sourceOptions.replaceAll(state.sourceOptions.map((s, i) => ({ ...s, position: i })));
     if (Array.isArray(state.milestoneTypes)) milestoneTypes.replaceAll(state.milestoneTypes.map((s, i) => ({ ...s, position: i })));
 
-    kv.set('state', state);
+    kv.set('state', stripTableBackedKeys(state));
   });
   txn();
   // Bump the version + snapshot AFTER the txn commits so a failed write
   // doesn't leave the version desynced or a phantom snapshot lying around.
   const newVersion = bumpStateVersion();
+  markSubdomainsWritten(['*'], newVersion);
   recordStateSnapshot(newVersion, userId, state);
   audit('state-put', 'state', null, {
     version: newVersion,
@@ -407,14 +548,16 @@ function touchState(version = null) {
   return newVersion;
 }
 
-function saveProjectState(project) {
+// Upsert a project ROW only (never touches the tasks table). subBids are
+// server-authoritative (bid intake writes them outside the sync path), so
+// they're preserved from the existing row unless the caller explicitly
+// includes a `subBids` key.
+function upsertProjectRow(project) {
   const db = getDb();
-  db.prepare('DELETE FROM tasks WHERE project_id=?').run(project.id);
-  
   const hasSubBids = Object.prototype.hasOwnProperty.call(project, 'subBids');
   const preserved = db.prepare('SELECT data FROM projects WHERE id=?').get(project.id);
   const preservedData = preserved ? parseJson(preserved.data, {}) : {};
-  
+
   const projRow = {
     ...project,
     id: project.id || uid(),
@@ -427,20 +570,13 @@ function saveProjectState(project) {
     due_date: project.dueDate || project.due_date || null,
     subBids: hasSubBids ? project.subBids : preservedData.subBids,
   };
-  
+
   const projData = { ...projRow };
-  delete projData.id;
-  delete projData.name;
-  delete projData.client;
-  delete projData.location;
-  delete projData.status;
-  delete projData.archived;
-  delete projData.startDate;
-  delete projData.dueDate;
-  delete projData.start_date;
-  delete projData.due_date;
-  delete projData.tasks;
-  
+  for (const k of ['id', 'name', 'client', 'location', 'status', 'archived',
+                   'startDate', 'dueDate', 'start_date', 'due_date', 'tasks']) {
+    delete projData[k];
+  }
+
   db.prepare(`INSERT INTO projects (id, name, client, location, status, archived, start_date, due_date, data)
               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
               ON CONFLICT(id) DO UPDATE SET
@@ -452,75 +588,86 @@ function saveProjectState(project) {
       projRow.archived, projRow.start_date, projRow.due_date,
       JSON.stringify(projData)
     );
-    
+  return projRow.id;
+}
+
+// Upsert a single task ROW (INSERT ... ON CONFLICT so it works for both a
+// fresh insert and an in-place edit, without disturbing sibling tasks).
+function upsertTaskRow(projectId, t) {
+  const db = getDb();
+  const tRow = {
+    ...t,
+    id: t.id || uid(),
+    project_id: projectId,
+    title: t.title || '',
+    stage: t.stage || null,
+    category: t.category || null,
+    priority: t.priority || null,
+    status: t.status || 'not-started',
+    due_date: t.dueDate || t.due_date || null,
+    start_by_date: t.startByDate || t.start_by_date || null,
+    day_offset: typeof t.dayOffset === 'number' ? t.dayOffset : null,
+    assignee: t.assignee || null,
+    source: t.source || null,
+    notes: t.notes || null,
+  };
+  const tData = { ...tRow };
+  for (const k of ['id', 'project_id', 'title', 'stage', 'category', 'priority',
+                   'status', 'dueDate', 'due_date', 'startByDate', 'start_by_date',
+                   'dayOffset', 'day_offset', 'assignee', 'source', 'notes']) {
+    delete tData[k];
+  }
+  db.prepare(`INSERT INTO tasks (id, project_id, title, stage, category, priority, status, due_date, start_by_date, day_offset, assignee, source, notes, data)
+              VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+              ON CONFLICT(id) DO UPDATE SET
+                project_id=excluded.project_id, title=excluded.title, stage=excluded.stage,
+                category=excluded.category, priority=excluded.priority, status=excluded.status,
+                due_date=excluded.due_date, start_by_date=excluded.start_by_date,
+                day_offset=excluded.day_offset, assignee=excluded.assignee,
+                source=excluded.source, notes=excluded.notes, data=excluded.data`)
+    .run(
+      tRow.id, tRow.project_id, tRow.title, tRow.stage, tRow.category, tRow.priority, tRow.status,
+      tRow.due_date, tRow.start_by_date, tRow.day_offset, tRow.assignee, tRow.source, tRow.notes,
+      JSON.stringify(tData)
+    );
+  return tRow.id;
+}
+
+// Whole-project replace: upsert the project row, then delete+reinsert ALL its
+// tasks. Used for project creation and the bulk-change fallback.
+function saveProjectState(project) {
+  const db = getDb();
+  upsertProjectRow(project);
+  db.prepare('DELETE FROM tasks WHERE project_id=?').run(project.id);
   if (Array.isArray(project.tasks)) {
-    for (const t of project.tasks) {
-      const tRow = {
-        ...t,
-        id: t.id || uid(),
-        project_id: projRow.id,
-        title: t.title || '',
-        stage: t.stage || null,
-        category: t.category || null,
-        priority: t.priority || null,
-        status: t.status || 'not-started',
-        due_date: t.dueDate || t.due_date || null,
-        start_by_date: t.startByDate || t.start_by_date || null,
-        day_offset: typeof t.dayOffset === 'number' ? t.dayOffset : null,
-        assignee: t.assignee || null,
-        source: t.source || null,
-        notes: t.notes || null,
-      };
-      const tData = { ...tRow };
-      delete tData.id;
-      delete tData.project_id;
-      delete tData.title;
-      delete tData.stage;
-      delete tData.category;
-      delete tData.priority;
-      delete tData.status;
-      delete tData.dueDate;
-      delete tData.due_date;
-      delete tData.startByDate;
-      delete tData.start_by_date;
-      delete tData.dayOffset;
-      delete tData.day_offset;
-      delete tData.assignee;
-      delete tData.source;
-      delete tData.notes;
-      
-      db.prepare(`INSERT INTO tasks (id, project_id, title, stage, category, priority, status, due_date, start_by_date, day_offset, assignee, source, notes, data)
-                  VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
-        .run(
-          tRow.id, tRow.project_id, tRow.title, tRow.stage, tRow.category, tRow.priority, tRow.status,
-          tRow.due_date, tRow.start_by_date, tRow.day_offset, tRow.assignee, tRow.source, tRow.notes,
-          JSON.stringify(tData)
-        );
-    }
+    for (const t of project.tasks) upsertTaskRow(project.id, t);
   }
-  
-  const current = kv.get('state') || {};
-  if (Array.isArray(current.projects)) {
-    const idx = current.projects.findIndex(p => p.id === project.id);
-    if (idx !== -1) {
-      current.projects[idx] = project;
-    } else {
-      current.projects.push(project);
-    }
-    kv.set('state', current);
-  }
+  // Projects/tasks live in their tables; loadStateBlob() reassembles from
+  // there. No kv 'state' mirror update -- mirroring the full projects array
+  // into kv on every project save was a multi-MB write per save.
+}
+
+// Project META only -- the non-task fields (name, client, dates, archived,
+// notes, etc.). Leaves the tasks table untouched, so it can't clobber a
+// concurrent per-task edit.
+function saveProjectMeta(project) {
+  upsertProjectRow(project);
+}
+
+// Single task upsert (per-task sync path).
+function saveTaskState(projectId, task) {
+  upsertTaskRow(projectId, task);
+}
+
+// Single task delete (per-task sync path).
+function deleteTaskState(projectId, taskId) {
+  getDb().prepare('DELETE FROM tasks WHERE id=? AND project_id=?').run(taskId, projectId);
 }
 
 function deleteProjectState(projectId) {
   const db = getDb();
   db.prepare('DELETE FROM tasks WHERE project_id=?').run(projectId);
   db.prepare('DELETE FROM projects WHERE id=?').run(projectId);
-  
-  const current = kv.get('state') || {};
-  if (Array.isArray(current.projects)) {
-    current.projects = current.projects.filter(p => p.id !== projectId);
-    kv.set('state', current);
-  }
 }
 
 function saveSettingsState(settings) {
@@ -531,16 +678,11 @@ function saveSettingsState(settings) {
   if (Array.isArray(settings.sourceOptions)) sourceOptions.replaceAll(settings.sourceOptions.map((s, i) => ({ ...s, position: i })));
   if (Array.isArray(settings.milestoneTypes)) milestoneTypes.replaceAll(settings.milestoneTypes.map((s, i) => ({ ...s, position: i })));
   
-  const cleanSettings = { ...settings };
-  delete cleanSettings.projects;
-  delete cleanSettings.teamMembers;
-  delete cleanSettings.taskTemplates;
-  
   const current = kv.get('state') || {};
-  const merged = { ...current, ...cleanSettings };
-  delete merged.projects;
-  delete merged.teamMembers;
-  delete merged.taskTemplates;
+  // Strip both table-backed keys (owned by real tables) and device-local UI
+  // prefs (owned by each browser) before persisting -- the kv 'state' row
+  // holds only genuine shared scalars (e.g. companyLogo, skipWeekends).
+  const merged = stripDeviceLocalKeys(stripTableBackedKeys({ ...current, ...settings }));
   kv.set('state', merged);
 }
 
@@ -573,7 +715,9 @@ module.exports = {
   projects, tasks, projectTasks, teamMembers, stages, taskTemplates,
   holidays, ballInCourtOptions, csiDivisions, sourceOptions, milestoneTypes,
   attachments, notifications,
-  loadStateBlob, saveStateBlob,
-  getStateVersion, bumpStateVersion, recordStateSnapshot,
+  loadStateBlob, saveStateBlob, stripTableBackedKeys, stripDeviceLocalKeys,
+  getStateVersion, bumpStateVersion, recordStateSnapshot, maybeRecordSnapshot,
+  getSubdomainVersions, markSubdomainsWritten, subdomainChangedSince,
   touchState, saveProjectState, deleteProjectState, saveSettingsState,
+  saveProjectMeta, saveTaskState, deleteTaskState,
 };

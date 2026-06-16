@@ -39,10 +39,27 @@
 
   const status = { online: false, lastSync: null, lastError: null };
 
+  const VERSION_KEY = 'sbg_state_version';
+  const STORAGE_KEY = 'sbg_precon_tracker_v3';
+
   // The server-assigned monotonic version of the state we last saw. Updated
   // by getState(), putState() success, conflict responses, and the realtime
-  // state:updated handler (see realtime.js).
+  // state:updated handler (see realtime.js). Persisted to localStorage so
+  // the next boot can send If-None-Match and skip re-downloading the whole
+  // workspace when nothing changed (the server answers 304).
   let _stateVersion = null;
+  try {
+    const saved = localStorage.getItem(VERSION_KEY);
+    if (saved !== null && saved !== '' && !Number.isNaN(parseInt(saved, 10))) {
+      _stateVersion = parseInt(saved, 10);
+    }
+  } catch (e) {}
+
+  function setVersion(v) {
+    if (typeof v !== 'number') return;
+    _stateVersion = v;
+    try { localStorage.setItem(VERSION_KEY, String(v)); } catch (e) {}
+  }
   // We only want to surface the conflict banner once per occurrence; the
   // saveState debounce can fire multiple PUTs in flight and we don't want to
   // alert N times for the same underlying staleness.
@@ -59,6 +76,7 @@
     const token = getToken();
     if (token) headers['Authorization'] = 'Bearer ' + token;
     const res = await fetch(BASE + path, { ...opts, headers });
+    if (res.status === 304 && opts.allow304) return null;
     if (res.status === 401) {
       // Token expired or invalid -- clear and reload to trigger re-auth.
       if (window.auth && typeof window.auth.clearSession === 'function') {
@@ -141,17 +159,44 @@
       activeAssignee: window.state.activeAssignee,
       grouping: window.state.grouping,
       viewMode: window.state.viewMode,
+      // Device-local: a peer's UI prefs must never overwrite ours.
+      sidebarCollapsed: window.state.sidebarCollapsed,
+      homeView: window.state.homeView,
+      currentUser: window.state.currentUser,
       bulkSelectionMode: false,
       bulkSelectedTaskIds: [],
     };
     window.state = { ...window.state, ...serverState, ...localUiFlags };
-    try { localStorage.setItem('sbg_precon_tracker_v3', JSON.stringify(window.state)); } catch (e) {}
+    // Mark everything as synced: the server copy IS the baseline now. Without
+    // this, the next incremental pass would diff against a stale baseline and
+    // re-PUT (and potentially resurrect) data the server just told us about.
+    try { window.lastSyncedState = JSON.parse(JSON.stringify(window.state)); } catch (e) {}
+    try { localStorage.setItem(STORAGE_KEY, JSON.stringify(window.state)); } catch (e) {}
     if (typeof window.render === 'function') window.render();
   }
 
+  // Conflict responses are deliberately small (no state payload). Recover by
+  // refetching GET /api/state -- compressed at the proxy, and the response
+  // also refreshes our version/ETag baseline.
+  let _refetchInFlight = false;
+  async function refetchServerState() {
+    if (_refetchInFlight) return;
+    _refetchInFlight = true;
+    try {
+      // force: skip If-None-Match -- we KNOW our local copy is stale (we just
+      // conflicted), so a 304 here would wrongly bless it as current.
+      const r = await api.getState({ force: true });
+      if (r && r.state) applyServerState(r.state);
+    } catch (e) {
+      console.warn('[api] state refetch after conflict failed:', e.message);
+    } finally {
+      _refetchInFlight = false;
+    }
+  }
+
   function handleVersionConflict(body) {
-    if (body && typeof body.currentVersion === 'number') _stateVersion = body.currentVersion;
-    if (body && body.state) applyServerState(body.state);
+    if (body && typeof body.currentVersion === 'number') setVersion(body.currentVersion);
+    refetchServerState();
     if (_conflictBannerShown) return;
     showConflictBanner(
       "Your tab was out of date — we've refreshed it with the latest data. " +
@@ -176,8 +221,8 @@
       // we want, and the data-loss risk justifies a hard interruption.
       const reload = window.confirm(msg);
       if (reload) {
-        if (body && typeof body.currentVersion === 'number') _stateVersion = body.currentVersion;
-        if (body && body.state) applyServerState(body.state);
+        if (body && typeof body.currentVersion === 'number') setVersion(body.currentVersion);
+        refetchServerState();
         return 'reload';
       }
       return 'force';
@@ -189,12 +234,22 @@
   const api = {
     status, enabled: ENABLED,
     get stateVersion() { return _stateVersion; },
-    setStateVersion(v) { if (typeof v === 'number') _stateVersion = v; },
+    setStateVersion(v) { setVersion(v); },
 
-    // Coarse state-blob endpoint
-    getState: async () => {
-      const r = await request('/api/state');
-      if (r && typeof r.version === 'number') _stateVersion = r.version;
+    // Coarse state-blob endpoint. Sends If-None-Match with the version we
+    // already hold; when the server still has that version it answers 304
+    // and we return null ("nothing newer") instead of re-downloading the
+    // whole workspace. Only do that when a local copy actually exists to
+    // serve from.
+    getState: async (opts = {}) => {
+      const headers = {};
+      let hasLocal = false;
+      try { hasLocal = !!localStorage.getItem(STORAGE_KEY); } catch (e) {}
+      if (!opts.force && typeof _stateVersion === 'number' && hasLocal) {
+        headers['If-None-Match'] = `"v${_stateVersion}"`;
+      }
+      const r = await request('/api/state', { headers, allow304: true });
+      if (r && typeof r.version === 'number') setVersion(r.version);
       return r;
     },
     putState: async (state, opts = {}) => {
@@ -206,7 +261,7 @@
       if (opts.confirmDestructive) body.confirmDestructive = true;
       try {
         const r = await request('/api/state', { method: 'PUT', body: JSON.stringify(body) });
-        if (r && typeof r.version === 'number') _stateVersion = r.version;
+        if (r && typeof r.version === 'number') setVersion(r.version);
         return r;
       } catch (e) {
         const code = e && e.body && e.body.code;
@@ -218,7 +273,7 @@
           if (choice === 'force') {
             // Retry with the same blob, this time bypassing the guard. Use
             // the server's reported currentVersion so the version check passes.
-            if (typeof e.body.currentVersion === 'number') _stateVersion = e.body.currentVersion;
+            if (typeof e.body.currentVersion === 'number') setVersion(e.body.currentVersion);
             return api.putState(state, { confirmDestructive: true });
           }
           // 'reload': server state was applied; let the caller see the failure.
@@ -236,7 +291,64 @@
       };
       try {
         const r = await request(`/api/state/projects/${encodeURIComponent(project.id)}`, { method: 'PUT', body: JSON.stringify(body) });
-        if (r && typeof r.version === 'number') _stateVersion = r.version;
+        if (r && typeof r.version === 'number') setVersion(r.version);
+        return r;
+      } catch (e) {
+        const code = e && e.body && e.body.code;
+        if ((e.status === 400 && code === 'EXPECTED_VERSION_REQUIRED') ||
+            (e.status === 409 && code === 'VERSION_CONFLICT')) {
+          handleVersionConflict(e.body);
+        }
+        throw e;
+      }
+    },
+    // Per-task sync. Editing one task ships one task instead of the whole
+    // project, and conflicts only with a concurrent edit to that same task.
+    putTaskState: async (projectId, task) => {
+      const body = {
+        task,
+        clientId: (window.realtime && window.realtime.clientId) || null,
+        expectedVersion: _stateVersion,
+      };
+      try {
+        const r = await request(`/api/state/projects/${encodeURIComponent(projectId)}/tasks/${encodeURIComponent(task.id)}`, { method: 'PUT', body: JSON.stringify(body) });
+        if (r && typeof r.version === 'number') setVersion(r.version);
+        return r;
+      } catch (e) {
+        const code = e && e.body && e.body.code;
+        if ((e.status === 400 && code === 'EXPECTED_VERSION_REQUIRED') ||
+            (e.status === 409 && code === 'VERSION_CONFLICT')) {
+          handleVersionConflict(e.body);
+        }
+        throw e;
+      }
+    },
+    deleteTaskState: async (projectId, taskId) => {
+      try {
+        const r = await request(`/api/state/projects/${encodeURIComponent(projectId)}/tasks/${encodeURIComponent(taskId)}?expectedVersion=${_stateVersion}&clientId=${((window.realtime && window.realtime.clientId) || '')}`, {
+          method: 'DELETE'
+        });
+        if (r && typeof r.version === 'number') setVersion(r.version);
+        return r;
+      } catch (e) {
+        const code = e && e.body && e.body.code;
+        if ((e.status === 400 && code === 'EXPECTED_VERSION_REQUIRED') ||
+            (e.status === 409 && code === 'VERSION_CONFLICT')) {
+          handleVersionConflict(e.body);
+        }
+        throw e;
+      }
+    },
+    // Project meta (non-task fields) only.
+    putProjectMeta: async (meta) => {
+      const body = {
+        meta,
+        clientId: (window.realtime && window.realtime.clientId) || null,
+        expectedVersion: _stateVersion,
+      };
+      try {
+        const r = await request(`/api/state/projects/${encodeURIComponent(meta.id)}/meta`, { method: 'PUT', body: JSON.stringify(body) });
+        if (r && typeof r.version === 'number') setVersion(r.version);
         return r;
       } catch (e) {
         const code = e && e.body && e.body.code;
@@ -252,7 +364,7 @@
         const r = await request(`/api/state/projects/${encodeURIComponent(id)}?expectedVersion=${_stateVersion}&clientId=${((window.realtime && window.realtime.clientId) || '')}`, {
           method: 'DELETE'
         });
-        if (r && typeof r.version === 'number') _stateVersion = r.version;
+        if (r && typeof r.version === 'number') setVersion(r.version);
         return r;
       } catch (e) {
         const code = e && e.body && e.body.code;
@@ -271,7 +383,7 @@
       };
       try {
         const r = await request('/api/state/team-members', { method: 'PUT', body: JSON.stringify(body) });
-        if (r && typeof r.version === 'number') _stateVersion = r.version;
+        if (r && typeof r.version === 'number') setVersion(r.version);
         return r;
       } catch (e) {
         const code = e && e.body && e.body.code;
@@ -290,7 +402,7 @@
       };
       try {
         const r = await request('/api/state/templates', { method: 'PUT', body: JSON.stringify(body) });
-        if (r && typeof r.version === 'number') _stateVersion = r.version;
+        if (r && typeof r.version === 'number') setVersion(r.version);
         return r;
       } catch (e) {
         const code = e && e.body && e.body.code;
@@ -301,15 +413,16 @@
         throw e;
       }
     },
-    putSettingsState: async (settings) => {
+    putSettingsState: async (settings, group) => {
       const body = {
         settings,
+        group: group || undefined,   // -> server subdomain key `settings:<group>`
         clientId: (window.realtime && window.realtime.clientId) || null,
         expectedVersion: _stateVersion,
       };
       try {
         const r = await request('/api/state/settings', { method: 'PUT', body: JSON.stringify(body) });
-        if (r && typeof r.version === 'number') _stateVersion = r.version;
+        if (r && typeof r.version === 'number') setVersion(r.version);
         return r;
       } catch (e) {
         const code = e && e.body && e.body.code;
@@ -347,6 +460,45 @@
 
     listHolidays: () => request('/api/holidays'),
     putHolidays: (holidays) => request('/api/holidays', { method: 'PUT', body: JSON.stringify({ holidays }) }),
+
+    // File attachments. Multipart upload (no JSON content-type), so these
+    // use bespoke fetches instead of request(). Deliverable files go through
+    // here so they live in server storage instead of as base64 inside the
+    // state blob (which made every save of the project re-upload them).
+    uploadAttachment: async (file, { projectId, taskId } = {}) => {
+      if (!ENABLED) throw new Error('API disabled');
+      const fd = new FormData();
+      if (projectId) fd.append('projectId', projectId);
+      if (taskId) fd.append('taskId', taskId);
+      fd.append('file', file);
+      const headers = {};
+      const token = getToken();
+      if (token) headers['Authorization'] = 'Bearer ' + token;
+      const res = await fetch(BASE + '/api/attachments', { method: 'POST', headers, body: fd });
+      if (!res.ok) {
+        const err = await res.json().catch(() => ({}));
+        throw new Error(err.error || ('upload failed: ' + res.status));
+      }
+      return res.json();
+    },
+    // Fetches with the bearer token and triggers a browser download. A plain
+    // <a href> can't carry the Authorization header.
+    downloadAttachment: async (id, filename) => {
+      if (!ENABLED) throw new Error('API disabled');
+      const headers = {};
+      const token = getToken();
+      if (token) headers['Authorization'] = 'Bearer ' + token;
+      const res = await fetch(BASE + `/api/attachments/${encodeURIComponent(id)}/download`, { headers });
+      if (!res.ok) throw new Error('download failed: ' + res.status);
+      const blob = await res.blob();
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url; a.download = filename || 'download';
+      document.body.appendChild(a); a.click(); a.remove();
+      setTimeout(() => URL.revokeObjectURL(url), 1500);
+      return true;
+    },
+    deleteAttachment: (id) => request(`/api/attachments/${encodeURIComponent(id)}`, { method: 'DELETE' }),
 
     health: () => request('/api/health'),
   };

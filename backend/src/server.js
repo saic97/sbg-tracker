@@ -71,6 +71,9 @@ function buildServer() {
 if (require.main === module) {
   const port = parseInt(process.env.PORT || '3001', 10);
   const { httpServer } = buildServer();
+  // One-time data repairs (idempotent, flag-guarded). Runs in the background
+  // so boot isn't blocked; the routes work correctly before and after.
+  require('./dataFixups').runAll();
   httpServer.listen(port, () => {
     console.log(`[server] SBG Tracker API listening on http://localhost:${port}`);
     console.log(`[server] DB: ${process.env.DATABASE_PATH || './data/sbg-tracker.db'}`);

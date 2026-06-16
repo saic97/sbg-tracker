@@ -20,20 +20,31 @@ function asyncRoute(fn) {
   return (req, res, next) => Promise.resolve(fn(req, res, next)).catch(next);
 }
 
-// Broadcast the current full state to all connected WS clients. Called from
-// sub-bid / bid-intake routes after they mutate project data through the
-// bidIntake module (which doesn't go through PUT /api/state). Safe no-op if
-// realtime isn't attached (e.g. during tests that don't bring up the WS layer).
+// Broadcast a state change to all connected WS clients. Called from sub-bid /
+// bid-intake routes after they mutate project data through the bidIntake
+// module (which doesn't go through PUT /api/state). Safe no-op if realtime
+// isn't attached (e.g. during tests that don't bring up the WS layer).
+//
+// When the mutation touched a single project, pass its id so only that
+// project rides the wire instead of the entire workspace blob.
 //
 // We include the current state version in the payload so receivers can keep
 // their `expectedVersion` in sync. (The version isn't bumped here because
 // these mutations don't compete with a bulk PUT /api/state for the same
 // fields -- they touch project.subBids, which saveStateBlob preserves.)
-function broadcastState(req) {
+function broadcastState(req, projectId = null) {
   try {
     const rt = require('./realtime');
+    let statePayload = null;
+    if (projectId) {
+      const p = m.projects.get(projectId);
+      if (p) {
+        p.tasks = m.projectTasks.list(p.id);
+        statePayload = { projects: [p] };
+      }
+    }
     rt.broadcastStateChange({
-      state: m.loadStateBlob(),
+      state: statePayload || m.loadStateBlob(),
       version: m.getStateVersion(),
       byUserId: req.user && req.user.id,
       byUserName: (req.user && (req.user.name || req.user.email)) || null,
@@ -67,7 +78,18 @@ function buildRouter() {
 
   // ---- coarse state blob ----
   r.get('/state', asyncRoute(async (req, res) => {
-    res.json({ state: m.loadStateBlob(), version: m.getStateVersion() });
+    // Version-based conditional GET. The client caches the last version it
+    // saw alongside its localStorage copy of the state and sends it back as
+    // If-None-Match; when nothing changed server-side we answer 304 with no
+    // body instead of re-shipping the entire workspace on every page load.
+    const version = m.getStateVersion();
+    const etag = `"v${version}"`;
+    res.set('ETag', etag);
+    res.set('Cache-Control', 'private, no-cache');
+    if (req.headers['if-none-match'] === etag) {
+      return res.status(304).end();
+    }
+    res.json({ state: m.loadStateBlob(), version });
   }));
   r.put('/state', asyncRoute(async (req, res) => {
     const { state, clientId, expectedVersion, confirmDestructive } = req.body || {};
@@ -82,14 +104,13 @@ function buildRouter() {
         userId: req.user.id,
       });
     } catch (err) {
-      // Translate the typed errors from saveStateBlob to HTTP responses. Each
-      // includes the server's CURRENT state so the client can refresh its
-      // local copy without a separate GET round-trip.
+      // Translate the typed errors from saveStateBlob to HTTP responses.
+      // Conflict bodies are deliberately lean (no full state) -- the client
+      // refetches GET /api/state, which is compressed and 304-aware.
       if (err.code === 'EXPECTED_VERSION_REQUIRED') {
         return res.status(400).json({
           error: err.message, code: err.code,
           currentVersion: err.currentVersion,
-          state: err.currentState,
         });
       }
       if (err.code === 'VERSION_CONFLICT') {
@@ -97,7 +118,6 @@ function buildRouter() {
           error: err.message, code: err.code,
           expectedVersion: err.expectedVersion,
           currentVersion: err.currentVersion,
-          state: err.currentState,
         });
       }
       if (err.code === 'DESTRUCTIVE_DELETE') {
@@ -105,7 +125,6 @@ function buildRouter() {
           error: err.message, code: err.code,
           droppedProjects: err.droppedProjects,
           currentVersion: err.currentVersion,
-          state: err.currentState,
         });
       }
       throw err;
@@ -162,87 +181,165 @@ function buildRouter() {
   }));
   
   // ---- subdomain state updates ----
+  //
+  // Concurrency model: each endpoint replaces ONE subdomain (a single
+  // project, the team roster, templates, or settings). A stale
+  // expectedVersion is only a conflict when THAT subdomain was written after
+  // the version the client saw -- two users saving different projects at the
+  // same time both succeed. Conflict bodies are lean (no state); the client
+  // refetches GET /api/state (compressed + 304-aware) to recover.
+
+  // Shared guard. Returns the current version number when the write may
+  // proceed, or null after answering the request with a 400/409.
+  function guardSubdomainWrite(req, res, expectedVersion, subdomainKey) {
+    const currentVersion = m.getStateVersion();
+    if (typeof expectedVersion !== 'number' || Number.isNaN(expectedVersion)) {
+      res.status(400).json({
+        error: 'expectedVersion is required', code: 'EXPECTED_VERSION_REQUIRED',
+        currentVersion,
+      });
+      return null;
+    }
+    if (expectedVersion !== currentVersion && m.subdomainChangedSince(subdomainKey, expectedVersion)) {
+      res.status(409).json({
+        error: 'state version conflict: this data was changed by another user since you loaded it',
+        code: 'VERSION_CONFLICT',
+        expectedVersion, currentVersion, subdomain: subdomainKey,
+      });
+      return null;
+    }
+    return currentVersion;
+  }
+
+  // Commit helper: runs `write` in a txn together with the version bump,
+  // marks the subdomain written, optionally snapshots, broadcasts the (small)
+  // changed payload to other clients, and answers { ok, version }.
+  function commitSubdomainWrite(req, res, { subdomainKey, write, broadcast, clientId, alwaysSnapshot = false }) {
+    const db = require('./db').getDb();
+    let newVersion;
+    const txn = db.transaction(() => {
+      write();
+      newVersion = m.bumpStateVersion();
+      m.markSubdomainsWritten([subdomainKey], newVersion);
+    });
+    txn();
+    if (alwaysSnapshot) {
+      m.recordStateSnapshot(newVersion, req.user.id, m.loadStateBlob());
+    } else {
+      m.maybeRecordSnapshot(newVersion, req.user.id);
+    }
+    try {
+      const rt = require('./realtime');
+      rt.broadcastStateChange({
+        ...broadcast,
+        version: newVersion,
+        byUserId: req.user.id,
+        byUserName: req.user.name || req.user.email,
+        clientId: clientId || null,
+      });
+    } catch (e) {
+      console.warn('[routes] realtime broadcast skipped:', e.message);
+    }
+    res.json({ ok: true, version: newVersion });
+  }
+
   r.put('/state/projects/:id', asyncRoute(async (req, res) => {
     const { project, expectedVersion, clientId } = req.body || {};
     if (!project || typeof project !== 'object') {
       return res.status(400).json({ error: 'body must include `project` object' });
     }
-    const currentVersion = m.getStateVersion();
-    if (typeof expectedVersion !== 'number') {
-      return res.status(400).json({
-        error: 'expectedVersion is required', code: 'EXPECTED_VERSION_REQUIRED',
-        currentVersion, state: m.loadStateBlob()
-      });
+    if (project.id && project.id !== req.params.id) {
+      return res.status(400).json({ error: 'project.id does not match URL' });
     }
-    if (expectedVersion !== currentVersion) {
-      return res.status(409).json({
-        error: 'state version conflict', code: 'VERSION_CONFLICT',
-        expectedVersion, currentVersion, state: m.loadStateBlob()
-      });
-    }
-    const db = require('./db').getDb();
-    let newVersion;
-    const txn = db.transaction(() => {
-      m.saveProjectState(project);
-      newVersion = m.bumpStateVersion();
+    const subdomainKey = 'project:' + req.params.id;
+    if (guardSubdomainWrite(req, res, expectedVersion, subdomainKey) === null) return;
+    commitSubdomainWrite(req, res, {
+      subdomainKey,
+      clientId,
+      write: () => m.saveProjectState(project),
+      broadcast: { state: { projects: [project] } },
     });
-    txn();
-    const updatedState = m.loadStateBlob();
-    m.recordStateSnapshot(newVersion, req.user.id, updatedState);
-    try {
-      const rt = require('./realtime');
-      rt.broadcastStateChange({
-        state: { projects: [ project ] },
-        version: newVersion,
-        byUserId: req.user.id,
-        byUserName: req.user.name || req.user.email,
-        clientId: clientId || null,
-      });
-    } catch (e) {
-      console.warn('[routes] realtime broadcast skipped:', e.message);
-    }
-    res.json({ ok: true, version: newVersion });
   }));
 
   r.delete('/state/projects/:id', asyncRoute(async (req, res) => {
-    const expectedVersion = parseInt(req.query.expectedVersion || '0', 10);
+    const expectedVersion = parseInt(req.query.expectedVersion || '', 10);
     const clientId = req.query.clientId || null;
-    const currentVersion = m.getStateVersion();
-    if (!expectedVersion) {
-      return res.status(400).json({
-        error: 'expectedVersion is required', code: 'EXPECTED_VERSION_REQUIRED',
-        currentVersion, state: m.loadStateBlob()
-      });
-    }
-    if (expectedVersion !== currentVersion) {
-      return res.status(409).json({
-        error: 'state version conflict', code: 'VERSION_CONFLICT',
-        expectedVersion, currentVersion, state: m.loadStateBlob()
-      });
-    }
-    const db = require('./db').getDb();
-    let newVersion;
-    const txn = db.transaction(() => {
-      m.deleteProjectState(req.params.id);
-      newVersion = m.bumpStateVersion();
+    const subdomainKey = 'project:' + req.params.id;
+    if (guardSubdomainWrite(req, res, Number.isNaN(expectedVersion) ? undefined : expectedVersion, subdomainKey) === null) return;
+    commitSubdomainWrite(req, res, {
+      subdomainKey,
+      clientId,
+      alwaysSnapshot: true,   // deletions always get a restore point
+      write: () => m.deleteProjectState(req.params.id),
+      broadcast: { state: {}, deletedProjectId: req.params.id },
     });
-    txn();
-    const updatedState = m.loadStateBlob();
-    m.recordStateSnapshot(newVersion, req.user.id, updatedState);
-    try {
-      const rt = require('./realtime');
-      rt.broadcastStateChange({
-        state: {},
-        deletedProjectId: req.params.id,
-        version: newVersion,
-        byUserId: req.user.id,
-        byUserName: req.user.name || req.user.email,
-        clientId: clientId || null,
-      });
-    } catch (e) {
-      console.warn('[routes] realtime broadcast skipped:', e.message);
+  }));
+
+  // ---- per-task subdomains (finer than whole-project) ----
+  // Editing one task ships ~one task, and two people editing DIFFERENT tasks
+  // in the SAME project never collide (keys project:<pid>:task:<tid>).
+  r.put('/state/projects/:pid/tasks/:tid', asyncRoute(async (req, res) => {
+    const { task, expectedVersion, clientId } = req.body || {};
+    if (!task || typeof task !== 'object') {
+      return res.status(400).json({ error: 'body must include `task` object' });
     }
-    res.json({ ok: true, version: newVersion });
+    if (task.id && task.id !== req.params.tid) {
+      return res.status(400).json({ error: 'task.id does not match URL' });
+    }
+    if (!m.projects.get(req.params.pid)) {
+      // The parent project must exist (it syncs first via whole-project PUT).
+      return res.status(409).json({
+        error: 'parent project not found; resync', code: 'VERSION_CONFLICT',
+        currentVersion: m.getStateVersion(),
+      });
+    }
+    const subdomainKey = `project:${req.params.pid}:task:${req.params.tid}`;
+    if (guardSubdomainWrite(req, res, expectedVersion, subdomainKey) === null) return;
+    const taskWithId = { ...task, id: req.params.tid };
+    commitSubdomainWrite(req, res, {
+      subdomainKey,
+      clientId,
+      write: () => m.saveTaskState(req.params.pid, taskWithId),
+      broadcast: { state: {}, taskUpsert: { projectId: req.params.pid, task: taskWithId } },
+    });
+  }));
+
+  r.delete('/state/projects/:pid/tasks/:tid', asyncRoute(async (req, res) => {
+    const expectedVersion = parseInt(req.query.expectedVersion || '', 10);
+    const clientId = req.query.clientId || null;
+    const subdomainKey = `project:${req.params.pid}:task:${req.params.tid}`;
+    if (guardSubdomainWrite(req, res, Number.isNaN(expectedVersion) ? undefined : expectedVersion, subdomainKey) === null) return;
+    commitSubdomainWrite(req, res, {
+      subdomainKey,
+      clientId,
+      write: () => m.deleteTaskState(req.params.pid, req.params.tid),
+      broadcast: { state: {}, taskDelete: { projectId: req.params.pid, taskId: req.params.tid } },
+    });
+  }));
+
+  // Project META only (non-task fields). Separate key so editing a project's
+  // name/dates doesn't conflict with a concurrent task edit in it.
+  r.put('/state/projects/:pid/meta', asyncRoute(async (req, res) => {
+    const { meta, expectedVersion, clientId } = req.body || {};
+    if (!meta || typeof meta !== 'object') {
+      return res.status(400).json({ error: 'body must include `meta` object' });
+    }
+    if (meta.id && meta.id !== req.params.pid) {
+      return res.status(400).json({ error: 'meta.id does not match URL' });
+    }
+    const subdomainKey = `project:${req.params.pid}:meta`;
+    if (guardSubdomainWrite(req, res, expectedVersion, subdomainKey) === null) return;
+    // Never let a meta write carry tasks/subBids -- those have their own paths
+    // (per-task sync; bid intake). Strip them defensively.
+    const cleanMeta = { ...meta, id: req.params.pid };
+    delete cleanMeta.tasks;
+    delete cleanMeta.subBids;
+    commitSubdomainWrite(req, res, {
+      subdomainKey,
+      clientId,
+      write: () => m.saveProjectMeta(cleanMeta),
+      broadcast: { state: {}, projectMeta: { projectId: req.params.pid, meta: cleanMeta } },
+    });
   }));
 
   r.put('/state/team-members', asyncRoute(async (req, res) => {
@@ -250,41 +347,13 @@ function buildRouter() {
     if (!Array.isArray(teamMembers)) {
       return res.status(400).json({ error: 'body must include `teamMembers` array' });
     }
-    const currentVersion = m.getStateVersion();
-    if (typeof expectedVersion !== 'number') {
-      return res.status(400).json({
-        error: 'expectedVersion is required', code: 'EXPECTED_VERSION_REQUIRED',
-        currentVersion, state: m.loadStateBlob()
-      });
-    }
-    if (expectedVersion !== currentVersion) {
-      return res.status(409).json({
-        error: 'state version conflict', code: 'VERSION_CONFLICT',
-        expectedVersion, currentVersion, state: m.loadStateBlob()
-      });
-    }
-    const db = require('./db').getDb();
-    let newVersion;
-    const txn = db.transaction(() => {
-      m.teamMembers.replaceAll(teamMembers);
-      newVersion = m.bumpStateVersion();
+    if (guardSubdomainWrite(req, res, expectedVersion, 'teamMembers') === null) return;
+    commitSubdomainWrite(req, res, {
+      subdomainKey: 'teamMembers',
+      clientId,
+      write: () => m.teamMembers.replaceAll(teamMembers),
+      broadcast: { state: { teamMembers } },
     });
-    txn();
-    const updatedState = m.loadStateBlob();
-    m.recordStateSnapshot(newVersion, req.user.id, updatedState);
-    try {
-      const rt = require('./realtime');
-      rt.broadcastStateChange({
-        state: { teamMembers },
-        version: newVersion,
-        byUserId: req.user.id,
-        byUserName: req.user.name || req.user.email,
-        clientId: clientId || null,
-      });
-    } catch (e) {
-      console.warn('[routes] realtime broadcast skipped:', e.message);
-    }
-    res.json({ ok: true, version: newVersion });
   }));
 
   r.put('/state/templates', asyncRoute(async (req, res) => {
@@ -292,87 +361,39 @@ function buildRouter() {
     if (!Array.isArray(templates)) {
       return res.status(400).json({ error: 'body must include `templates` array' });
     }
-    const currentVersion = m.getStateVersion();
-    if (typeof expectedVersion !== 'number') {
-      return res.status(400).json({
-        error: 'expectedVersion is required', code: 'EXPECTED_VERSION_REQUIRED',
-        currentVersion, state: m.loadStateBlob()
-      });
-    }
-    if (expectedVersion !== currentVersion) {
-      return res.status(409).json({
-        error: 'state version conflict', code: 'VERSION_CONFLICT',
-        expectedVersion, currentVersion, state: m.loadStateBlob()
-      });
-    }
-    const db = require('./db').getDb();
-    let newVersion;
-    const txn = db.transaction(() => {
-      m.taskTemplates.replaceAll(templates);
-      newVersion = m.bumpStateVersion();
+    if (guardSubdomainWrite(req, res, expectedVersion, 'templates') === null) return;
+    commitSubdomainWrite(req, res, {
+      subdomainKey: 'templates',
+      clientId,
+      write: () => m.taskTemplates.replaceAll(templates),
+      broadcast: { state: { taskTemplates: templates } },
     });
-    txn();
-    const updatedState = m.loadStateBlob();
-    m.recordStateSnapshot(newVersion, req.user.id, updatedState);
-    try {
-      const rt = require('./realtime');
-      rt.broadcastStateChange({
-        state: { taskTemplates: templates },
-        version: newVersion,
-        byUserId: req.user.id,
-        byUserName: req.user.name || req.user.email,
-        clientId: clientId || null,
-      });
-    } catch (e) {
-      console.warn('[routes] realtime broadcast skipped:', e.message);
-    }
-    res.json({ ok: true, version: newVersion });
   }));
 
   r.put('/state/settings', asyncRoute(async (req, res) => {
-    const { settings, expectedVersion, clientId } = req.body || {};
+    const { settings, expectedVersion, clientId, group } = req.body || {};
     if (!settings || typeof settings !== 'object') {
       return res.status(400).json({ error: 'body must include `settings` object' });
     }
-    const currentVersion = m.getStateVersion();
-    if (typeof expectedVersion !== 'number') {
-      return res.status(400).json({
-        error: 'expectedVersion is required', code: 'EXPECTED_VERSION_REQUIRED',
-        currentVersion, state: m.loadStateBlob()
-      });
-    }
-    if (expectedVersion !== currentVersion) {
-      return res.status(409).json({
-        error: 'state version conflict', code: 'VERSION_CONFLICT',
-        expectedVersion, currentVersion, state: m.loadStateBlob()
-      });
-    }
-    const db = require('./db').getDb();
-    let newVersion;
-    const txn = db.transaction(() => {
-      m.saveSettingsState(settings);
-      newVersion = m.bumpStateVersion();
-    });
-    txn();
-    const updatedState = m.loadStateBlob();
-    m.recordStateSnapshot(newVersion, req.user.id, updatedState);
-    const cleanSettings = { ...updatedState };
+    // Settings is split into independent subdomains: `settings:branding`,
+    // `settings:calendar`, `settings:lists`. A change to one group only
+    // conflicts with a concurrent change to that SAME group. `group` is a
+    // short slug; fall back to the legacy single `settings` key if absent.
+    const groupSlug = typeof group === 'string' && /^[a-z0-9_-]{1,32}$/.test(group) ? group : null;
+    const subdomainKey = groupSlug ? `settings:${groupSlug}` : 'settings';
+    if (guardSubdomainWrite(req, res, expectedVersion, subdomainKey) === null) return;
+    // Broadcast only what the caller sent -- not the whole settings domain --
+    // so e.g. a calendar edit doesn't ship the company logo to every client.
+    const cleanSettings = { ...settings };
     delete cleanSettings.projects;
     delete cleanSettings.teamMembers;
     delete cleanSettings.taskTemplates;
-    try {
-      const rt = require('./realtime');
-      rt.broadcastStateChange({
-        state: cleanSettings,
-        version: newVersion,
-        byUserId: req.user.id,
-        byUserName: req.user.name || req.user.email,
-        clientId: clientId || null,
-      });
-    } catch (e) {
-      console.warn('[routes] realtime broadcast skipped:', e.message);
-    }
-    res.json({ ok: true, version: newVersion });
+    commitSubdomainWrite(req, res, {
+      subdomainKey,
+      clientId,
+      write: () => m.saveSettingsState(settings),
+      broadcast: { state: cleanSettings },
+    });
   }));
 
   // ---- projects ----
@@ -510,7 +531,7 @@ function buildRouter() {
       },
       force: req.body && (req.body.force === '1' || req.body.force === 'true'),
     });
-    if (result.status === 'imported') broadcastState(req);
+    if (result.status === 'imported') broadcastState(req, req.params.id);
     res.status(result.status === 'duplicate' ? 200 : 201).json({ ok: true, ...result });
   }));
 
@@ -521,19 +542,19 @@ function buildRouter() {
       limit,
       userId: req.user.id,
     });
-    if (summary.imported) broadcastState(req);
+    if (summary.imported) broadcastState(req, req.params.id);
     res.json({ ok: true, ...summary });
   }));
 
   r.patch('/projects/:id/sub-bids/:bidId', asyncRoute(async (req, res) => {
     const updated = bidIntake.updateSubBid(req.params.id, req.params.bidId, req.body || {});
-    broadcastState(req);
+    broadcastState(req, req.params.id);
     res.json(updated);
   }));
 
   r.delete('/projects/:id/sub-bids/:bidId', asyncRoute(async (req, res) => {
     bidIntake.removeSubBid(req.params.id, req.params.bidId);
-    broadcastState(req);
+    broadcastState(req, req.params.id);
     res.status(204).end();
   }));
 

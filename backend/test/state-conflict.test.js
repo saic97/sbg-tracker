@@ -38,13 +38,15 @@ test('GET /api/state returns a numeric version', async () => {
   assert.equal(typeof r.body.version, 'number');
 });
 
-test('PUT without expectedVersion returns 400 EXPECTED_VERSION_REQUIRED + current state', async () => {
+test('PUT without expectedVersion returns 400 EXPECTED_VERSION_REQUIRED (lean body)', async () => {
   const r = await authed(request(app).put('/api/state'))
     .send({ state: { projects: [] } });
   assert.equal(r.status, 400);
   assert.equal(r.body.code, 'EXPECTED_VERSION_REQUIRED');
-  // Server echoes its current state so the client can refresh without an extra GET.
-  assert.ok(r.body.state);
+  // Conflict bodies are deliberately lean: the client refetches GET
+  // /api/state (compressed + 304-aware) instead of getting the whole
+  // workspace embedded in every error response.
+  assert.equal(r.body.state, undefined);
   assert.equal(typeof r.body.currentVersion, 'number');
 });
 
@@ -75,7 +77,7 @@ test('PUT with a stale expectedVersion returns 409 VERSION_CONFLICT and does NOT
   assert.equal(r.body.code, 'VERSION_CONFLICT');
   assert.equal(r.body.expectedVersion, v - 1);
   assert.equal(r.body.currentVersion, v);
-  assert.ok(r.body.state);
+  assert.equal(r.body.state, undefined);
 
   // The unchanged DB proves no DELETE ran.
   const after = await authed(request(app).get('/api/state'));

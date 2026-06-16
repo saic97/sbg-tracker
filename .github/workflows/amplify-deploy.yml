@@ -1,0 +1,95 @@
+name: Deploy frontend to AWS Amplify
+
+# Zips frontend/ (with <meta name="api-base"> patched to the API_BASE repo
+# variable) and pushes it to the Amplify Hosting app as a manual deployment.
+# The app was created as `sbg-tracker` (appId dg9k1rui1t6m1, us-east-1) and
+# serves at https://main.dg9k1rui1t6m1.amplifyapp.com.
+#
+# Requires two repository SECRETS (Settings -> Secrets and variables -> Actions):
+#   AWS_ACCESS_KEY_ID / AWS_SECRET_ACCESS_KEY  -- an IAM user allowed to call
+#     amplify:CreateDeployment / StartDeployment / GetJob on the app.
+# Optional repository VARIABLES:
+#   AMPLIFY_APP_ID -- defaults to dg9k1rui1t6m1
+#   API_BASE       -- backend URL baked into the page (same variable the
+#                     GitHub Pages workflow uses)
+#
+# If the AWS secrets aren't configured the workflow skips quietly instead of
+# failing the push.
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'frontend/**'
+      - '.github/workflows/amplify-deploy.yml'
+  workflow_dispatch:
+
+concurrency:
+  group: 'amplify-deploy'
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    name: Zip + deploy to Amplify Hosting
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check AWS credentials are configured
+        id: creds
+        run: |
+          if [ -z "${{ secrets.AWS_ACCESS_KEY_ID }}" ] || [ -z "${{ secrets.AWS_SECRET_ACCESS_KEY }}" ]; then
+            echo "configured=false" >> "$GITHUB_OUTPUT"
+            echo "::notice ::AWS_ACCESS_KEY_ID / AWS_SECRET_ACCESS_KEY secrets not set -- skipping Amplify deploy (see docs/aws-setup.md)."
+          else
+            echo "configured=true" >> "$GITHUB_OUTPUT"
+          fi
+
+      - uses: actions/checkout@v4
+        if: steps.creds.outputs.configured == 'true'
+
+      - name: Configure AWS credentials
+        if: steps.creds.outputs.configured == 'true'
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: us-east-1
+
+      - name: Build site (patch api-base) and zip
+        if: steps.creds.outputs.configured == 'true'
+        run: |
+          mkdir -p _site
+          cp -r frontend/* _site/
+          API_BASE_VALUE="${{ vars.API_BASE }}"
+          if [ -n "$API_BASE_VALUE" ]; then
+            echo "Patching api-base to $API_BASE_VALUE"
+            sed -i "s|<meta name=\"api-base\" content=\"\">|<meta name=\"api-base\" content=\"$API_BASE_VALUE\">|" _site/index.html
+          else
+            echo "No API_BASE repo variable -- leaving api-base empty (same-origin)."
+          fi
+          (cd _site && zip -qr ../site.zip .)
+
+      - name: Deploy to Amplify
+        if: steps.creds.outputs.configured == 'true'
+        run: |
+          set -euo pipefail
+          APP_ID="${{ vars.AMPLIFY_APP_ID || 'dg9k1rui1t6m1' }}"
+          DEP=$(aws amplify create-deployment --app-id "$APP_ID" --branch-name main)
+          JOB_ID=$(echo "$DEP" | jq -r .jobId)
+          UPLOAD_URL=$(echo "$DEP" | jq -r .zipUploadUrl)
+          curl -sf -X PUT -T site.zip "$UPLOAD_URL"
+          aws amplify start-deployment --app-id "$APP_ID" --branch-name main --job-id "$JOB_ID" > /dev/null
+          for i in $(seq 1 30); do
+            STATUS=$(aws amplify get-job --app-id "$APP_ID" --branch-name main --job-id "$JOB_ID" --query 'job.summary.status' --output text)
+            echo "deploy status: $STATUS"
+            [ "$STATUS" = "SUCCEED" ] && break
+            [ "$STATUS" = "FAILED" ] && exit 1
+            sleep 5
+          done
+          [ "$STATUS" = "SUCCEED" ]
+
+      - name: Smoke check
+        if: steps.creds.outputs.configured == 'true'
+        run: |
+          APP_ID="${{ vars.AMPLIFY_APP_ID || 'dg9k1rui1t6m1' }}"
+          curl -sf "https://main.${APP_ID}.amplifyapp.com/" > /dev/null
+          echo "https://main.${APP_ID}.amplifyapp.com/ is serving."
