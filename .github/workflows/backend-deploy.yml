@@ -46,6 +46,13 @@ jobs:
           set -euo pipefail
           cd /opt/sbg-tracker
           sudo -u sbg git pull --ff-only origin main
+          # better-sqlite3 has no prebuilt binary for this node build, so npm
+          # compiles it from source -- which needs a C/C++ toolchain. Install it
+          # if missing (idempotent; no-op once present).
+          command -v make >/dev/null 2>&1 || sudo dnf install -y gcc gcc-c++ make python3
+          # A swap file keeps the native compile from running the t3.micro (1 GB)
+          # out of memory. Created once, then reused on later deploys.
+          if [ ! -f /swapfile ]; then sudo dd if=/dev/zero of=/swapfile bs=1M count=1024 && sudo chmod 600 /swapfile && sudo mkswap /swapfile && sudo swapon /swapfile; fi
           cd backend
           sudo -u sbg npm ci --omit=dev || sudo -u sbg npm install --omit=dev
           sudo -u sbg npm run migrate
