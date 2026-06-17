@@ -121,3 +121,43 @@ test('PUT /api/state broadcasts state:updated to other clients', async () => {
   sa.disconnect();
   sb.disconnect();
 });
+
+test('per-task PUT broadcasts the taskUpsert delta + version (not an empty state)', async () => {
+  const sa = await connect(tokenA);
+  const sb = await connect(tokenB);
+  await new Promise(r => setTimeout(r, 100));
+
+  // Resolve only on the per-task broadcast (ignore the project-create one below).
+  const received = new Promise((resolve, reject) => {
+    const timer = setTimeout(() => reject(new Error('no per-task broadcast arrived')), 5000);
+    sb.on('state:updated', (payload) => {
+      if (payload && payload.taskUpsert) { clearTimeout(timer); resolve(payload); }
+    });
+  });
+
+  // Parent project must exist before a per-task PUT. Use the per-project
+  // subdomain endpoint so we don't destructively replace other tests' data.
+  let cur = await request(app).get('/api/state').set('Authorization', `Bearer ${tokenA}`);
+  await request(app)
+    .put('/api/state/projects/rtp1')
+    .set('Authorization', `Bearer ${tokenA}`)
+    .send({ project: { id: 'rtp1', name: 'RT Proj', tasks: [] }, clientId: 'client-A', expectedVersion: cur.body.version })
+    .expect(200);
+
+  // The actual per-task write whose delta must reach other clients.
+  cur = await request(app).get('/api/state').set('Authorization', `Bearer ${tokenA}`);
+  await request(app)
+    .put('/api/state/projects/rtp1/tasks/t1')
+    .set('Authorization', `Bearer ${tokenA}`)
+    .send({ task: { id: 't1', title: 'Hello RT' }, clientId: 'client-A', expectedVersion: cur.body.version })
+    .expect(200);
+
+  const payload = await received;
+  assert.ok(payload.taskUpsert, 'broadcast carries the taskUpsert delta');
+  assert.equal(payload.taskUpsert.projectId, 'rtp1');
+  assert.equal(payload.taskUpsert.task.id, 't1');
+  assert.equal(payload.taskUpsert.task.title, 'Hello RT');
+  assert.equal(typeof payload.version, 'number', 'broadcast carries the new version');
+  sa.disconnect();
+  sb.disconnect();
+});

@@ -241,6 +241,91 @@
   window.syncStateFromServer = syncStateFromServer;
   window.performIncrementalSync = performIncrementalSync;
 
+  // ---- import override -----------------------------------------------------
+  // The app's applyImport() (app.js) replaces/merges window.state, calls
+  // saveState(), then reloads the page ~250ms later. With the backend enabled
+  // that RACES the debounced per-subdomain sync: the reload fires before the
+  // upload finishes, boot() refetches the server's OLD copy, and the import is
+  // silently lost -- "I import, refresh, and it goes back to the old data."
+  // A wholesale import is also the one case the per-task incremental diff
+  // handles badly (replacing every project at once can 404 / trip the
+  // destructive-delete guard mid-stream).
+  //
+  // Replace applyImport with a backend-aware version: build the same new state,
+  // push it ATOMICALLY via PUT /api/state (confirmDestructive), WAIT for the
+  // server to confirm, reset the sync baseline, and only THEN reload.
+  function installImportOverride() {
+    if (!window.api || !window.api.enabled) return;
+    window.applyImport = async function (mode) {
+      const imported = window._pendingImportState;
+      if (!imported) {
+        alert('No import data available. Try again.');
+        if (typeof window.closeImportConfirm === 'function') window.closeImportConfirm();
+        return;
+      }
+      if (mode === 'replace') {
+        const ok = confirm('This REPLACES all live data on the server (for everyone) with this backup. Current projects, tasks, templates and settings will be lost. Continue?');
+        if (!ok) return;
+      }
+      try {
+        // 1) Build the new local state exactly like app.js's applyImport does.
+        if (mode === 'replace') {
+          Object.keys(window.state).forEach(k => { delete window.state[k]; });
+          Object.keys(imported).forEach(k => { window.state[k] = imported[k]; });
+        } else {
+          if (typeof window._mergeImportedArrays === 'function') {
+            window._mergeImportedArrays(window.state, imported, 'projects', 'id');
+            window._mergeImportedArrays(window.state, imported, 'masterTaskTemplates', 'id');
+            window._mergeImportedArrays(window.state, imported, 'teamMembers', 'name');
+          }
+          if (Array.isArray(imported.teamHolidays)) {
+            const ex = new Set(window.state.teamHolidays || []);
+            imported.teamHolidays.forEach(h => ex.add(h));
+            window.state.teamHolidays = Array.from(ex);
+          }
+          if (typeof imported.hoursStageDefaults === 'object' &&
+              Object.keys(window.state.hoursStageDefaults || {}).length === 0) {
+            window.state.hoursStageDefaults = imported.hoursStageDefaults;
+          }
+        }
+        window.state.bulkSelectionMode = false;
+        window.state.bulkSelectedTaskIds = [];
+        try { localStorage.setItem(STORAGE_KEY, JSON.stringify(window.state)); } catch (e) {}
+
+        // 2) Push the whole state to the server atomically and WAIT for it.
+        //    getState() first so expectedVersion matches the server's current
+        //    version (the version guard is NOT bypassed by confirmDestructive).
+        //    Retry a few times in case the version moves between read and write.
+        const full = JSON.parse(JSON.stringify(window.state));
+        let saved = false, lastErr = null;
+        for (let attempt = 0; attempt < 4 && !saved; attempt++) {
+          try {
+            await window.api.getState({ force: true }); // refresh expectedVersion
+            await window.api.putState(full, { confirmDestructive: true });
+            saved = true;
+          } catch (err) {
+            lastErr = err;
+            await new Promise(r => setTimeout(r, 300));
+          }
+        }
+        if (!saved) throw (lastErr || new Error('could not save to server'));
+
+        // 3) Reset the sync baseline so the incremental diff sees no change and
+        //    doesn't immediately fight the import we just pushed.
+        window.lastSyncedState = JSON.parse(JSON.stringify(window.state));
+
+        if (typeof window.closeImportConfirm === 'function') window.closeImportConfirm();
+        alert('Import complete (' + mode + '). Saved to the server. Reloading…');
+        window.location.reload();
+      } catch (e) {
+        console.error('Import apply failed:', e);
+        alert('Import could NOT be saved to the server:\n' + (e && e.message ? e.message : e) +
+              '\n\nNothing on the server was changed.');
+        if (typeof window.closeImportConfirm === 'function') window.closeImportConfirm();
+      }
+    };
+  }
+
   // ---- hook saveState ------------------------------------------------------
   // The app's saveState() only writes localStorage. Wrap it so every save also
   // schedules a backend sync. Because saveState is a function-declaration
@@ -264,6 +349,7 @@
   // populated. Mirror the original split app's boot tail here.
   function boot() {
     installSaveHook();
+    installImportOverride();
     if (typeof window.state === 'undefined') return;
     if (!window.api || !window.api.enabled) {
       if (window.router && typeof window.router.afterStateLoad === 'function') window.router.afterStateLoad();
