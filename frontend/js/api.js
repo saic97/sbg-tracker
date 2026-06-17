@@ -234,6 +234,24 @@
     }
   }
 
+  // Fields every per-subdomain write carries. `actingAs` is the device's
+  // "act as" identity (state.currentUser, chosen in the header dropdown) so
+  // other tabs' "Updated by ..." toast credits the PERSON who made the change,
+  // not the shared login account. Read fresh on each (re)try.
+  function syncFields() {
+    return {
+      clientId: (window.realtime && window.realtime.clientId) || null,
+      expectedVersion: _stateVersion,
+      actingAs: (window.state && window.state.currentUser) || null,
+    };
+  }
+  function syncQuery() {
+    const f = syncFields();
+    return `expectedVersion=${f.expectedVersion}` +
+           `&clientId=${encodeURIComponent(f.clientId || '')}` +
+           `&actingAs=${encodeURIComponent(f.actingAs || '')}`;
+  }
+
   // Returns 'force' if the user wants to delete anyway, 'reload' otherwise.
   // Default (Cancel / dismiss) is 'reload' so a panicked enter-press is safe.
   function handleDestructiveDelete(body) {
@@ -287,6 +305,7 @@
         state,
         clientId: (window.realtime && window.realtime.clientId) || null,
         expectedVersion: _stateVersion,
+        actingAs: (window.state && window.state.currentUser) || null,
       };
       if (opts.confirmDestructive) body.confirmDestructive = true;
       try {
@@ -318,38 +337,38 @@
     // attempt so the retry carries the refreshed expectedVersion.
     putProjectState: (project) => subdomainWrite(() => request(
       `/api/state/projects/${encodeURIComponent(project.id)}`,
-      { method: 'PUT', body: JSON.stringify({ project, clientId: (window.realtime && window.realtime.clientId) || null, expectedVersion: _stateVersion }) }
+      { method: 'PUT', body: JSON.stringify({ project, ...syncFields() }) }
     )),
     // Per-task sync. Editing one task ships one task instead of the whole
     // project, and conflicts only with a concurrent edit to that same task.
     putTaskState: (projectId, task) => subdomainWrite(() => request(
       `/api/state/projects/${encodeURIComponent(projectId)}/tasks/${encodeURIComponent(task.id)}`,
-      { method: 'PUT', body: JSON.stringify({ task, clientId: (window.realtime && window.realtime.clientId) || null, expectedVersion: _stateVersion }) }
+      { method: 'PUT', body: JSON.stringify({ task, ...syncFields() }) }
     )),
     deleteTaskState: (projectId, taskId) => subdomainWrite(() => request(
-      `/api/state/projects/${encodeURIComponent(projectId)}/tasks/${encodeURIComponent(taskId)}?expectedVersion=${_stateVersion}&clientId=${((window.realtime && window.realtime.clientId) || '')}`,
+      `/api/state/projects/${encodeURIComponent(projectId)}/tasks/${encodeURIComponent(taskId)}?${syncQuery()}`,
       { method: 'DELETE' }
     )),
     // Project meta (non-task fields) only.
     putProjectMeta: (meta) => subdomainWrite(() => request(
       `/api/state/projects/${encodeURIComponent(meta.id)}/meta`,
-      { method: 'PUT', body: JSON.stringify({ meta, clientId: (window.realtime && window.realtime.clientId) || null, expectedVersion: _stateVersion }) }
+      { method: 'PUT', body: JSON.stringify({ meta, ...syncFields() }) }
     )),
     deleteProjectState: (id) => subdomainWrite(() => request(
-      `/api/state/projects/${encodeURIComponent(id)}?expectedVersion=${_stateVersion}&clientId=${((window.realtime && window.realtime.clientId) || '')}`,
+      `/api/state/projects/${encodeURIComponent(id)}?${syncQuery()}`,
       { method: 'DELETE' }
     )),
     putTeamMembersState: (teamMembers) => subdomainWrite(() => request(
       '/api/state/team-members',
-      { method: 'PUT', body: JSON.stringify({ teamMembers, clientId: (window.realtime && window.realtime.clientId) || null, expectedVersion: _stateVersion }) }
+      { method: 'PUT', body: JSON.stringify({ teamMembers, ...syncFields() }) }
     )),
     putTemplatesState: (templates) => subdomainWrite(() => request(
       '/api/state/templates',
-      { method: 'PUT', body: JSON.stringify({ templates, clientId: (window.realtime && window.realtime.clientId) || null, expectedVersion: _stateVersion }) }
+      { method: 'PUT', body: JSON.stringify({ templates, ...syncFields() }) }
     )),
     putSettingsState: (settings, group) => subdomainWrite(() => request(
       '/api/state/settings',
-      { method: 'PUT', body: JSON.stringify({ settings, group: group || undefined, clientId: (window.realtime && window.realtime.clientId) || null, expectedVersion: _stateVersion }) }
+      { method: 'PUT', body: JSON.stringify({ settings, group: group || undefined, ...syncFields() }) }
     )),
 
     // Entity endpoints

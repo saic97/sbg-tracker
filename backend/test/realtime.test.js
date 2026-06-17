@@ -149,7 +149,9 @@ test('per-task PUT broadcasts the taskUpsert delta + version (not an empty state
   await request(app)
     .put('/api/state/projects/rtp1/tasks/t1')
     .set('Authorization', `Bearer ${tokenA}`)
-    .send({ task: { id: 't1', title: 'Hello RT' }, clientId: 'client-A', expectedVersion: cur.body.version })
+    // actingAs is the editor's "act as" identity; the toast should credit it,
+    // not the login account name ('Alice').
+    .send({ task: { id: 't1', title: 'Hello RT' }, clientId: 'client-A', actingAs: 'Jane Estimator', expectedVersion: cur.body.version })
     .expect(200);
 
   const payload = await received;
@@ -158,6 +160,7 @@ test('per-task PUT broadcasts the taskUpsert delta + version (not an empty state
   assert.equal(payload.taskUpsert.task.id, 't1');
   assert.equal(payload.taskUpsert.task.title, 'Hello RT');
   assert.equal(typeof payload.version, 'number', 'broadcast carries the new version');
+  assert.equal(payload.byUserName, 'Jane Estimator', 'toast credits the act-as identity, not the login');
   sa.disconnect();
   sb.disconnect();
 });

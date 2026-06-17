@@ -137,7 +137,7 @@ function buildRouter() {
         state: merged,
         version,
         byUserId: req.user.id,
-        byUserName: req.user.name || req.user.email,
+        byUserName: (req.body && req.body.actingAs) || req.user.name || req.user.email,
         clientId: clientId || null,
       });
     } catch (e) {
@@ -234,7 +234,10 @@ function buildRouter() {
         ...broadcast,
         version: newVersion,
         byUserId: req.user.id,
-        byUserName: req.user.name || req.user.email,
+        // Prefer the editor's "act as" identity (state.currentUser, sent by the
+        // client as actingAs) over the shared login name, so other tabs'
+        // "Updated by ..." toast credits the person who made the change.
+        byUserName: (req.body && req.body.actingAs) || (req.query && req.query.actingAs) || req.user.name || req.user.email,
         clientId: clientId || null,
       });
     } catch (e) {
