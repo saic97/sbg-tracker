@@ -113,11 +113,17 @@ function attach(httpServer, opts = {}) {
   return io;
 }
 
-function broadcastStateChange({ state, byUserId, byUserName, clientId }) {
+function broadcastStateChange(payload) {
   if (!io) return;
-  io.to('workspace').emit('state:updated', {
-    state, byUserId, byUserName, clientId, ts: Date.now(),
-  });
+  // Forward the WHOLE payload, not just `state`. Per-subdomain writes carry the
+  // change in taskUpsert / taskDelete / projectMeta / deletedProjectId plus the
+  // new `version` -- destructuring only `state` dropped all of those, so other
+  // windows received an empty {state:{}}: they never saw the edit AND never
+  // advanced their version (which then made their own next edit look stale and
+  // get rolled back). Spreading the payload delivers the delta + version so the
+  // frontend's realtime merge (taskUpsert/projectMeta handlers + setStateVersion)
+  // actually has something to apply.
+  io.to('workspace').emit('state:updated', { ...payload, ts: Date.now() });
 }
 
 function getIo() { return io; }

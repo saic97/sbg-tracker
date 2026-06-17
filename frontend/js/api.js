@@ -204,6 +204,36 @@
     );
   }
 
+  // Send a per-subdomain write (one task / project / meta / roster / settings
+  // group), RETRYING on a version conflict with a refreshed expectedVersion
+  // instead of throwing the caller's change away. A conflict here almost always
+  // just means our version lagged because another tab/device wrote something --
+  // re-sending with the server's current version lets the edit land. Per-
+  // subdomain writes are last-write-wins on the SAME key, so this is safe: the
+  // only behavior change is that same-record edits now APPLY instead of
+  // silently vanishing. `send` must rebuild its body each call so the retry
+  // carries the refreshed _stateVersion. Only after exhausting retries do we
+  // fall back to the disruptive refetch-and-banner.
+  async function subdomainWrite(send, retries = 3) {
+    for (let attempt = 0; ; attempt++) {
+      try {
+        const r = await send();
+        if (r && typeof r.version === 'number') setVersion(r.version);
+        return r;
+      } catch (e) {
+        const code = e && e.body && e.body.code;
+        const conflict = (e.status === 400 && code === 'EXPECTED_VERSION_REQUIRED') ||
+                         (e.status === 409 && code === 'VERSION_CONFLICT');
+        if (conflict && attempt < retries && e.body && typeof e.body.currentVersion === 'number') {
+          setVersion(e.body.currentVersion);   // adopt server's version, retry same change
+          continue;
+        }
+        if (conflict) handleVersionConflict(e.body);   // give up: refresh + banner
+        throw e;
+      }
+    }
+  }
+
   // Returns 'force' if the user wants to delete anyway, 'reload' otherwise.
   // Default (Cancel / dismiss) is 'reload' so a panicked enter-press is safe.
   function handleDestructiveDelete(body) {
@@ -282,157 +312,45 @@
       }
     },
     
-    // Subdomain-based sync endpoints
-    putProjectState: async (project) => {
-      const body = {
-        project,
-        clientId: (window.realtime && window.realtime.clientId) || null,
-        expectedVersion: _stateVersion,
-      };
-      try {
-        const r = await request(`/api/state/projects/${encodeURIComponent(project.id)}`, { method: 'PUT', body: JSON.stringify(body) });
-        if (r && typeof r.version === 'number') setVersion(r.version);
-        return r;
-      } catch (e) {
-        const code = e && e.body && e.body.code;
-        if ((e.status === 400 && code === 'EXPECTED_VERSION_REQUIRED') ||
-            (e.status === 409 && code === 'VERSION_CONFLICT')) {
-          handleVersionConflict(e.body);
-        }
-        throw e;
-      }
-    },
+    // Subdomain-based sync endpoints. Each retries on a version conflict via
+    // subdomainWrite (re-sending with the server's current version) instead of
+    // discarding the change. The body is rebuilt inside the thunk on every
+    // attempt so the retry carries the refreshed expectedVersion.
+    putProjectState: (project) => subdomainWrite(() => request(
+      `/api/state/projects/${encodeURIComponent(project.id)}`,
+      { method: 'PUT', body: JSON.stringify({ project, clientId: (window.realtime && window.realtime.clientId) || null, expectedVersion: _stateVersion }) }
+    )),
     // Per-task sync. Editing one task ships one task instead of the whole
     // project, and conflicts only with a concurrent edit to that same task.
-    putTaskState: async (projectId, task) => {
-      const body = {
-        task,
-        clientId: (window.realtime && window.realtime.clientId) || null,
-        expectedVersion: _stateVersion,
-      };
-      try {
-        const r = await request(`/api/state/projects/${encodeURIComponent(projectId)}/tasks/${encodeURIComponent(task.id)}`, { method: 'PUT', body: JSON.stringify(body) });
-        if (r && typeof r.version === 'number') setVersion(r.version);
-        return r;
-      } catch (e) {
-        const code = e && e.body && e.body.code;
-        if ((e.status === 400 && code === 'EXPECTED_VERSION_REQUIRED') ||
-            (e.status === 409 && code === 'VERSION_CONFLICT')) {
-          handleVersionConflict(e.body);
-        }
-        throw e;
-      }
-    },
-    deleteTaskState: async (projectId, taskId) => {
-      try {
-        const r = await request(`/api/state/projects/${encodeURIComponent(projectId)}/tasks/${encodeURIComponent(taskId)}?expectedVersion=${_stateVersion}&clientId=${((window.realtime && window.realtime.clientId) || '')}`, {
-          method: 'DELETE'
-        });
-        if (r && typeof r.version === 'number') setVersion(r.version);
-        return r;
-      } catch (e) {
-        const code = e && e.body && e.body.code;
-        if ((e.status === 400 && code === 'EXPECTED_VERSION_REQUIRED') ||
-            (e.status === 409 && code === 'VERSION_CONFLICT')) {
-          handleVersionConflict(e.body);
-        }
-        throw e;
-      }
-    },
+    putTaskState: (projectId, task) => subdomainWrite(() => request(
+      `/api/state/projects/${encodeURIComponent(projectId)}/tasks/${encodeURIComponent(task.id)}`,
+      { method: 'PUT', body: JSON.stringify({ task, clientId: (window.realtime && window.realtime.clientId) || null, expectedVersion: _stateVersion }) }
+    )),
+    deleteTaskState: (projectId, taskId) => subdomainWrite(() => request(
+      `/api/state/projects/${encodeURIComponent(projectId)}/tasks/${encodeURIComponent(taskId)}?expectedVersion=${_stateVersion}&clientId=${((window.realtime && window.realtime.clientId) || '')}`,
+      { method: 'DELETE' }
+    )),
     // Project meta (non-task fields) only.
-    putProjectMeta: async (meta) => {
-      const body = {
-        meta,
-        clientId: (window.realtime && window.realtime.clientId) || null,
-        expectedVersion: _stateVersion,
-      };
-      try {
-        const r = await request(`/api/state/projects/${encodeURIComponent(meta.id)}/meta`, { method: 'PUT', body: JSON.stringify(body) });
-        if (r && typeof r.version === 'number') setVersion(r.version);
-        return r;
-      } catch (e) {
-        const code = e && e.body && e.body.code;
-        if ((e.status === 400 && code === 'EXPECTED_VERSION_REQUIRED') ||
-            (e.status === 409 && code === 'VERSION_CONFLICT')) {
-          handleVersionConflict(e.body);
-        }
-        throw e;
-      }
-    },
-    deleteProjectState: async (id) => {
-      try {
-        const r = await request(`/api/state/projects/${encodeURIComponent(id)}?expectedVersion=${_stateVersion}&clientId=${((window.realtime && window.realtime.clientId) || '')}`, {
-          method: 'DELETE'
-        });
-        if (r && typeof r.version === 'number') setVersion(r.version);
-        return r;
-      } catch (e) {
-        const code = e && e.body && e.body.code;
-        if ((e.status === 400 && code === 'EXPECTED_VERSION_REQUIRED') ||
-            (e.status === 409 && code === 'VERSION_CONFLICT')) {
-          handleVersionConflict(e.body);
-        }
-        throw e;
-      }
-    },
-    putTeamMembersState: async (teamMembers) => {
-      const body = {
-        teamMembers,
-        clientId: (window.realtime && window.realtime.clientId) || null,
-        expectedVersion: _stateVersion,
-      };
-      try {
-        const r = await request('/api/state/team-members', { method: 'PUT', body: JSON.stringify(body) });
-        if (r && typeof r.version === 'number') setVersion(r.version);
-        return r;
-      } catch (e) {
-        const code = e && e.body && e.body.code;
-        if ((e.status === 400 && code === 'EXPECTED_VERSION_REQUIRED') ||
-            (e.status === 409 && code === 'VERSION_CONFLICT')) {
-          handleVersionConflict(e.body);
-        }
-        throw e;
-      }
-    },
-    putTemplatesState: async (templates) => {
-      const body = {
-        templates,
-        clientId: (window.realtime && window.realtime.clientId) || null,
-        expectedVersion: _stateVersion,
-      };
-      try {
-        const r = await request('/api/state/templates', { method: 'PUT', body: JSON.stringify(body) });
-        if (r && typeof r.version === 'number') setVersion(r.version);
-        return r;
-      } catch (e) {
-        const code = e && e.body && e.body.code;
-        if ((e.status === 400 && code === 'EXPECTED_VERSION_REQUIRED') ||
-            (e.status === 409 && code === 'VERSION_CONFLICT')) {
-          handleVersionConflict(e.body);
-        }
-        throw e;
-      }
-    },
-    putSettingsState: async (settings, group) => {
-      const body = {
-        settings,
-        group: group || undefined,   // -> server subdomain key `settings:<group>`
-        clientId: (window.realtime && window.realtime.clientId) || null,
-        expectedVersion: _stateVersion,
-      };
-      try {
-        const r = await request('/api/state/settings', { method: 'PUT', body: JSON.stringify(body) });
-        if (r && typeof r.version === 'number') setVersion(r.version);
-        return r;
-      } catch (e) {
-        const code = e && e.body && e.body.code;
-        if ((e.status === 400 && code === 'EXPECTED_VERSION_REQUIRED') ||
-            (e.status === 409 && code === 'VERSION_CONFLICT')) {
-          handleVersionConflict(e.body);
-        }
-        throw e;
-      }
-    },
+    putProjectMeta: (meta) => subdomainWrite(() => request(
+      `/api/state/projects/${encodeURIComponent(meta.id)}/meta`,
+      { method: 'PUT', body: JSON.stringify({ meta, clientId: (window.realtime && window.realtime.clientId) || null, expectedVersion: _stateVersion }) }
+    )),
+    deleteProjectState: (id) => subdomainWrite(() => request(
+      `/api/state/projects/${encodeURIComponent(id)}?expectedVersion=${_stateVersion}&clientId=${((window.realtime && window.realtime.clientId) || '')}`,
+      { method: 'DELETE' }
+    )),
+    putTeamMembersState: (teamMembers) => subdomainWrite(() => request(
+      '/api/state/team-members',
+      { method: 'PUT', body: JSON.stringify({ teamMembers, clientId: (window.realtime && window.realtime.clientId) || null, expectedVersion: _stateVersion }) }
+    )),
+    putTemplatesState: (templates) => subdomainWrite(() => request(
+      '/api/state/templates',
+      { method: 'PUT', body: JSON.stringify({ templates, clientId: (window.realtime && window.realtime.clientId) || null, expectedVersion: _stateVersion }) }
+    )),
+    putSettingsState: (settings, group) => subdomainWrite(() => request(
+      '/api/state/settings',
+      { method: 'PUT', body: JSON.stringify({ settings, group: group || undefined, clientId: (window.realtime && window.realtime.clientId) || null, expectedVersion: _stateVersion }) }
+    )),
 
     // Entity endpoints
     listProjects: () => request('/api/projects'),
