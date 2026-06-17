@@ -30,6 +30,9 @@
     branding: ['companyLogo'],
     calendar: ['holidays', 'skipWeekends', 'skipHolidays'],
     lists: ['stages', 'ballInCourtOptions', 'csiDivisions', 'sourceOptions', 'milestoneTypes'],
+    // Who the team lead is (drives realtime.js edit-popup routing: only the lead
+    // sees everyone's edits; everyone else sees only the lead's). Shared, synced.
+    team: ['teamLead'],
   };
 
   // If more than this many tasks changed in one project in one pass, it's

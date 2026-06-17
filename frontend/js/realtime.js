@@ -70,6 +70,17 @@
         pointer-events: none; max-width: 320px;
       }
       #rt-toast.show { opacity: 1; transform: translateY(0); }
+      #rt-lead {
+        position: fixed; top: 44px; right: 24px; z-index: 90;
+        display: flex; align-items: center; gap: 4px;
+        font-family: 'Inter', system-ui, sans-serif; font-size: 12px; color: #0a2540;
+        background: rgba(255,255,255,0.85); padding: 2px 6px; border-radius: 6px;
+      }
+      #rt-lead .rt-lead-cap { color: #5b6b7b; }
+      #rt-lead select {
+        font: inherit; padding: 2px 4px; border: 1px solid #cbd5e1; border-radius: 4px;
+        background: #fff; max-width: 150px;
+      }
     `;
     const s = document.createElement('style');
     s.textContent = css;
@@ -84,6 +95,47 @@
     const toast = document.createElement('div');
     toast.id = 'rt-toast';
     document.body.appendChild(toast);
+    injectLeadPicker();
+  }
+
+  // Team-lead picker. Designates who the "lead" is (synced via state.teamLead).
+  // Only the lead sees everyone's edit popups; everyone else sees only the
+  // lead's. Lives here (external) so it survives app.js regeneration.
+  function injectLeadPicker() {
+    if (document.getElementById('rt-lead')) return;
+    const wrap = document.createElement('div');
+    wrap.id = 'rt-lead';
+    wrap.innerHTML = '⭐ <span class="rt-lead-cap">Lead:</span> ' +
+      '<select id="rt-lead-select" title="Team lead — only the lead sees everyone’s edit popups; everyone else sees only the lead’s edits."></select>';
+    document.body.appendChild(wrap);
+    const sel = wrap.querySelector('#rt-lead-select');
+    function populate() {
+      const lead = (window.state && window.state.teamLead) || '';
+      const members = ((window.state && window.state.teamMembers) || []).map(m => m && m.name).filter(Boolean);
+      const names = Array.from(new Set([lead, ...members].filter(Boolean)));
+      sel.innerHTML = '<option value="">— no lead (all see all) —</option>' +
+        names.map(n => '<option value="' + String(n).replace(/"/g, '&quot;') + '"' + (n === lead ? ' selected' : '') + '>' + escapeHtml(n) + '</option>').join('');
+    }
+    sel.addEventListener('mousedown', populate);   // refresh options just before opening
+    sel.addEventListener('change', function () {
+      if (!window.state) return;
+      window.state.teamLead = sel.value || '';
+      if (typeof window.saveState === 'function') window.saveState();
+      populate();
+    });
+    populate();
+    window.__rtRefreshLead = populate;   // settings-merge can refresh the label
+  }
+
+  // Edit-popup routing: the designated team lead (state.teamLead) sees EVERY
+  // edit; everyone else sees ONLY the lead's edits. No lead set -> everyone
+  // sees all (legacy behavior, so nothing breaks until a lead is chosen).
+  function shouldShowEditToast(editorName) {
+    const lead = (window.state && window.state.teamLead) || '';
+    if (!lead) return true;
+    const me = (window.state && window.state.currentUser) || '';
+    if (me === lead) return true;
+    return editorName === lead;
   }
 
   function colorForName(name) {
@@ -171,7 +223,7 @@
       window.api.setStateVersion(lastVersion);
     }
     if (typeof render === 'function') render();
-    if (lastByUserName) showToast('Updated by ' + lastByUserName);
+    if (lastByUserName && shouldShowEditToast(lastByUserName)) showToast('Updated by ' + lastByUserName);
   }
 
   // Merge ONE payload into window.state (no persist/render -- the batch does
