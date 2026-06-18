@@ -142,3 +142,36 @@ test('state_snapshots is bounded (rotation keeps recent ~50 entries)', async () 
   const total = getDb().prepare('SELECT COUNT(*) AS n FROM state_snapshots').get().n;
   assert.ok(total <= 50, `expected <= 50 snapshots after rotation, got ${total}`);
 });
+
+test('GET /api/state returns project & task dates in camelCase (bid-due-date import bug)', async () => {
+  // Bulk save: project + task carry camelCase dates, as the client sends them.
+  let v = await getVersion();
+  let r = await authed(request(app).put('/api/state')).send({
+    expectedVersion: v, confirmDestructive: true,
+    state: { projects: [
+      { id: 'pj1', name: 'Bid A', startDate: '2026-05-01', dueDate: '2026-05-22',
+        tasks: [{ id: 'tk1', title: 'T', dueDate: '2026-05-10', startByDate: '2026-05-05', dayOffset: -3 }] },
+    ] },
+  });
+  assert.equal(r.status, 200);
+  r = await authed(request(app).get('/api/state'));
+  let pj = r.body.state.projects.find(p => p.id === 'pj1');
+  assert.equal(pj.dueDate, '2026-05-22', 'project bid due date returns as camelCase dueDate');
+  assert.equal(pj.startDate, '2026-05-01');
+  let tk = pj.tasks.find(t => t.id === 'tk1');
+  assert.equal(tk.dueDate, '2026-05-10', 'task dueDate returns as camelCase');
+  assert.equal(tk.startByDate, '2026-05-05');
+  assert.equal(tk.dayOffset, -3);
+
+  // Per-project META save (the path a project's bid due date lands through on an
+  // incremental sync / import) must ALSO return camelCase dueDate, not snake.
+  v = await getVersion();
+  r = await authed(request(app).put('/api/state/projects/pj1/meta')).send({
+    expectedVersion: v,
+    meta: { id: 'pj1', name: 'Bid A', startDate: '2026-06-01', dueDate: '2026-06-30' },
+  });
+  assert.equal(r.status, 200);
+  r = await authed(request(app).get('/api/state'));
+  pj = r.body.state.projects.find(p => p.id === 'pj1');
+  assert.equal(pj.dueDate, '2026-06-30', 'project dueDate survives a per-subdomain meta save+read');
+});
