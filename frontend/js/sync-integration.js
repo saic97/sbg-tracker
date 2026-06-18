@@ -350,9 +350,43 @@
   // app.js (deferred, earlier in the document) has already run loadState() +
   // render() by the time this deferred script executes, so window.state is
   // populated. Mirror the original split app's boot tail here.
+  // Hide empty (0-task) stage tabs so a project -- especially one just created
+  // from a template -- shows only the stages it actually uses, not all ~20
+  // global stages. Done as a post-render DOM pass (external layer) so it
+  // survives app.js regeneration. Only touches the stage grouping; never hides
+  // the "All" tab or the currently-active tab. A stage tab's count reads
+  // "<done>/<total>"; total === 0 means the stage has no tasks in this project.
+  function hideEmptyStageTabs() {
+    try {
+      if (!window.state || window.state.grouping !== 'stage') return;
+      document.querySelectorAll('.pill-tab').forEach(function (tab) {
+        const oc = tab.getAttribute('onclick') || '';
+        if (oc.indexOf("selectTab('all')") !== -1) return;   // keep the All tab
+        if (tab.classList.contains('active')) return;         // keep the active tab
+        const cnt = tab.querySelector('.count');
+        if (!cnt) return;
+        const total = parseInt((cnt.textContent.split('/')[1] || '').trim(), 10);
+        if (total === 0) tab.style.display = 'none';
+      });
+    } catch (e) {}
+  }
+  function installStageTabFilter() {
+    const orig = window.render;
+    if (typeof orig !== 'function' || orig.__sbgStageTabHooked) return;
+    const wrapped = function () {
+      const r = orig.apply(this, arguments);
+      hideEmptyStageTabs();
+      return r;
+    };
+    wrapped.__sbgStageTabHooked = true;
+    window.render = wrapped;
+  }
+
   function boot() {
     installSaveHook();
     installImportOverride();
+    installStageTabFilter();
+    hideEmptyStageTabs();
     if (typeof window.state === 'undefined') return;
     if (!window.api || !window.api.enabled) {
       if (window.router && typeof window.router.afterStateLoad === 'function') window.router.afterStateLoad();
