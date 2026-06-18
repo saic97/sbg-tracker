@@ -378,11 +378,34 @@ function stripDeviceLocalKeys(state) {
   return out;
 }
 
+// Column names are snake_case but the frontend reads camelCase. Map the date /
+// offset columns back so a fresh GET /api/state (boot, import) carries the
+// fields the UI actually renders. Without this, project & task bid due dates
+// (stored in the due_date column) come back ONLY as snake_case `due_date` and
+// the app shows them blank -- masked in a live session by localStorage, but
+// exposed on import+reload. The snake column is authoritative; fall back to any
+// camelCase value still in the JSON `data` blob, else empty.
+function camelProject(p) {
+  return {
+    ...p,
+    dueDate: p.due_date != null ? p.due_date : (p.dueDate || ''),
+    startDate: p.start_date != null ? p.start_date : (p.startDate || ''),
+  };
+}
+function camelTask(t) {
+  return {
+    ...t,
+    dueDate: t.due_date != null ? t.due_date : (t.dueDate || ''),
+    startByDate: t.start_by_date != null ? t.start_by_date : (t.startByDate || ''),
+    dayOffset: t.day_offset != null ? t.day_offset : (t.dayOffset != null ? t.dayOffset : null),
+  };
+}
+
 function loadStateBlob() {
   const blob = stripDeviceLocalKeys(kv.get('state') || {});
   return {
     ...blob,
-    projects: projects.list().map(p => ({ ...p, tasks: tasks.list('project_id=?', [p.id]) })),
+    projects: projects.list().map(p => camelProject({ ...p, tasks: tasks.list('project_id=?', [p.id]).map(camelTask) })),
     teamMembers: teamMembers.list(),
     stages: stages.list().sort((a, b) => (a.position || 0) - (b.position || 0)),
     taskTemplates: taskTemplates.list(),
