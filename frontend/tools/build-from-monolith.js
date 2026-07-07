@@ -74,6 +74,24 @@ const before = js;
 js = js.replace(/\blet\s+state\s*=/, 'var state =');
 const statePatched = js !== before;
 
+// 3b. Known source-file bug fixups. Each is idempotent: once the team fixes
+// their single file, the pattern stops matching and the fixup no-ops.
+//   - renderAvatarHtml: v99 guards it with a bare `renderAvatarHtml ?` -- a
+//     bare reference to an UNDECLARED identifier throws ReferenceError before
+//     the guard can help (crashed the Status Snapshot view). Rewrite to the
+//     typeof guard the code intended, so the inline fallback avatar is used.
+const FIXUPS = [
+  {
+    name: 'renderAvatarHtml bare guard -> typeof guard',
+    find: /\brenderAvatarHtml\s*\?\s*renderAvatarHtml\(/g,
+    replace: "(typeof renderAvatarHtml === 'function') ? renderAvatarHtml(",
+  },
+];
+for (const f of FIXUPS) {
+  const n = (js.match(f.find) || []).length;
+  if (n) { js = js.replace(f.find, f.replace); console.log(`[build] fixup applied (${n}x): ${f.name}`); }
+}
+
 // 4. Head: drop any existing api meta, then inject our meta + the stylesheet link.
 html = html.replace(/<meta name="api-base"[^>]*>\s*/gi, '')
            .replace(/<meta name="api-enabled"[^>]*>\s*/gi, '');
