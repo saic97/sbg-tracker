@@ -3,10 +3,10 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <meta name="application-name" content="SBG Preconstruction Bid Tracker">
-<meta name="version" content="V20">
+<meta name="version" content="V83">
 <meta name="created" content="2026-04-18">
 <meta name="built" content="2026-04-19T23:56:18Z">
-<title>SBG Preconstruction Bid Tracker · V20</title>
+<title>SBG Preconstruction Bid Tracker · V83</title>
 <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;600;700&amp;family=Barlow+Condensed:wght@500;600;700;800&amp;family=Inter:wght@300;400;500;600;700;800&amp;display=swap" rel="stylesheet">
 
 <meta name="api-base" content="">
@@ -20,10 +20,31 @@
     <div class="brand-logo" id="brandLogo" onclick="openSettingsModal()" title="Click to edit company logo"><img src="data:image/gif;base64,R0lGODlhAQABAAAAACH5BAEKAAEALAAAAAABAAEAAAICTAEAOw==" alt="Company Logo" style="width:100%;height:100%;object-fit:contain;border-radius:4px;background:#fff;"></div>
     <div class="brand-text">
       <h1>SOURCE BUILDING GR<span class="accent">O</span>UP</h1>
-      <div class="subtitle">Preconstruction · Bid Pursuit Tracker <span class="version-stamp">V20 · Built Apr 18, 2026</span></div>
+      <div class="subtitle">Preconstruction · Bid Pursuit Tracker <span class="version-stamp">V83 · Built Jun 4, 2026</span></div>
     </div>
   </div>
   <div class="header-stats">
+    <!-- v93: Toast container — fixed top-right, populated by _spawnToast(). -->
+    <div class="toast-container" id="toastContainer"></div>
+    <!-- v90: Notification bell — click to open dropdown of recent events. -->
+    <div class="notification-bell-wrap">
+      <button class="notification-bell-btn" id="notificationBellBtn" onclick="toggleNotificationDropdown()" title="Recent activity">
+        <span class="notif-bell-icon">🔔</span>
+        <span class="notification-bell-badge" id="notificationBellBadge" style="display:none;">0</span>
+      </button>
+      <div class="notification-dropdown" id="notificationDropdown">
+        <div class="notif-dropdown-header">
+          <div class="notif-dropdown-title">Notifications</div>
+          <div class="notif-scope-toggle" id="notificationScopeToggle"></div>
+        </div>
+        <div class="notif-dropdown-body" id="notificationDropdownBody"></div>
+        <div class="notif-dropdown-footer">
+          <button class="notif-footer-btn" id="notifSilenceBtn" onclick="toggleToastsSilenced()" title="Toggle pop-up toasts on/off. Bell history is unaffected.">🔊 Toasts: On</button>
+          <button class="notif-footer-btn" onclick="markAllNotificationsRead()">Mark all read</button>
+          <button class="notif-footer-btn notif-footer-btn-danger" onclick="clearAllNotifications()">Clear all</button>
+        </div>
+      </div>
+    </div>
     <button class="current-user-chip" id="currentUserChip" onclick="openCurrentUserModal()" title="Signed in as Trent Hirth — click to change">
       <span class="cuc-avatar" id="currentUserAvatar" style="background: transparent;"><img src="data:image/gif;base64,R0lGODlhAQABAAAAACH5BAEKAAEALAAAAAABAAEAAAICTAEAOw==" alt=""></span>
       <span class="cuc-body">
@@ -236,6 +257,7 @@
            data migration to any future backend (Firebase, etc). -->
       <button class="btn btn-dark btn-sm sb-button" style="width:100%;margin-bottom:6px;justify-content:center;" onclick="exportTrackerStateToJson()" title="Download a JSON file containing ALL your data — projects, tasks, templates, settings. Use as backup or to transfer between devices."><span class="sb-btn-icon">💾</span><span class="sb-btn-label"> Export All Data</span></button>
       <button class="btn btn-dark btn-sm sb-button" style="width:100%;margin-bottom:6px;justify-content:center;" onclick="openImportTrackerDialog()" title="Load a previously-exported JSON file. Choose to merge with current data or replace it entirely."><span class="sb-btn-icon">📂</span><span class="sb-btn-label"> Import Data</span></button>
+      <button class="btn btn-dark btn-sm sb-button" style="width:100%;margin-bottom:6px;justify-content:center;" onclick="openProjectTypesModal()" title="Define workstreams (Bidding, Training, Events, Precon General) and their stages"><span class="sb-btn-icon">🗂</span><span class="sb-btn-label"> Project Types &amp; Stages</span></button>
       <button class="btn btn-sm sb-button" style="width:100%;justify-content:center;" onclick="openSettingsModal()" title="Settings &amp; Logo"><span class="sb-btn-icon">⚙</span><span class="sb-btn-label"> Settings &amp; Logo</span></button>
     </div>
     <div class="sidebar-section">
@@ -261,14 +283,23 @@
     <!-- File creation/version footer — stays pinned to the bottom of the sidebar -->
     <div class="sidebar-footer" id="sidebarFooter">
       <div class="sf-brand">SBG Precon Tracker</div>
-      <div class="sf-version">V20</div>
+      <div class="sf-version">V83</div>
       <div class="sf-created">Created April 18, 2026</div>
-      <div class="sf-built" title="Exact timestamp when this HTML file was generated">Built Apr 19, 2026 · 6:56 PM CDT</div>
+      <div class="sf-built" title="Exact timestamp when this HTML file was generated">Built Jun 4, 2026</div>
       <div class="sf-org">Source Building Group · Mansfield, TX</div>
     </div>
   </aside>
 
   <main class="main">
+    <!-- v88: Floating Add Task button. Fixed bottom-right so it's always
+         reachable from calendar, timeline, dashboard, or any project view
+         without navigating to Board/Table first. Hidden on cross-project
+         views (Home, Team Workload, Team Insights, Open Slots, etc.) where
+         "the active project" doesn't have a clear meaning. -->
+    <button id="fabAddTask" class="fab-add-task hidden" onclick="fabAddTaskClick()" title="Add a task to this project (T)">
+      <span class="fab-plus">+</span>
+      <span class="fab-label">Add Task</span>
+    </button>
     <div class="empty-state hidden" id="emptyProjects">
       <div class="icon">🏗️</div>
       <h3>No Active Bids</h3>
@@ -285,6 +316,8 @@
             <div class="home-subtitle" id="homeSubtitle"></div>
           </div>
           <div class="home-actions">
+            <!-- v96: master expand-all/collapse-all toggle -->
+            <button class="btn btn-sm" id="homeCollapseAllBtn" onclick="toggleAllHomeSections()" title="Expand or collapse every section on the Today page">⇕ Expand All</button>
             <button class="btn btn-sm" onclick="refreshHomeView()" title="Refresh">↻ Refresh</button>
             <button class="btn btn-sm" onclick="exitHomeView()">✕ Close</button>
           </div>
@@ -293,61 +326,124 @@
         <div class="home-stats" id="homeStats"></div>
       </div>
 
+      <!-- v96/v97: My Workload — full-page workload view scoped to signed-in user -->
+      <section class="home-section" id="homeMyWorkloadSection" style="display:none;">
+        <div class="home-section-header" onclick="toggleHomeSection('homeMyWorkloadSection')" title="Click to collapse or expand">
+          <span class="home-section-chevron">▾</span>
+          <span class="home-section-title">💼 My Workload</span>
+          <span class="home-section-sub" id="homeMyWorkloadSub"></span>
+        </div>
+        <div class="home-section-body">
+          <!-- v97: Toolbar — same controls as Team Workload, minus Sort and Show-Inactive -->
+          <div class="twv-toolbar hmw-toolbar">
+            <div class="twv-toolbar-group">
+              <label>Date Window:</label>
+              <div class="twv-segmented">
+                <button class="twv-seg-btn" data-scope="this-week" onclick="setWorkloadDateScope('this-week')" title="Monday through Friday of this calendar week">This Week</button>
+                <button class="twv-seg-btn" data-scope="next-week" onclick="setWorkloadDateScope('next-week')" title="Monday through Friday of next calendar week">Next Week</button>
+                <button class="twv-seg-btn" data-scope="two-week" onclick="setWorkloadDateScope('two-week')">Next 2 Weeks</button>
+                <button class="twv-seg-btn" data-scope="four-week" onclick="setWorkloadDateScope('four-week')">Next 4 Weeks</button>
+                <button class="twv-seg-btn" data-scope="this-month" onclick="setWorkloadDateScope('this-month')">This Month</button>
+                <button class="twv-seg-btn" data-scope="next-month" onclick="setWorkloadDateScope('next-month')">Next Month</button>
+                <button class="twv-seg-btn" data-scope="all-open" onclick="setWorkloadDateScope('all-open')" title="All open tasks">All Open</button>
+              </div>
+            </div>
+            <div class="twv-toolbar-group">
+              <label>Chart grain:</label>
+              <div class="twv-segmented" style="height:auto;">
+                <button class="twv-seg-btn twv-grain-btn" data-grain="day" onclick="setWorkloadGrain('day')" title="One bar per business day">Day</button>
+                <button class="twv-seg-btn twv-grain-btn" data-grain="week" onclick="setWorkloadGrain('week')" title="One bar per calendar week">Week</button>
+              </div>
+            </div>
+            <div class="twv-toolbar-group">
+              <label>Workload:</label>
+              <div class="twv-segmented" style="height:auto;">
+                <button class="twv-seg-btn twv-mode-btn" data-mode="current" onclick="setWorkloadMode('current')" title="Only incomplete tasks — what's actually left to do">Current</button>
+                <button class="twv-seg-btn twv-mode-btn" data-mode="planned" onclick="setWorkloadMode('planned')" title="All originally assigned tasks, including completed">Planned</button>
+              </div>
+            </div>
+            <div class="twv-toolbar-group" style="margin-left:auto;">
+              <a href="#" class="home-mw-shortcut" onclick="event.preventDefault();exitHomeView();openTeamWorkloadView();" title="Open the full team view with detail table, 14-day chart, and unassigned pile">Open full Team Workload →</a>
+            </div>
+          </div>
+          <!-- v97: Card container — same visual as Team Workload's grid, but stretched to full width for the single user card -->
+          <div class="hmw-card-wrap" id="homeMyWorkloadBody"></div>
+        </div>
+      </section>
+
+      <!-- v96: My Tasks moved above Bid Countdowns — user's own work comes first -->
+      <section class="home-section" id="homeMyTasksSection">
+        <div class="home-section-header" onclick="toggleHomeSection('homeMyTasksSection')" title="Click to collapse or expand">
+          <span class="home-section-chevron">▾</span>
+          <span class="home-section-title">📋 My Tasks</span>
+          <span class="home-section-sub" id="homeMyTasksSub"></span>
+        </div>
+        <div class="home-section-body">
+          <div class="home-tasks-buckets" id="homeMyTasksBuckets"></div>
+        </div>
+      </section>
+
+      <!-- v96: Awaiting My Acknowledgment moved above Bid Countdowns -->
+      <section class="home-section" id="homeUnackSection">
+        <div class="home-section-header" onclick="toggleHomeSection('homeUnackSection')" title="Click to collapse or expand">
+          <span class="home-section-chevron">▾</span>
+          <span class="home-section-title">🔔 Awaiting My Acknowledgment</span>
+          <span class="home-section-sub" id="homeUnackSub"></span>
+        </div>
+        <div class="home-section-body">
+          <div class="home-items-list" id="homeUnackList"></div>
+        </div>
+      </section>
+
       <!-- Bid Countdowns across all active projects -->
       <section class="home-section" id="homeCountdownsSection">
-        <div class="home-section-header">
+        <div class="home-section-header" onclick="toggleHomeSection('homeCountdownsSection')" title="Click to collapse or expand">
+          <span class="home-section-chevron">▾</span>
           <span class="home-section-title">⏱ Bid Countdowns — All Active Projects</span>
           <span class="home-section-sub" id="homeCountdownsSub"></span>
         </div>
-        <div class="home-countdowns" id="homeCountdownsList"></div>
+        <div class="home-section-body">
+          <div class="home-countdowns" id="homeCountdownsList"></div>
+        </div>
       </section>
 
       <!-- ===== MY REQUIRED ITEMS — top-of-mind unfinished required checklist + deliverables across all projects ===== -->
       <div id="homeRequiredItemsMount"></div>
 
-      <!-- My Tasks — grouped by urgency (Today / Tomorrow / This Week) -->
-      <section class="home-section" id="homeMyTasksSection">
-        <div class="home-section-header">
-          <span class="home-section-title">📋 My Tasks</span>
-          <span class="home-section-sub" id="homeMyTasksSub"></span>
-        </div>
-        <div class="home-tasks-buckets" id="homeMyTasksBuckets"></div>
-      </section>
-
-      <!-- My Unacknowledged Tasks — across all projects -->
-      <section class="home-section" id="homeUnackSection">
-        <div class="home-section-header">
-          <span class="home-section-title">🔔 Awaiting My Acknowledgment</span>
-          <span class="home-section-sub" id="homeUnackSub"></span>
-        </div>
-        <div class="home-items-list" id="homeUnackList"></div>
-      </section>
-
       <!-- My Unread Messages — across all projects -->
       <section class="home-section" id="homeMessagesSection">
-        <div class="home-section-header">
+        <div class="home-section-header" onclick="toggleHomeSection('homeMessagesSection')" title="Click to collapse or expand">
+          <span class="home-section-chevron">▾</span>
           <span class="home-section-title">📩 My Unread Messages</span>
           <span class="home-section-sub" id="homeMessagesSub"></span>
         </div>
-        <div class="home-items-list" id="homeMessagesList"></div>
+        <div class="home-section-body">
+          <div class="home-items-list" id="homeMessagesList"></div>
+        </div>
       </section>
 
       <!-- Lead-only: Pending Sign-Offs across all projects where user is Lead -->
       <section class="home-section home-section-lead" id="homeSignoffsSection" style="display:none;">
-        <div class="home-section-header">
+        <div class="home-section-header" onclick="toggleHomeSection('homeSignoffsSection')" title="Click to collapse or expand">
+          <span class="home-section-chevron">▾</span>
           <span class="home-section-title">✓ Completions Awaiting My Sign-Off</span>
           <span class="home-section-sub" id="homeSignoffsSub"></span>
         </div>
-        <div class="home-items-list" id="homeSignoffsList"></div>
+        <div class="home-section-body">
+          <div class="home-items-list" id="homeSignoffsList"></div>
+        </div>
       </section>
 
       <!-- My Pending Rejection Acknowledgments -->
       <section class="home-section" id="homeRejectionsSection" style="display:none;">
-        <div class="home-section-header">
+        <div class="home-section-header" onclick="toggleHomeSection('homeRejectionsSection')" title="Click to collapse or expand">
+          <span class="home-section-chevron">▾</span>
           <span class="home-section-title">✗ Rejections Awaiting My Response</span>
           <span class="home-section-sub" id="homeRejectionsSub"></span>
         </div>
-        <div class="home-items-list" id="homeRejectionsList"></div>
+        <div class="home-section-body">
+          <div class="home-items-list" id="homeRejectionsList"></div>
+        </div>
       </section>
 
       <!-- Not-signed-in fallback -->
@@ -374,6 +470,7 @@
           </div>
           <div class="twv-actions">
             <button class="btn btn-sm" onclick="openTeamCapacityModal()" title="Set per-estimator capacity ceilings, PTO/vacation days, and team holidays">⚙ Capacity & PTO</button>
+            <button class="btn btn-sm" onclick="openReschedulePastDueModal()" title="Find past-due work from before the current window and push it into upcoming open capacity">🔁 Reschedule Past-Due</button>
             <button class="btn btn-sm" onclick="copyTeamStandupSummary()" title="Copy a stand-up summary to clipboard">📋 Stand-up Summary</button>
             <button class="btn btn-sm" onclick="refreshTeamWorkloadView()" title="Refresh data">↻ Refresh</button>
             <button class="btn btn-sm" onclick="exitTeamWorkloadView()" title="Return to previous view">✕ Close</button>
@@ -386,8 +483,8 @@
         <div class="twv-toolbar-group">
           <label>Date Window:</label>
           <div class="twv-segmented">
-            <button class="twv-seg-btn" data-scope="this-week" onclick="setWorkloadDateScope('this-week')">This Week</button>
-            <button class="twv-seg-btn" data-scope="next-week" onclick="setWorkloadDateScope('next-week')">Next Week</button>
+            <button class="twv-seg-btn" data-scope="this-week" onclick="setWorkloadDateScope('this-week')" title="Monday through Friday of this calendar week (shows the full work week even mid-week)">This Week</button>
+            <button class="twv-seg-btn" data-scope="next-week" onclick="setWorkloadDateScope('next-week')" title="Monday through Friday of next calendar week">Next Week</button>
             <button class="twv-seg-btn active" data-scope="two-week" onclick="setWorkloadDateScope('two-week')">Next 2 Weeks</button>
             <button class="twv-seg-btn" data-scope="four-week" onclick="setWorkloadDateScope('four-week')">Next 4 Weeks</button>
             <button class="twv-seg-btn" data-scope="this-month" onclick="setWorkloadDateScope('this-month')">This Month</button>
@@ -410,6 +507,14 @@
           <div class="twv-segmented" style="height:auto;">
             <button class="twv-seg-btn twv-grain-btn active" data-grain="day" onclick="setWorkloadGrain('day')" title="One bar per business day">Day</button>
             <button class="twv-seg-btn twv-grain-btn" data-grain="week" onclick="setWorkloadGrain('week')" title="One bar per calendar week">Week</button>
+          </div>
+        </div>
+        <!-- v84: Current/Planned mode toggle — affects hours math + drill-down -->
+        <div class="twv-toolbar-group">
+          <label>Workload:</label>
+          <div class="twv-segmented" style="height:auto;">
+            <button class="twv-seg-btn twv-mode-btn active" data-mode="current" onclick="setWorkloadMode('current')" title="Only incomplete tasks — what's actually left to do">Current</button>
+            <button class="twv-seg-btn twv-mode-btn" data-mode="planned" onclick="setWorkloadMode('planned')" title="All originally assigned tasks, including completed — what was planned">Planned</button>
           </div>
         </div>
         <div class="twv-toolbar-group">
@@ -1170,8 +1275,10 @@
           </div>
         </div>
 
-        <!-- Cluster 2: Grouping switcher + stage filter pills -->
+        <!-- Cluster 2: Grouping switcher + stage filter pills (v98: collapsible) -->
         <div id="groupingSection" class="pv-wc-grouping">
+          <!-- v98/v99: Group By tabs stay always visible (per user request);
+               only the filter row + optional alert filter rows collapse. -->
           <div class="group-tabs">
             <button class="group-tab active" data-grouping="stage" onclick="setGrouping('stage')">Group by Stage</button>
             <button class="group-tab" data-grouping="assignee" onclick="setGrouping('assignee')">Group by Assignee</button>
@@ -1180,7 +1287,15 @@
             <button class="group-tab" data-grouping="alert" onclick="setGrouping('alert')" title="Slice by alert tier — Overdue, Late Start, At Risk, Blocked, etc.">Group by Alert</button>
             <button class="group-tab" data-grouping="my-alert" onclick="setGrouping('my-alert')" title="Same as Group by Alert but scoped to your tasks only">👤 Group by My Alerts</button>
           </div>
-          <div class="tab-nav" id="tabNav">
+          <!-- v99: collapsible header — click to toggle just the filter rows.
+               Summary chip shows the currently selected tab when collapsed. -->
+          <div class="pv-wc-grouping-header" onclick="toggleWorkspaceGrouping()" title="Click to collapse or expand the filter pills">
+            <span class="pv-wc-chevron" id="pvWcChevron">▾</span>
+            <span class="pv-wc-collapse-label">Filters</span>
+            <span class="pv-wc-collapse-summary" id="pvWcGroupingSummary"></span>
+          </div>
+          <div class="pv-wc-grouping-body" id="pvWcGroupingBody">
+            <div class="tab-nav" id="tabNav">
     <button class="pill-tab active" onclick="selectTab('all')">
       <span class="icon">🗂️</span>All Stages
       <span class="count"><span class="done-num">8</span>/83</span>
@@ -1289,6 +1404,7 @@
         <span class="afr-meta" id="myAfrMeta"></span>
         <button class="afr-clear" id="myAfrClearBtn" onclick="clearAllMyAlertFilters()" title="Clear all filters" style="display:none;">✕ Clear All</button>
       </div>
+      </div><!-- /pv-wc-grouping-body -->
       </div>
       </div><!-- /pv-workspace-controls -->
 
@@ -4416,6 +4532,15 @@
         </div>
       </div>
     </div>
+    <!-- v87: Workstream selector — Bidding (default), Training, Events, Precon General -->
+    <div class="form-group" id="projWorkstreamGroup">
+      <label>Workstream <span style="font-weight:400; color:var(--text-dim); font-size:11px;">— what kind of project is this?</span></label>
+      <div id="projWorkstreamButtons" style="display:flex; gap:6px; flex-wrap:wrap;">
+        <!-- Populated by openProjectModal() — buttons read state.projectTypes -->
+      </div>
+      <input type="hidden" id="projWorkstream" value="bidding">
+      <div id="projWorkstreamHint" class="hint-inline" style="margin-top:6px;"></div>
+    </div>
     <div class="form-group"><label>Project Name</label><input type="text" id="projName" placeholder="e.g. Mansfield ISD Elementary #17"></div>
     <div class="form-row">
       <div class="form-group"><label>Project Type</label>
@@ -4474,13 +4599,13 @@
         <div class="hint-inline">Auto-assigned to template tasks that require Lead 2</div>
       </div>
     </div>
-    <div class="form-row-3">
+    <div class="form-row-3" data-bidding-only="true">
       <div class="form-group"><label>Bid Start Date</label><input type="date" id="projStartDate" onchange="recalcRevisedStartPreview()"><div class="hint-inline">Task day-offsets calculate from this date</div></div>
       <div class="form-group"><label>Bid Due Date</label><input type="date" id="projDueDate" onchange="recalcRevisedStartPreview()"></div>
       <div class="form-group"><label>Est. Value ($)</label><input type="number" id="projValue" placeholder="0"></div>
     </div>
     <!-- v82+: Additional task-anchor dates. Optional. Tasks can anchor to these -->
-    <div class="form-row-2">
+    <div class="form-row-2" data-bidding-only="true">
       <div class="form-group">
         <label>Mandatory Pre-Bid Walk Date</label>
         <input type="date" id="projPrebidDate">
@@ -4492,7 +4617,7 @@
         <div class="hint-inline">Optional. Last day to submit RFI questions. Tasks can anchor to this.</div>
       </div>
     </div>
-    <div class="form-row-3">
+    <div class="form-row-3" data-bidding-only="true">
       <div class="form-group">
         <label>Bid Submission Time</label>
         <input type="time" id="projDueTime" step="60">
@@ -4606,6 +4731,10 @@
 <div class="modal-backdrop" id="taskModal">
   <div class="modal">
     <h3 id="taskModalTitle">New Task</h3>
+    <!-- v89: Rescheduled-from-past-due banner. Populated by openTaskModal() when
+         t.rescheduledFromPastDue is true. Shows original date, days late,
+         who moved it, when, and slip count. Never auto-clears. -->
+    <div id="taskModalRescheduledBanner" style="display:none; margin:6px 0 10px 0; padding:10px 14px; background:rgba(200,50,43,0.08); border:1px solid rgba(200,50,43,0.35); border-radius:6px; color:var(--sbg-red, #c8322b); font-size:12px; line-height:1.5;"></div>
 
     <!-- ===== TASK ALERTS STRIP =====
          Surfaces every alert tier this task currently belongs to (Overdue,
@@ -4859,6 +4988,17 @@
         <datalist id="supportList"></datalist>
       </div>
       <div class="hint-inline">Add one or more secondary owners helping the Lead — type a name and press Enter, or pick from suggestions. Click ✕ on a chip to remove.</div>
+      <!-- v94: per-task support hours pct override. Hidden until at least one
+           support is added. Blank = use global default. -->
+      <div id="taskSupportHoursRow" style="display:none; margin-top:8px; padding:8px 10px; background:var(--surface-2, #f8f9fb); border:1px solid var(--border, #e0e0e0); border-radius:5px;">
+        <div style="display:flex; align-items:center; gap:8px; flex-wrap:wrap;">
+          <label for="taskSupportHoursPct" style="margin:0; font-size:12px; font-weight:600; color:var(--text, #1a1a1a);">Support hours share:</label>
+          <input type="number" id="taskSupportHoursPct" min="0" max="100" step="5" placeholder="" style="width:70px; padding:4px 6px; font-size:12px;" oninput="_updateSupportHoursPreview()">
+          <span style="font-size:12px; color:var(--text-dim, #6b7687);">%</span>
+          <span id="taskSupportHoursPreview" style="font-size:11px; color:var(--text-dim, #6b7687); font-style:italic;"></span>
+        </div>
+        <div class="hint-inline" style="margin-top:4px;">Fraction of task hours each support member carries in workload totals. Leave blank to use the global default. Lead assignees always carry the full hours.</div>
+      </div>
     </div>
     <div class="form-group" id="taskBallInCourtFormGroup">
       <label>Ball in Court</label>
@@ -6753,6 +6893,22 @@
   </div>
 </div>
 
+<!-- v87: Project Types & Stages modal -->
+<div class="modal-backdrop" id="projectTypesModal">
+  <div class="modal" style="max-width:920px; max-height:90vh; display:flex; flex-direction:column;">
+    <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:12px;">
+      <h3 style="margin:0;">🗂 Project Types &amp; Stages</h3>
+      <button class="btn btn-sm" onclick="closeModal('projectTypesModal')">✕ Close</button>
+    </div>
+    <div style="padding-bottom:10px; color:var(--text-dim); font-size:12px; border-bottom:1px solid var(--border);">
+      Project Types (workstreams) determine which stages a project uses. Bidding is your primary workstream and uses your global stages (manage via Stages list). Training, Events, and Precon General are separate workstreams — define their stages here.
+    </div>
+    <div id="projectTypesModalBody" style="overflow:auto; flex:1; padding-top:12px;">
+      <!-- populated by renderProjectTypesModal() -->
+    </div>
+  </div>
+</div>
+
 <div class="modal-backdrop" id="settingsModal">
   <div class="modal" style="max-width: 520px;">
     <h3>Settings</h3>
@@ -6770,6 +6926,20 @@
           <button class="btn btn-sm" style="color:var(--red);margin-left:6px;" onclick="resetCompanyLogo()">Use Default</button>
           <div class="hint-inline" style="margin-top:6px;">PNG or JPG. Square images work best. Auto-resized to fit header.</div>
         </div>
+      </div>
+    </div>
+
+    <!-- v94: Global default for support hours share in workload aggregation -->
+    <div class="form-group">
+      <label>Default Support Hours Share</label>
+      <div style="display:flex; align-items:center; gap:10px; margin-top:4px;">
+        <input type="number" id="settingsSupportHoursDefault" min="0" max="100" step="5" style="width:90px;" oninput="_previewSupportHoursDefault()">
+        <span style="color:var(--text-dim); font-size:13px;">%</span>
+        <button class="btn btn-sm" onclick="saveSupportHoursDefault()" style="background:var(--sbg-navy, #0a2540); color:#fff;">Save Default</button>
+        <span id="settingsSupportHoursSavedNote" style="color:var(--green, #2e7d52); font-size:11px; opacity:0; transition:opacity 0.3s;">Saved ✓</span>
+      </div>
+      <div class="hint-inline" style="margin-top:6px;">
+        Fraction of task hours support members carry in workload totals (lead assignees always carry the full task hours). Applies to any task that does not have a per-task override. A task with 8 estimated hours, 1 lead, and 1 support at 25% shows 8h for the lead and 2h for the support in workload rollups.
       </div>
     </div>
 
