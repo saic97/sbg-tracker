@@ -6629,7 +6629,7 @@ function renderSnapshotRow(entry, sectionKey) {
 
   // Assignee avatar
   const assigneeName = t.assignee || 'Unassigned';
-  const assigneeAvatar = renderAvatarHtml ? renderAvatarHtml(assigneeName, 'sm') :
+  const assigneeAvatar = (typeof renderAvatarHtml === 'function') ? renderAvatarHtml(assigneeName, 'sm') :
     `<span class="ssv-row-avatar">${escapeHtml(assigneeName.charAt(0).toUpperCase())}</span>`;
 
   // Subtask / deliverable / tip chips (mirror Look Ahead row)
