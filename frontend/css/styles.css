@@ -94,6 +94,104 @@
     vertical-align: middle;
     white-space: nowrap;
   }
+  /* v118: Copy-to-Project picker — one row per candidate project. Click a
+     row to commit the copy. Mirrors the save-to-template preview pattern
+     but keyed on projects rather than templates. */
+  .ctp-source-preview {
+    background: rgba(10, 37, 64, 0.05);
+    border-left: 3px solid var(--sbg-navy, #0a2540);
+    padding: 10px 12px;
+    border-radius: 3px;
+  }
+  .ctp-source-label {
+    font-family: 'Barlow Condensed', sans-serif;
+    font-size: 11px;
+    font-weight: 700;
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+    color: var(--text-dim, #6b7687);
+  }
+  .ctp-source-title {
+    font-family: 'Inter', sans-serif;
+    font-size: 14px;
+    font-weight: 600;
+    color: var(--text, #1a1a1a);
+    margin-top: 3px;
+  }
+  .ctp-source-note {
+    font-family: 'Inter', sans-serif;
+    font-size: 11px;
+    color: var(--text-dim, #6b7687);
+    margin-top: 6px;
+    line-height: 1.4;
+  }
+  .ctp-project-row {
+    padding: 12px 14px;
+    border: 1px solid rgba(0, 0, 0, 0.08);
+    border-radius: 4px;
+    margin-bottom: 6px;
+    cursor: pointer;
+    transition: background 0.12s, border-color 0.12s, transform 0.08s;
+    background: #fff;
+  }
+  .ctp-project-row:hover {
+    background: rgba(10, 37, 64, 0.03);
+    border-color: var(--sbg-navy, #0a2540);
+    transform: translateX(2px);
+  }
+  .ctp-project-row .ctp-name {
+    font-family: 'Inter', sans-serif;
+    font-size: 13.5px;
+    font-weight: 600;
+    color: var(--text, #1a1a1a);
+  }
+  .ctp-project-row .ctp-meta {
+    display: flex;
+    gap: 6px;
+    margin-top: 3px;
+    font-family: 'Barlow Condensed', sans-serif;
+    font-size: 11px;
+    letter-spacing: 0.05em;
+    text-transform: uppercase;
+    color: var(--text-dim, #6b7687);
+  }
+  /* v117: Milestone version chip on the top header — mirrors the sidebar
+     footer .sf-version-milestone treatment so the app-wide version tag
+     reads consistently. Gradient navy→red→gold + shimmer sweep. */
+  .brand-text .version-stamp.version-stamp-milestone {
+    padding: 3px 10px;
+    font-family: 'Barlow Condensed', 'JetBrains Mono', sans-serif;
+    font-size: 12px;
+    font-weight: 800;
+    letter-spacing: 0.08em;
+    color: #fff;
+    background: linear-gradient(135deg, var(--sbg-navy, #0a2540) 0%, var(--sbg-red, #c8322b) 55%, var(--sbg-gold, #c07f00) 100%);
+    border: 1px solid rgba(255, 255, 255, 0.18);
+    border-radius: 4px;
+    box-shadow: 0 2px 6px rgba(0, 0, 0, 0.3), 0 0 0 1px rgba(255, 255, 255, 0.05) inset;
+    position: relative;
+    overflow: hidden;
+  }
+  .brand-text .version-stamp.version-stamp-milestone::after {
+    content: '';
+    position: absolute;
+    top: 0; left: -100%;
+    width: 40%;
+    height: 100%;
+    background: linear-gradient(90deg, transparent 0%, rgba(255, 255, 255, 0.28) 50%, transparent 100%);
+    animation: milestone-shimmer 3.5s ease-in-out infinite;
+    pointer-events: none;
+  }
+  .brand-text .version-built {
+    display: inline-block;
+    margin-left: 8px;
+    font-family: 'JetBrains Mono', monospace;
+    font-size: 9.5px;
+    color: rgba(255, 255, 255, 0.55);
+    letter-spacing: 0.04em;
+    vertical-align: middle;
+    white-space: nowrap;
+  }
   .brand-text .subtitle {
     font-family: 'Barlow Condensed', sans-serif;
     font-size: 11px; font-weight: 600; letter-spacing: 0.25em;
@@ -188,6 +286,34 @@
     padding: 1px 6px;
     border-radius: 3px;
     margin-top: 2px;
+  }
+  /* v100: milestone version chip — gradient + subtle shimmer to mark the 100th ship */
+  .sidebar-footer .sf-version.sf-version-milestone {
+    font-family: 'Barlow Condensed', 'JetBrains Mono', sans-serif;
+    font-size: 12px;
+    font-weight: 800;
+    letter-spacing: 0.08em;
+    color: #fff;
+    background: linear-gradient(135deg, var(--sbg-navy, #0a2540) 0%, var(--sbg-red, #c8322b) 55%, var(--sbg-gold, #c07f00) 100%);
+    padding: 3px 10px;
+    border-radius: 4px;
+    box-shadow: 0 2px 4px rgba(10, 37, 64, 0.2);
+    border: 1px solid rgba(255, 255, 255, 0.1);
+    position: relative;
+    overflow: hidden;
+  }
+  .sidebar-footer .sf-version.sf-version-milestone::after {
+    content: '';
+    position: absolute;
+    top: 0; left: -100%;
+    width: 40%;
+    height: 100%;
+    background: linear-gradient(90deg, transparent 0%, rgba(255, 255, 255, 0.25) 50%, transparent 100%);
+    animation: milestone-shimmer 3.5s ease-in-out infinite;
+  }
+  @keyframes milestone-shimmer {
+    0%, 15% { left: -100%; }
+    50%, 100% { left: 200%; }
   }
   .sidebar-footer .sf-created {
     font-size: 10px;
@@ -1123,6 +1249,339 @@
   #teamWorkloadView { padding: 24px 32px; }
   #teamWorkloadView.hidden { display: none; }
   .twv-header { margin-bottom: 18px; }
+  /* ============================================================
+     TRAINING LOG VIEW (v119)
+     Cross-project training-hours dashboard. Uses SBG gold as the
+     primary accent (matching the 🎓 training tag color) so it's
+     visually distinct from Team Workload (blue accent) and Home
+     (navy accent).
+     ============================================================ */
+  .tlv-header { margin: 0 0 20px 0; }
+  .tlv-title-row {
+    display: flex;
+    align-items: flex-start;
+    justify-content: space-between;
+    gap: 20px;
+    margin-bottom: 18px;
+  }
+  .tlv-title {
+    font-family: 'Barlow Condensed', sans-serif;
+    font-size: 28px;
+    font-weight: 700;
+    color: var(--sbg-navy, #0a2540);
+    margin: 0;
+    letter-spacing: 0.02em;
+  }
+  .tlv-subtitle {
+    font-size: 13px;
+    color: var(--text-dim, #6b7687);
+    margin-top: 4px;
+    max-width: 640px;
+    line-height: 1.5;
+  }
+  .tlv-actions {
+    display: flex;
+    gap: 6px;
+    flex-shrink: 0;
+  }
+  .tlv-stat-strip {
+    display: grid;
+    grid-template-columns: repeat(4, 1fr);
+    gap: 14px;
+    margin-bottom: 8px;
+  }
+  .tlv-stat-tile {
+    background: #fff;
+    border: 1px solid rgba(0, 0, 0, 0.08);
+    border-radius: 6px;
+    padding: 16px 18px;
+    box-shadow: 0 1px 3px rgba(0, 0, 0, 0.05);
+    position: relative;
+    overflow: hidden;
+  }
+  .tlv-stat-tile::before {
+    content: '';
+    position: absolute;
+    top: 0; left: 0; bottom: 0;
+    width: 4px;
+  }
+  .tlv-stat-pending::before { background: var(--sbg-red, #c8322b); }
+  .tlv-stat-month::before   { background: var(--sbg-gold, #c07f00); }
+  .tlv-stat-ytd::before     { background: var(--sbg-navy, #0a2540); }
+  .tlv-stat-all::before     { background: #4a5560; }
+  .tlv-stat-num {
+    font-family: 'Barlow Condensed', sans-serif;
+    font-size: 30px;
+    font-weight: 800;
+    color: var(--sbg-navy, #0a2540);
+    line-height: 1;
+    letter-spacing: -0.01em;
+  }
+  .tlv-stat-label {
+    font-family: 'Barlow Condensed', sans-serif;
+    font-size: 12px;
+    font-weight: 700;
+    letter-spacing: 0.14em;
+    text-transform: uppercase;
+    color: var(--text-dim, #6b7687);
+    margin-top: 6px;
+  }
+  .tlv-stat-sub {
+    font-size: 11px;
+    color: var(--text-dim, #6b7687);
+    margin-top: 2px;
+  }
+  .tlv-body { display: flex; flex-direction: column; gap: 26px; }
+  .tlv-section {
+    background: #fff;
+    border: 1px solid rgba(0, 0, 0, 0.08);
+    border-radius: 6px;
+    padding: 18px 20px;
+  }
+  .tlv-section-header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 14px;
+    margin-bottom: 14px;
+    border-bottom: 1px solid rgba(0, 0, 0, 0.06);
+    padding-bottom: 10px;
+  }
+  .tlv-section-title {
+    font-family: 'Barlow Condensed', sans-serif;
+    font-size: 18px;
+    font-weight: 700;
+    color: var(--sbg-navy, #0a2540);
+    margin: 0;
+    letter-spacing: 0.02em;
+  }
+  .tlv-section-sub {
+    font-size: 12px;
+    color: var(--text-dim, #6b7687);
+  }
+  .tlv-person-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(320px, 1fr));
+    gap: 14px;
+  }
+  .tlv-person-card {
+    background: #fff;
+    border: 1px solid rgba(0, 0, 0, 0.08);
+    border-radius: 6px;
+    padding: 14px;
+    transition: box-shadow 0.15s, border-color 0.15s;
+  }
+  .tlv-person-card:hover {
+    box-shadow: 0 4px 12px rgba(10, 37, 64, 0.08);
+    border-color: rgba(192, 127, 0, 0.4);
+  }
+  .tlv-person-head {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    margin-bottom: 12px;
+  }
+  .tlv-person-avatar {
+    width: 36px;
+    height: 36px;
+    border-radius: 50%;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    font-family: 'Barlow Condensed', sans-serif;
+    font-size: 14px;
+    font-weight: 700;
+    color: #fff;
+    overflow: hidden;
+    flex-shrink: 0;
+  }
+  .tlv-person-avatar.has-photo img {
+    width: 100%; height: 100%; object-fit: cover;
+  }
+  .tlv-person-name {
+    font-family: 'Inter', sans-serif;
+    font-size: 14px;
+    font-weight: 600;
+    color: var(--text, #1a1a1a);
+  }
+  .tlv-person-metrics {
+    display: grid;
+    grid-template-columns: repeat(2, 1fr);
+    gap: 8px;
+  }
+  .tlv-person-metric {
+    background: rgba(10, 37, 64, 0.03);
+    padding: 8px 10px;
+    border-radius: 4px;
+    border-left: 3px solid transparent;
+  }
+  .tlv-person-metric-pending { border-left-color: var(--sbg-red, #c8322b); }
+  .tlv-person-metric-month   { border-left-color: var(--sbg-gold, #c07f00); }
+  .tlv-person-metric-ytd     { border-left-color: var(--sbg-navy, #0a2540); }
+  .tlv-person-metric-all     { border-left-color: #4a5560; }
+  .tlv-metric-num {
+    font-family: 'Barlow Condensed', sans-serif;
+    font-size: 20px;
+    font-weight: 800;
+    color: var(--sbg-navy, #0a2540);
+    line-height: 1;
+  }
+  .tlv-metric-label {
+    font-family: 'Barlow Condensed', sans-serif;
+    font-size: 10px;
+    font-weight: 700;
+    letter-spacing: 0.1em;
+    text-transform: uppercase;
+    color: var(--text-dim, #6b7687);
+    margin-top: 3px;
+  }
+  .tlv-metric-sub {
+    font-size: 10px;
+    color: var(--text-dim, #6b7687);
+    margin-top: 1px;
+  }
+  .tlv-filters {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+  }
+  .tlv-filter-label {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    font-family: 'Barlow Condensed', sans-serif;
+    font-size: 12px;
+    font-weight: 700;
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+    color: var(--text-dim, #6b7687);
+  }
+  .tlv-filter-select {
+    padding: 5px 8px;
+    font-family: 'Inter', sans-serif;
+    font-size: 12px;
+    border: 1px solid rgba(0, 0, 0, 0.15);
+    border-radius: 4px;
+    background: #fff;
+    color: var(--text, #1a1a1a);
+    cursor: pointer;
+  }
+  .tlv-task-list {
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+  }
+  .tlv-tl-row {
+    display: grid;
+    grid-template-columns: 24px 1fr 200px 160px 140px 60px 80px;
+    align-items: center;
+    gap: 12px;
+    padding: 10px 12px;
+    border-bottom: 1px solid rgba(0, 0, 0, 0.05);
+    cursor: pointer;
+    transition: background 0.12s;
+  }
+  .tlv-tl-row:hover { background: rgba(192, 127, 0, 0.04); }
+  .tlv-tl-status {
+    font-size: 16px;
+    color: var(--text-dim, #6b7687);
+    text-align: center;
+  }
+  .tlv-tl-row.tlv-tl-done .tlv-tl-status {
+    color: #4caf50;
+    font-weight: 800;
+  }
+  .tlv-tl-row.tlv-tl-done .tlv-tl-title {
+    color: var(--text-dim, #6b7687);
+    text-decoration: line-through;
+  }
+  .tlv-tl-title {
+    font-family: 'Inter', sans-serif;
+    font-size: 13px;
+    font-weight: 600;
+    color: var(--text, #1a1a1a);
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+  .tlv-tl-project {
+    font-size: 12px;
+    color: var(--text-dim, #6b7687);
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+  .tlv-tl-stage {
+    font-family: 'Barlow Condensed', sans-serif;
+    font-size: 11px;
+    font-weight: 700;
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+    color: var(--sbg-navy, #0a2540);
+    background: rgba(10, 37, 64, 0.06);
+    padding: 2px 6px;
+    border-radius: 3px;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+  .tlv-tl-person {
+    font-size: 12px;
+    color: var(--text, #1a1a1a);
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+  .tlv-tl-hours {
+    font-family: 'JetBrains Mono', monospace;
+    font-size: 12px;
+    font-weight: 700;
+    color: var(--sbg-gold, #c07f00);
+    text-align: right;
+  }
+  .tlv-tl-due {
+    font-family: 'JetBrains Mono', monospace;
+    font-size: 11px;
+    color: var(--text-dim, #6b7687);
+    text-align: right;
+  }
+  .tlv-empty {
+    text-align: center;
+    padding: 40px 20px;
+    grid-column: 1 / -1;
+  }
+  .tlv-empty-icon {
+    font-size: 48px;
+    margin-bottom: 12px;
+    opacity: 0.5;
+  }
+  .tlv-empty-title {
+    font-family: 'Barlow Condensed', sans-serif;
+    font-size: 18px;
+    font-weight: 700;
+    color: var(--sbg-navy, #0a2540);
+    margin-bottom: 6px;
+  }
+  .tlv-empty-sub {
+    font-size: 13px;
+    color: var(--text-dim, #6b7687);
+    max-width: 480px;
+    margin: 0 auto;
+    line-height: 1.5;
+  }
+  .tlv-empty-small {
+    padding: 20px;
+    text-align: center;
+    font-size: 13px;
+    color: var(--text-dim, #6b7687);
+  }
+  @media (max-width: 1100px) {
+    .tlv-stat-strip { grid-template-columns: repeat(2, 1fr); }
+    .tlv-tl-row {
+      grid-template-columns: 24px 1fr 100px 60px;
+    }
+    .tlv-tl-project, .tlv-tl-stage, .tlv-tl-due { display: none; }
+  }
   .twv-title-row {
     display: flex;
     justify-content: space-between;
@@ -3069,6 +3528,25 @@
   }
   .home-item.hi-warning { border-left: 3px solid #c07f00; }
   .home-item.hi-info { border-left: 3px solid var(--sbg-navy); }
+  /* v113: Series occurrence badge on home item titles — visual cue that
+     acknowledging this row covers a whole recurring series. */
+  .hi-series-badge {
+    display: inline-flex;
+    align-items: center;
+    gap: 3px;
+    padding: 1px 6px;
+    margin-left: 6px;
+    background: linear-gradient(135deg, var(--sbg-gold, #c07f00) 0%, #d99b1f 100%);
+    color: #fff;
+    border-radius: 8px;
+    font-family: 'Barlow Condensed', sans-serif;
+    font-size: 10px;
+    font-weight: 700;
+    letter-spacing: 0.04em;
+    text-transform: uppercase;
+    vertical-align: middle;
+    box-shadow: 0 1px 2px rgba(192, 127, 0, 0.3);
+  }
   .hi-project-chip {
     display: inline-flex;
     align-items: center;
@@ -5519,9 +5997,55 @@
     font-family: 'Inter', -apple-system, BlinkMacSystemFont, sans-serif;
   }
   /* v93: Toast notifications — top-right, persistent, stack vertically */
+  /* v106: Dismiss-all chip — appears above the stack when 2+ toasts. */
+  /* v110: pushed both down from top:20px to sit clearly BELOW the ~83px
+     navy header (14+52+14+3 border) so they don't blur into it. */
+  .toast-dismiss-all {
+    position: fixed;
+    top: 100px;
+    right: 20px;
+    z-index: 10001;
+    background: var(--sbg-navy, #0a2540);
+    color: #fff;
+    border: 1px solid rgba(255, 255, 255, 0.15);
+    border-radius: 20px;
+    padding: 6px 14px;
+    font-size: 11.5px;
+    font-weight: 700;
+    font-family: 'Barlow Condensed', 'Inter', sans-serif;
+    letter-spacing: 0.05em;
+    text-transform: uppercase;
+    cursor: pointer;
+    box-shadow: 0 4px 12px rgba(0, 0, 0, 0.2);
+    transition: background 0.15s ease, transform 0.12s ease;
+    pointer-events: auto;
+    display: inline-flex;
+    align-items: center;
+    gap: 5px;
+    animation: toast-slide-in 0.3s cubic-bezier(0.16, 1, 0.3, 1);
+  }
+  .toast-dismiss-all:hover {
+    background: #061a2e;
+    transform: translateX(-2px);
+  }
+  .toast-dismiss-all .tda-count {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    min-width: 18px;
+    height: 18px;
+    padding: 0 5px;
+    border-radius: 9px;
+    background: var(--sbg-red, #c8322b);
+    color: #fff;
+    font-size: 10.5px;
+    font-weight: 800;
+    font-family: 'JetBrains Mono', monospace;
+    letter-spacing: 0;
+  }
   .toast-container {
     position: fixed;
-    top: 20px;
+    top: 100px; /* v110: below the 83px navy header; JS pushes to 142px when dismiss-all chip is showing */
     right: 20px;
     z-index: 10000;
     display: flex;
@@ -5653,6 +6177,155 @@
   .toast-card.toast-severity-warning .toast-title {
     color: var(--sbg-gold, #c07f00);
   }
+  /* v108: 'assigned' severity — thicker gold border + gold-tint background +
+     gentle attention pulse so the user clearly catches when work has landed
+     on their plate. Distinct from 'info' which is used for status changes. */
+  .toast-card.toast-severity-assigned {
+    border-left-color: var(--sbg-gold, #c07f00);
+    border-left-width: 6px;
+    background: linear-gradient(90deg, rgba(192, 127, 0, 0.06) 0%, #fff 45%);
+    box-shadow: 0 10px 26px rgba(192, 127, 0, 0.22), 0 3px 8px rgba(0, 0, 0, 0.1);
+    animation: toast-slide-in 0.3s cubic-bezier(0.16, 1, 0.3, 1), assigned-attention 2.2s ease-in-out 1;
+  }
+  @keyframes assigned-attention {
+    0%, 100% { box-shadow: 0 10px 26px rgba(192, 127, 0, 0.22), 0 3px 8px rgba(0, 0, 0, 0.1); }
+    50% { box-shadow: 0 12px 32px rgba(192, 127, 0, 0.45), 0 6px 14px rgba(192, 127, 0, 0.25); }
+  }
+  .toast-card.toast-severity-assigned .toast-title {
+    color: var(--sbg-gold, #c07f00);
+    font-size: 13px;
+    font-weight: 800;
+    letter-spacing: 0.5px;
+  }
+  .toast-card.toast-severity-assigned .toast-icon {
+    font-size: 24px;
+  }
+  /* v115: Center-screen assignment toast — pops in the middle of the screen
+     with a thick red border and stronger presence. "In your face but not too
+     much." Only applied to task-assigned / task-reassigned toasts via extra
+     class .toast-assignment-center added by _spawnToast. */
+  #toastCenterLayer {
+    position: fixed;
+    inset: 0;
+    z-index: 10002;
+    pointer-events: none;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    gap: 14px;
+    padding: 80px 20px;
+  }
+  #toastCenterLayer::before {
+    content: '';
+    position: absolute;
+    inset: 0;
+    background: rgba(10, 37, 64, 0.20);
+    backdrop-filter: blur(1px);
+    opacity: 0;
+    transition: opacity 0.3s ease;
+    pointer-events: none;
+  }
+  #toastCenterLayer.has-toast::before { opacity: 1; }
+  .toast-card.toast-assignment-center {
+    position: relative;
+    width: 500px;
+    max-width: calc(100vw - 40px);
+    padding: 18px 20px;
+    border: 3px solid var(--sbg-red, #c8322b);
+    border-left-width: 8px;
+    border-left-color: var(--sbg-gold, #c07f00);
+    background: linear-gradient(135deg, #fff 0%, rgba(192, 127, 0, 0.05) 100%);
+    box-shadow:
+      0 20px 60px rgba(200, 50, 43, 0.35),
+      0 8px 20px rgba(0, 0, 0, 0.25),
+      0 0 0 1px rgba(255, 255, 255, 0.9) inset;
+    border-radius: 6px;
+    pointer-events: auto;
+    animation:
+      assignment-center-in 0.4s cubic-bezier(0.16, 1, 0.3, 1),
+      assignment-center-pulse 2.5s ease-in-out 1;
+  }
+  .toast-card.toast-assignment-center .toast-title {
+    font-size: 15px;
+    letter-spacing: 0.6px;
+  }
+  .toast-card.toast-assignment-center .toast-icon {
+    font-size: 30px;
+  }
+  .toast-card.toast-assignment-center .toast-msg {
+    font-size: 13.5px;
+    line-height: 1.5;
+    margin-top: 4px;
+  }
+  .toast-card.toast-assignment-center .toast-actions {
+    margin-top: 12px;
+  }
+  .toast-card.toast-assignment-center .toast-action-btn {
+    padding: 8px 16px;
+    font-size: 12px;
+  }
+  @keyframes assignment-center-in {
+    from { opacity: 0; transform: translateY(-30px) scale(0.94); }
+    to { opacity: 1; transform: translateY(0) scale(1); }
+  }
+  @keyframes assignment-center-pulse {
+    0%, 100% { box-shadow: 0 20px 60px rgba(200, 50, 43, 0.35), 0 8px 20px rgba(0, 0, 0, 0.25), 0 0 0 1px rgba(255, 255, 255, 0.9) inset; }
+    50% { box-shadow: 0 24px 72px rgba(200, 50, 43, 0.55), 0 10px 26px rgba(200, 50, 43, 0.35), 0 0 0 1px rgba(255, 255, 255, 0.9) inset; }
+  }
+  /* v108: Toast action button row — sits below the message + meta. */
+  .toast-actions {
+    display: flex;
+    gap: 6px;
+    margin-top: 8px;
+    flex-wrap: wrap;
+  }
+  .toast-action-btn {
+    padding: 5px 12px;
+    font-size: 11.5px;
+    font-weight: 700;
+    border-radius: 4px;
+    cursor: pointer;
+    border: 1px solid transparent;
+    transition: background 0.15s, transform 0.1s, box-shadow 0.15s;
+    font-family: 'Inter', -apple-system, sans-serif;
+    letter-spacing: 0.02em;
+  }
+  .toast-action-btn:hover { transform: translateY(-1px); }
+  .toast-action-btn:active { transform: translateY(0); }
+  .toast-action-primary {
+    background: var(--sbg-gold, #c07f00);
+    color: #fff;
+    border-color: var(--sbg-gold, #c07f00);
+    box-shadow: 0 2px 4px rgba(192, 127, 0, 0.3);
+  }
+  .toast-action-primary:hover {
+    background: #a06d00;
+    border-color: #a06d00;
+    box-shadow: 0 3px 6px rgba(192, 127, 0, 0.4);
+  }
+  .toast-action-secondary {
+    background: transparent;
+    color: var(--text-dim, #6b7687);
+    border-color: rgba(0, 0, 0, 0.15);
+  }
+  .toast-action-secondary:hover {
+    background: rgba(0, 0, 0, 0.04);
+    color: var(--text, #1a1a1a);
+    border-color: rgba(0, 0, 0, 0.25);
+  }
+  /* v109: Danger variant of the primary action — SBG red for acknowledging
+     a rejection (visually distinct from the gold "accept a task" primary). */
+  .toast-action-primary.toast-action-danger {
+    background: var(--sbg-red, #c8322b);
+    border-color: var(--sbg-red, #c8322b);
+    box-shadow: 0 2px 4px rgba(200, 50, 43, 0.3);
+  }
+  .toast-action-primary.toast-action-danger:hover {
+    background: #a5251f;
+    border-color: #a5251f;
+    box-shadow: 0 3px 6px rgba(200, 50, 43, 0.4);
+  }
   /* Silenced state indicator on the bell */
   .notification-bell-btn.toasts-silenced::after {
     content: '';
@@ -5664,6 +6337,26 @@
     border-radius: 50%;
     background: var(--text-dim, #6b7687);
     border: 2px solid var(--sbg-navy, #0a2540);
+  }
+  /* v105: Lead Manager Mode indicator — small eye icon on the bell */
+  .notification-bell-btn.bell-manager-mode::before {
+    content: '👁';
+    position: absolute;
+    bottom: -4px;
+    left: -4px;
+    font-size: 11px;
+    background: var(--sbg-gold, #c07f00);
+    color: #fff;
+    width: 16px;
+    height: 16px;
+    border-radius: 50%;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    border: 2px solid var(--sbg-navy, #0a2540);
+    box-shadow: 0 1px 3px rgba(0, 0, 0, 0.25);
+    line-height: 1;
+    z-index: 2;
   }
   .notification-dropdown {
     position: absolute;
@@ -5703,6 +6396,67 @@
     background: rgba(0, 0, 0, 0.05);
     padding: 3px;
     border-radius: 6px;
+  }
+  /* v107: Prominent Manager Mode row inside the bell dropdown header. */
+  .notif-manager-row {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 8px 10px;
+    background: linear-gradient(135deg, rgba(10, 37, 64, 0.05) 0%, rgba(192, 127, 0, 0.08) 100%);
+    border: 1px solid rgba(10, 37, 64, 0.12);
+    border-radius: 6px;
+    margin: 6px 0 8px 0;
+  }
+  .notif-manager-label {
+    font-family: 'Barlow Condensed', 'Inter', sans-serif;
+    font-size: 12px;
+    font-weight: 700;
+    color: var(--sbg-navy, #0a2540);
+    letter-spacing: 0.05em;
+    text-transform: uppercase;
+  }
+  /* Simple iOS-style toggle switch */
+  .notif-switch {
+    position: relative;
+    display: inline-block;
+    width: 40px;
+    height: 22px;
+    flex-shrink: 0;
+  }
+  .notif-switch input {
+    opacity: 0;
+    width: 0;
+    height: 0;
+    padding: 0 !important;
+    border: none !important;
+    background: none !important;
+  }
+  .notif-switch-slider {
+    position: absolute;
+    cursor: pointer;
+    inset: 0;
+    background: rgba(0, 0, 0, 0.2);
+    transition: background 0.2s;
+    border-radius: 22px;
+  }
+  .notif-switch-slider::before {
+    position: absolute;
+    content: '';
+    height: 16px;
+    width: 16px;
+    left: 3px;
+    top: 3px;
+    background: #fff;
+    transition: transform 0.2s;
+    border-radius: 50%;
+    box-shadow: 0 1px 3px rgba(0, 0, 0, 0.3);
+  }
+  .notif-switch input:checked + .notif-switch-slider {
+    background: var(--sbg-gold, #c07f00);
+  }
+  .notif-switch input:checked + .notif-switch-slider::before {
+    transform: translateX(18px);
   }
   .notif-scope-btn {
     background: transparent;
@@ -6762,6 +7516,65 @@
   .task-modal-rejection-notice.acknowledged .tmrn-header {
     color: var(--green);
   }
+  /* v111: Task modal Awaiting Sign-Off notice — mirrors the rejection notice
+     structure but uses SBG gold for the "action needed" framing since this
+     is the completion-pending-approval state, not a rejection. */
+  .task-modal-signoff-notice {
+    margin: 14px 0;
+    padding: 12px;
+    background: rgba(192, 127, 0, 0.08);
+    border: 2px solid var(--sbg-gold, #c07f00);
+    border-radius: 4px;
+  }
+  .task-modal-signoff-notice .tmsn-header {
+    font-family: 'Barlow Condensed', sans-serif;
+    font-size: 13px;
+    font-weight: 800;
+    text-transform: uppercase;
+    letter-spacing: 0.1em;
+    color: var(--sbg-gold, #c07f00);
+    margin-bottom: 6px;
+  }
+  .task-modal-signoff-notice .tmsn-body {
+    font-size: 12px;
+    color: var(--text);
+    line-height: 1.5;
+  }
+  .task-modal-signoff-notice .tmsn-actions {
+    margin-top: 10px;
+    display: flex;
+    gap: 8px;
+    flex-wrap: wrap;
+  }
+  .task-modal-signoff-notice .tmsn-btn {
+    padding: 8px 14px;
+    border: none;
+    border-radius: 3px;
+    font-family: 'Barlow Condensed', sans-serif;
+    font-size: 12px;
+    font-weight: 800;
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+    cursor: pointer;
+    transition: background 0.12s;
+  }
+  .task-modal-signoff-notice .tmsn-btn-accept {
+    background: var(--green, #2e7d52);
+    color: #fff;
+  }
+  .task-modal-signoff-notice .tmsn-btn-accept:hover { background: #245e3f; }
+  .task-modal-signoff-notice .tmsn-btn-reject {
+    background: var(--sbg-red, #c8322b);
+    color: #fff;
+  }
+  .task-modal-signoff-notice .tmsn-btn-reject:hover { background: #a5291f; }
+  .task-modal-signoff-notice .tmsn-hint {
+    display: block;
+    margin-top: 8px;
+    font-size: 11px;
+    color: var(--text-dim, #6b7687);
+    font-style: italic;
+  }
   .msg-task-ref {
     display: inline-flex;
     align-items: center;
@@ -7639,6 +8452,79 @@
   .critical-btn.critical-btn-active .critical-btn-icon {
     filter: none;
     opacity: 1;
+  }
+
+  /* ========== TRAINING BUTTON in Edit Task modal (v119) ==========
+     🎓 outline when off, filled gold when on. Toggles task.isTraining.
+     Sits next to the Critical button so both signals share the same
+     "importance flag" visual space. Uses SBG gold so it doesn't compete
+     with the red Critical treatment. */
+  .training-btn {
+    display: inline-flex;
+    align-items: center;
+    gap: 8px;
+    padding: 8px 14px;
+    margin-left: 8px;
+    background: transparent;
+    border: 2px dashed var(--sbg-gold, #c07f00);
+    border-radius: 6px;
+    color: var(--sbg-gold, #c07f00);
+    font-family: 'Inter', sans-serif;
+    font-size: 13px;
+    font-weight: 700;
+    cursor: pointer;
+    transition: background 0.15s, border-color 0.15s, color 0.15s, transform 0.1s;
+  }
+  .training-btn:hover {
+    background: rgba(192, 127, 0, 0.06);
+    border-color: var(--sbg-gold, #c07f00);
+  }
+  .training-btn:active {
+    transform: scale(0.98);
+  }
+  .training-btn .training-btn-icon {
+    font-size: 16px;
+    filter: grayscale(0.6);
+    opacity: 0.7;
+    transition: filter 0.15s, opacity 0.15s;
+  }
+  .training-btn.training-btn-active {
+    background: var(--sbg-gold, #c07f00);
+    border-style: solid;
+    border-color: var(--sbg-gold, #c07f00);
+    color: #fff;
+    box-shadow: 0 2px 6px rgba(192, 127, 0, 0.3);
+  }
+  .training-btn.training-btn-active:hover {
+    background: #a06a00;
+    border-color: #a06a00;
+  }
+  .training-btn.training-btn-active .training-btn-icon {
+    filter: none;
+    opacity: 1;
+  }
+
+  /* ========== TRAINING CHIP on cards (v119) ========== */
+  .training-chip {
+    display: inline-flex;
+    align-items: center;
+    gap: 3px;
+    padding: 1px 7px;
+    background: var(--sbg-gold, #c07f00);
+    color: #fff;
+    border: 1px solid var(--sbg-gold, #c07f00);
+    border-radius: 3px;
+    font-family: 'JetBrains Mono', monospace;
+    font-size: 9.5px;
+    font-weight: 800;
+    line-height: 1.4;
+    letter-spacing: 0.04em;
+    box-shadow: 0 1px 2px rgba(192, 127, 0, 0.25);
+  }
+  .task-card.is-overdue .training-chip {
+    background: rgba(255,255,255,0.95);
+    color: var(--sbg-gold, #c07f00);
+    border-color: rgba(255,255,255,0.9);
   }
 
   /* ========== CRITICAL CHIP on cards ========== */
@@ -14821,6 +15707,114 @@
     font-size: 12px;
   }
   /* Sticky modal-actions footer — keeps Save/Cancel reachable while scrolling */
+  /* v100: Series scope dialog options */
+  .series-scope-options {
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+    margin: 6px 0 4px 0;
+  }
+  .series-scope-option {
+    display: flex;
+    gap: 8px;
+    padding: 8px 10px;
+    border: 1px solid var(--border, #e0e0e0);
+    border-radius: 5px;
+    cursor: pointer;
+    transition: background 0.12s, border-color 0.12s;
+    background: var(--surface, #fff);
+  }
+  .series-scope-option:hover {
+    background: rgba(10, 37, 64, 0.03);
+  }
+  .series-scope-option input[type="radio"] {
+    /* v101.1: Reset global `input { width:100%; padding; border }` from line ~15073
+       which was rendering these radios as giant filled circles. */
+    width: 16px !important;
+    height: 16px !important;
+    padding: 0 !important;
+    border: none !important;
+    background: none !important;
+    box-shadow: none !important;
+    margin: 3px 0 0 0;
+    accent-color: var(--sbg-navy, #0a2540);
+    flex-shrink: 0;
+    appearance: auto;
+    -webkit-appearance: radio;
+  }
+  .series-scope-option:has(input[type="radio"]:checked) {
+    border-color: var(--sbg-navy, #0a2540);
+    background: rgba(10, 37, 64, 0.05);
+  }
+  .sso-body { flex: 1; min-width: 0; }
+  .sso-title {
+    font-weight: 600;
+    color: var(--text, #1a1a1a);
+    font-size: 12.5px;
+    margin-bottom: 2px;
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    flex-wrap: wrap;
+    line-height: 1.3;
+  }
+  .sso-desc {
+    font-size: 11px;
+    color: var(--text-dim, #6b7687);
+    line-height: 1.35;
+  }
+  .sso-count-chip {
+    display: inline-flex;
+    align-items: center;
+    font-size: 10px;
+    font-weight: 700;
+    background: var(--sbg-navy, #0a2540);
+    color: #fff;
+    padding: 1px 6px;
+    border-radius: 8px;
+    letter-spacing: 0.02em;
+  }
+  .series-scope-option:has(input[value="this-only"]:checked) .sso-count-chip { display: none; }
+  /* v104: red variant of the count chip for the delete dialog */
+  .sso-count-chip.sso-count-danger {
+    background: var(--sbg-red, #c8322b);
+  }
+  /* v101: series scope modal sits ABOVE other modals so it's not hidden
+     behind the task modal that spawned it. Also slim the container so it
+     doesn't fight the task modal for screen space. */
+  #seriesScopeModal,
+  #seriesDeleteModal { z-index: 1100 !important; }
+  #seriesScopeModal .modal,
+  #seriesDeleteModal .modal {
+    max-width: 440px;
+    padding: 18px 20px;
+  }
+  #seriesScopeModal h2,
+  #seriesDeleteModal h2 {
+    font-size: 15px;
+    margin: 0 0 3px 0;
+  }
+  #seriesScopeModal .modal-actions,
+  #seriesDeleteModal .modal-actions {
+    gap: 6px;
+    margin-top: 12px !important;
+  }
+  #seriesScopeModal .modal-actions .btn,
+  #seriesDeleteModal .modal-actions .btn {
+    font-size: 12px;
+    padding: 6px 12px;
+  }
+  /* v104: danger button variant for delete confirmation */
+  .btn.btn-danger {
+    background: var(--sbg-red, #c8322b);
+    color: #fff;
+    border-color: var(--sbg-red, #c8322b);
+  }
+  .btn.btn-danger:hover {
+    background: #a5251f;
+    border-color: #a5251f;
+  }
+
   #taskModal .modal-actions {
     position: sticky;
     bottom: -28px; /* compensates for the modal's bottom padding */
@@ -17064,6 +18058,25 @@
     text-transform: uppercase;
     letter-spacing: 0.08em;
     font-weight: 700;
+    white-space: nowrap;
+  }
+  /* v115: Series occurrence badge on project-alerts unacknowledged rows */
+  .ai-series-badge {
+    display: inline-flex;
+    align-items: center;
+    gap: 3px;
+    padding: 1px 6px;
+    margin-left: 6px;
+    background: linear-gradient(135deg, var(--sbg-gold, #c07f00) 0%, #d99b1f 100%);
+    color: #fff;
+    border-radius: 8px;
+    font-family: 'Barlow Condensed', sans-serif;
+    font-size: 10px;
+    font-weight: 700;
+    letter-spacing: 0.04em;
+    text-transform: uppercase;
+    vertical-align: middle;
+    box-shadow: 0 1px 2px rgba(192, 127, 0, 0.3);
     white-space: nowrap;
   }
   .alert-item .ai-title {
