@@ -3,10 +3,10 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <meta name="application-name" content="SBG Preconstruction Bid Tracker">
-<meta name="version" content="V83">
+<meta name="version" content="V119">
 <meta name="created" content="2026-04-18">
 <meta name="built" content="2026-04-19T23:56:18Z">
-<title>SBG Preconstruction Bid Tracker · V83</title>
+<title>SBG Preconstruction Bid Tracker · V119</title>
 <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;600;700&amp;family=Barlow+Condensed:wght@500;600;700;800&amp;family=Inter:wght@300;400;500;600;700;800&amp;display=swap" rel="stylesheet">
 
 <meta name="api-base" content="">
@@ -20,12 +20,16 @@
     <div class="brand-logo" id="brandLogo" onclick="openSettingsModal()" title="Click to edit company logo"><img src="data:image/gif;base64,R0lGODlhAQABAAAAACH5BAEKAAEALAAAAAABAAEAAAICTAEAOw==" alt="Company Logo" style="width:100%;height:100%;object-fit:contain;border-radius:4px;background:#fff;"></div>
     <div class="brand-text">
       <h1>SOURCE BUILDING GR<span class="accent">O</span>UP</h1>
-      <div class="subtitle">Preconstruction · Bid Pursuit Tracker <span class="version-stamp">V83 · Built Jun 4, 2026</span></div>
+      <div class="subtitle">Preconstruction · Bid Pursuit Tracker <span class="version-stamp version-stamp-milestone" title="v119 · v100 milestone Recurring Series Overhaul + polish">🎉 V119</span><span class="version-built">Built Jul 10, 2026</span></div>
     </div>
   </div>
   <div class="header-stats">
     <!-- v93: Toast container — fixed top-right, populated by _spawnToast(). -->
+    <!-- v106: dismiss-all chip sits above the toasts; auto-hides when 0 or 1 toast. -->
+    <button class="toast-dismiss-all" id="toastDismissAll" onclick="dismissAllToasts()" style="display:none;">✕ Dismiss all <span class="tda-count" id="toastDismissAllCount">0</span></button>
     <div class="toast-container" id="toastContainer"></div>
+    <!-- v115: Center-screen layer for assignment toasts — pops center of screen -->
+    <div id="toastCenterLayer"></div>
     <!-- v90: Notification bell — click to open dropdown of recent events. -->
     <div class="notification-bell-wrap">
       <button class="notification-bell-btn" id="notificationBellBtn" onclick="toggleNotificationDropdown()" title="Recent activity">
@@ -35,6 +39,16 @@
       <div class="notification-dropdown" id="notificationDropdown">
         <div class="notif-dropdown-header">
           <div class="notif-dropdown-title">Notifications</div>
+          <!-- v107: Prominent Manager Mode row above the scope control so the
+               setting is discoverable in one place (was hidden behind Settings
+               + a subtle segmented pill before). -->
+          <div class="notif-manager-row" id="notifManagerRow">
+            <span class="notif-manager-label">👁 Lead Manager Mode</span>
+            <label class="notif-switch" title="See notifications for the entire team, not just yours">
+              <input type="checkbox" id="notifManagerToggle" onchange="toggleManagerModeFromBell(this)">
+              <span class="notif-switch-slider"></span>
+            </label>
+          </div>
           <div class="notif-scope-toggle" id="notificationScopeToggle"></div>
         </div>
         <div class="notif-dropdown-body" id="notificationDropdownBody"></div>
@@ -126,6 +140,16 @@
         <span class="ssb-sub" id="workloadSidebarSub">Capacity · Hours · Project Load</span>
       </div>
       <span class="ssb-badge" id="workloadSidebarBadge" style="display: none;">0</span>
+    </button>
+
+    <!-- Training Log — cross-project training-hours tracker (v119) -->
+    <button class="snapshot-sidebar-btn" id="trainingLogSidebarBtn" onclick="openTrainingLogView()" title="Training Log — hours per assignee across all tasks tagged as Training">
+      <span class="ssb-icon">🎓</span>
+      <div class="ssb-body">
+        <span class="ssb-label">Training Log</span>
+        <span class="ssb-sub" id="trainingLogSidebarSub">Team training hours · pending & completed</span>
+      </div>
+      <span class="ssb-badge" id="trainingLogSidebarBadge" style="display: none;">0</span>
     </button>
 
     <!-- v75: Project Timeline — full-project chronological view, all tasks regardless of status -->
@@ -283,9 +307,9 @@
     <!-- File creation/version footer — stays pinned to the bottom of the sidebar -->
     <div class="sidebar-footer" id="sidebarFooter">
       <div class="sf-brand">SBG Precon Tracker</div>
-      <div class="sf-version">V83</div>
+      <div class="sf-version sf-version-milestone" title="v119 · v100 milestone Recurring Series Overhaul + polish">🎉 V119</div>
       <div class="sf-created">Created April 18, 2026</div>
-      <div class="sf-built" title="Exact timestamp when this HTML file was generated">Built Jun 4, 2026</div>
+      <div class="sf-built" title="Exact timestamp when this HTML file was generated">Built Jul 10, 2026</div>
       <div class="sf-org">Source Building Group · Mansfield, TX</div>
     </div>
   </aside>
@@ -572,6 +596,74 @@
          (same format as Look Ahead). Past tasks rendered in full color
          with status indicator (green=done, red=blocked, navy=in-progress,
          etc.) so the entire project timeline is visible at a glance.
+         ============================================================ -->
+    <!-- v119: TRAINING LOG VIEW ============================================
+         Cross-project view of every task tagged as Training. Header stats
+         (team pending / completed / this month / YTD) sit above per-person
+         cards showing their training hour breakdown. Task list at the
+         bottom is filterable by person and status. Populated entirely by
+         renderTrainingLogView().
+         ================================================================ -->
+    <div id="trainingLogView" class="hidden">
+      <div class="tlv-header">
+        <div class="tlv-title-row">
+          <div>
+            <h1 class="tlv-title">🎓 Training Log</h1>
+            <div class="tlv-subtitle">Every task tagged as Training, grouped by assignee. Hours pending, completed this month, and year-to-date.</div>
+          </div>
+          <div class="tlv-actions">
+            <button class="btn btn-sm" onclick="copyTrainingLogSummary()" title="Copy a training summary to the clipboard for reference or reporting">📋 Copy Summary</button>
+            <button class="btn btn-sm" onclick="render()" title="Refresh data">↻ Refresh</button>
+            <button class="btn btn-sm" onclick="exitTrainingLogView()" title="Return to previous view">✕ Close</button>
+          </div>
+        </div>
+        <!-- Stat tiles: team-wide totals -->
+        <div class="tlv-stat-strip" id="tlvStatStrip">
+          <!-- Populated by renderTrainingLogView() -->
+        </div>
+      </div>
+
+      <div class="tlv-body">
+        <!-- Per-person breakdown cards -->
+        <div class="tlv-section">
+          <div class="tlv-section-header">
+            <h2 class="tlv-section-title">Per-Person Training Breakdown</h2>
+            <div class="tlv-section-sub" id="tlvPersonCount"></div>
+          </div>
+          <div class="tlv-person-grid" id="tlvPersonGrid">
+            <!-- Populated by renderTrainingLogView() -->
+          </div>
+        </div>
+
+        <!-- Detailed task list -->
+        <div class="tlv-section">
+          <div class="tlv-section-header">
+            <h2 class="tlv-section-title">Training Tasks Detail</h2>
+            <div class="tlv-filters">
+              <label class="tlv-filter-label">Status:
+                <select id="tlvStatusFilter" class="tlv-filter-select" onchange="state.trainingLogFilter=this.value; saveState(); renderTrainingLogView();">
+                  <option value="all">All</option>
+                  <option value="pending">Pending</option>
+                  <option value="completed">Completed</option>
+                </select>
+              </label>
+              <label class="tlv-filter-label">Person:
+                <select id="tlvPersonFilter" class="tlv-filter-select" onchange="state.trainingLogPersonFilter=this.value; saveState(); renderTrainingLogView();">
+                  <!-- Populated -->
+                </select>
+              </label>
+            </div>
+          </div>
+          <div class="tlv-task-list" id="tlvTaskList">
+            <!-- Populated by renderTrainingLogView() -->
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- ============================================================
+         PROJECT TIMELINE VIEW (v75)
+         Full-project chronological view — every task in one project
          ============================================================ -->
     <div id="projectTimelineView" class="hidden">
       <div class="ptv-header">
@@ -4728,6 +4820,86 @@
 </div>
 
 <!-- Task Modal -->
+<!-- v100/v101: Series scope dialog — pops after saving a task in a
+     recurring series. z-index 1100 so it sits above the task modal. -->
+<div class="modal-backdrop" id="seriesScopeModal">
+  <div class="modal">
+    <h2>🔁 Update Recurring Task</h2>
+    <p style="color:var(--text-dim, #6b7687); font-size:11.5px; margin:0 0 8px 0;">
+      Apply your changes to:
+    </p>
+    <div id="seriesScopeSummary"></div>
+    <div class="series-scope-options">
+      <label class="series-scope-option">
+        <input type="radio" name="seriesScope" value="this-only" checked>
+        <div class="sso-body">
+          <div class="sso-title">Just this occurrence</div>
+          <div class="sso-desc">Only this instance is updated.</div>
+        </div>
+      </label>
+      <label class="series-scope-option">
+        <input type="radio" name="seriesScope" value="this-and-future">
+        <div class="sso-body">
+          <div class="sso-title">This and all future <span class="sso-count-chip"><span id="seriesScopeFutureCount">0</span> more</span></div>
+          <div class="sso-desc">Update this and all incomplete instances due after it.</div>
+        </div>
+      </label>
+      <label class="series-scope-option">
+        <input type="radio" name="seriesScope" value="entire-series">
+        <div class="sso-body">
+          <div class="sso-title">The entire series <span class="sso-count-chip"><span id="seriesScopeAllCount">0</span> more</span></div>
+          <div class="sso-desc">Update every incomplete occurrence. Completed instances stay locked.</div>
+        </div>
+      </label>
+    </div>
+    <div class="modal-actions">
+      <button class="btn" onclick="cancelSeriesScope()">Cancel</button>
+      <button class="btn btn-primary" onclick="confirmSeriesScope()">Apply</button>
+    </div>
+  </div>
+</div>
+
+<!-- v104: Series delete dialog — same three-scope choice, delete framing. -->
+<div class="modal-backdrop" id="seriesDeleteModal">
+  <div class="modal">
+    <h2>🗑 Delete Recurring Task</h2>
+    <p style="color:var(--text-dim, #6b7687); font-size:11.5px; margin:0 0 8px 0;">
+      This task is part of a recurring series. Delete:
+    </p>
+    <div id="seriesDeleteSummary"></div>
+    <div class="series-scope-options">
+      <label class="series-scope-option">
+        <input type="radio" name="seriesDeleteScope" value="this-only" checked>
+        <div class="sso-body">
+          <div class="sso-title">Just this occurrence</div>
+          <div class="sso-desc">Delete only this instance. Other occurrences remain.</div>
+        </div>
+      </label>
+      <label class="series-scope-option">
+        <input type="radio" name="seriesDeleteScope" value="this-and-future">
+        <div class="sso-body">
+          <div class="sso-title">This and all future <span class="sso-count-chip sso-count-danger"><span id="seriesDeleteFutureCount">0</span> more</span></div>
+          <div class="sso-desc">Delete this instance and every future incomplete occurrence.</div>
+        </div>
+      </label>
+      <label class="series-scope-option">
+        <input type="radio" name="seriesDeleteScope" value="entire-series">
+        <div class="sso-body">
+          <div class="sso-title">The entire series <span class="sso-count-chip sso-count-danger"><span id="seriesDeleteAllCount">0</span> more</span></div>
+          <div class="sso-desc">Delete every incomplete occurrence in the series.</div>
+        </div>
+      </label>
+    </div>
+    <p style="color:var(--text-dim, #6b7687); font-size:10.5px; margin:8px 0 0 0; font-style:italic;">
+      Completed instances are always preserved — history stays intact regardless of scope.
+    </p>
+    <div class="modal-actions">
+      <button class="btn" onclick="cancelSeriesDelete()">Cancel</button>
+      <button class="btn btn-danger" onclick="confirmSeriesDelete()">🗑 Delete</button>
+    </div>
+  </div>
+</div>
+
 <div class="modal-backdrop" id="taskModal">
   <div class="modal">
     <h3 id="taskModalTitle">New Task</h3>
@@ -4735,6 +4907,12 @@
          t.rescheduledFromPastDue is true. Shows original date, days late,
          who moved it, when, and slip count. Never auto-clears. -->
     <div id="taskModalRescheduledBanner" style="display:none; margin:6px 0 10px 0; padding:10px 14px; background:rgba(200,50,43,0.08); border:1px solid rgba(200,50,43,0.35); border-radius:6px; color:var(--sbg-red, #c8322b); font-size:12px; line-height:1.5;"></div>
+
+    <!-- v100: RECURRING SERIES BANNER — populated by _renderTaskModalSeriesBanner
+         when the task being edited is part of a series. Shows occurrence
+         position, cadence, and count so users know they're editing an
+         instance of a repeating chain BEFORE they hit save. -->
+    <div id="taskModalSeriesBanner" style="display:none;"></div>
 
     <!-- ===== TASK ALERTS STRIP =====
          Surfaces every alert tier this task currently belongs to (Overdue,
@@ -4949,10 +5127,14 @@
          A single 🔥 button: outline when off, filled red when on. The old
          hidden taskPriority element is preserved as a no-op so any legacy
          code that reads it doesn't blow up. -->
-    <div class="form-group" id="taskCriticalFormGroup"><label>Critical</label>
+    <div class="form-group" id="taskCriticalFormGroup"><label>Critical / Training</label>
       <button type="button" id="taskCriticalBtn" class="critical-btn" onclick="toggleTaskCritical()" aria-pressed="false" title="Mark this task as Critical — surfaces it on filters and floats it to the top of sorts">
         <span class="critical-btn-icon">🔥</span>
         <span class="critical-btn-label">Mark as Critical</span>
+      </button>
+      <button type="button" id="taskTrainingBtn" class="training-btn" onclick="toggleTaskTraining()" aria-pressed="false" title="Tag this task as counting toward training. Task stays assigned to its project — this just flags it so it appears in the Training Log for tracking assignee development.">
+        <span class="training-btn-icon">🎓</span>
+        <span class="training-btn-label">Count Toward Training</span>
       </button>
       <!-- Hidden legacy priority field — kept as a hidden input so any
            unmigrated read of taskPriority returns 'medium' safely. New
@@ -5143,6 +5325,15 @@
           <div class="hint-inline">Leave both blank to recur indefinitely. Filling either one overrides forever-recurring.</div>
         </div>
 
+        <!-- v114: Skip weekends + US federal holidays toggle -->
+        <div class="form-group" id="recSkipNonBusinessDaysGroup" style="display:none;">
+          <label style="display:flex; align-items:center; gap:8px; cursor:pointer; font-weight:600;">
+            <input type="checkbox" id="recSkipNonBusinessDays" checked style="width:auto; margin:0;">
+            <span>Skip weekends &amp; US federal holidays</span>
+          </label>
+          <div class="hint-inline">On by default. When an occurrence would land on a Saturday, Sunday, or holiday, it rolls forward to the next business day. Holidays are read from the <strong>Schedule Calendar</strong> (Settings → Schedule Calendar) — customize the list there and it applies here automatically. Uncheck if this task genuinely needs to run 7 days/week.</div>
+        </div>
+
         <!-- Live summary -->
         <div class="rec-preview" id="recPreview" style="display:none;">
           <span class="rec-preview-icon">🔁</span>
@@ -5178,9 +5369,11 @@
     <div class="modal-actions">
       <button class="btn" onclick="closeModal('taskModal')">Cancel</button>
       <button class="btn" id="deleteTaskBtn" style="color:var(--red);" onclick="deleteTask()">Delete</button>
+      <button class="btn" id="duplicateTaskBtn" style="color:var(--sbg-navy, #0a2540);border-color:var(--sbg-navy, #0a2540);font-weight:600;" onclick="duplicateTask()" title="Create a copy of this task in the same project. Keeps title/stage/source/hours/checklist/deliverables/best-practice; resets assignee, support, and due date.">📋 Duplicate</button>
+      <button class="btn" id="copyToProjectBtn" style="color:var(--sbg-navy, #0a2540);border-color:var(--sbg-navy, #0a2540);font-weight:600;" onclick="copyTaskToProject()" title="Copy this task to another project. Keeps work-defining fields; resets assignee, support, and due date (recalculated from the target project's bid dates).">📤 Copy to Project</button>
       <button class="btn" id="emailTaskBtn" style="color:#0078d4;border-color:#0078d4;font-weight:600;" onclick="openEmailTaskDialog()" title="Open a pre-filled draft email about this task in your default email client (Outlook)">✉ Email Task</button>
       <button class="btn" id="calendarTaskBtn" style="color:#107c41;border-color:#107c41;font-weight:600;" onclick="openCalendarInviteDialog()" title="Generate a calendar invite (.ics file) for this task — opens in Outlook">📅 Add to Calendar</button>
-      <button class="btn" id="saveToMasterBtn" style="color:#c07f00;border-color:#c07f00;font-weight:600;" onclick="saveTaskToMasterTemplate()" title="Add this task to the Master Task Template so it shows up in future projects">⭐ Save to Master Template</button>
+      <button class="btn" id="saveToMasterBtn" style="color:#c07f00;border-color:#c07f00;font-weight:600;" onclick="saveTaskToMasterTemplate()" title="Add this task to the Master Task Template so it shows up in future projects. Keeps title, stage, source, hours, critical flag, checklist, deliverables, best practice, and role requirements.">⭐ Save to Master Template</button>
       <button class="btn btn-primary" onclick="saveTask()">Save Task</button>
     </div>
   </div>
@@ -6940,6 +7133,21 @@
       </div>
       <div class="hint-inline" style="margin-top:6px;">
         Fraction of task hours support members carry in workload totals (lead assignees always carry the full task hours). Applies to any task that does not have a per-task override. A task with 8 estimated hours, 1 lead, and 1 support at 25% shows 8h for the lead and 2h for the support in workload rollups.
+      </div>
+    </div>
+
+    <!-- v105: Lead Manager Mode — makes the signed-in user see notifications
+         for the entire team, not just tasks addressed to them personally. -->
+    <div class="form-group">
+      <label>🔔 Notification Scope</label>
+      <div style="display:flex; align-items:center; gap:10px; margin-top:4px;">
+        <label style="display:flex; align-items:center; gap:8px; cursor:pointer; font-size:13px; font-weight:500; color:var(--text, #1a1a1a);">
+          <input type="checkbox" id="settingsManagerMode" onchange="toggleManagerMode()" style="width:auto; margin:0;">
+          <span>👁 Lead Manager Mode — see notifications for the entire team</span>
+        </label>
+      </div>
+      <div class="hint-inline" style="margin-top:6px;">
+        By default you only see toasts and bell entries for tasks you're associated with (as lead, assignee, support, or project lead). Enable Manager Mode to see every notification in the system regardless of who it's addressed to — useful for oversight. This is the same setting as the "Team-wide" toggle in the bell dropdown, just easier to find. When enabled, a small 👁 indicator appears on the bell.
       </div>
     </div>
 

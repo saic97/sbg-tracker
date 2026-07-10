@@ -137,6 +137,7 @@ var state = {
   laHideDone: true,                 // hide tasks marked Complete
   activeAlertTier: null,            // 'overdue' | 'imminent' | 'soon' | null
   pastPursuitsExpanded: false,      // whether "Past Pursuits" section is open
+  currentlyBiddingExpanded: false,  // v115: whether "Currently Bidding" section is open (default collapsed)
   archivedExpanded: false,          // whether "Archived" section is open
   // ===== STATUS SNAPSHOT VIEW =====
   // Cross-project rollup showing what's actively being worked on, what's
@@ -209,6 +210,10 @@ function loadState() {
     }
     // Workload page view-state. Persisted so the user's filter/sort returns next visit.
     if (typeof state.teamWorkloadView !== 'boolean') state.teamWorkloadView = false;
+    // v119: Training Log page — cross-project view of all tasks tagged as isTraining
+    if (typeof state.trainingLogView !== 'boolean') state.trainingLogView = false;
+    if (typeof state.trainingLogFilter !== 'string') state.trainingLogFilter = 'all'; // all | pending | completed
+    if (typeof state.trainingLogPersonFilter !== 'string') state.trainingLogPersonFilter = 'all';
     if (!['this-week','next-week','two-week','four-week','this-month','next-month','all-open'].includes(state.workloadDateScope)) {
       state.workloadDateScope = 'two-week';
     }
@@ -340,6 +345,24 @@ function loadState() {
     // v98: workspace grouping section collapsed state — user can collapse
     // the Group By tabs + stage pill row to make more room for the board/table.
     if (typeof state.workspaceGroupingCollapsed !== 'boolean') state.workspaceGroupingCollapsed = false;
+    // v100: recurring task series identity. Every task that's part of a
+    // recurring series carries the same seriesId so we can find its siblings.
+    // Existing tasks used task.recurrence.parentId — backfill from that.
+    // Tasks with a recurrence pattern but no parentId are treated as their
+    // own root (seriesId = task.id).
+    state.projects.forEach(p => {
+      (p.tasks || []).forEach(t => {
+        if (t.seriesId) return; // already migrated
+        if (t.recurrence && t.recurrence.pattern && t.recurrence.pattern !== 'none') {
+          if (t.recurrence.parentId) {
+            t.seriesId = t.recurrence.parentId;
+          } else {
+            // First-generation recurring task — becomes its own series root
+            t.seriesId = t.id;
+          }
+        }
+      });
+    });
     // Per-project message boards + task-level message threads — migrate
     state.projects.forEach(p => {
       if (!Array.isArray(p.messages)) p.messages = [];
@@ -3043,6 +3066,7 @@ function selectProject(id) {
   state.activeAssignee = 'all';
   state.homeView = false;
   state.teamWorkloadView = false;
+  state.trainingLogView = false;
   state.projectTimelineView = false;
   state.openSlotsView = false;
   state.tiView = false;
@@ -3057,6 +3081,7 @@ function openHomeView() {
   state.homeView = true;
   state.statusSnapshotView = false;
   state.teamWorkloadView = false;
+  state.trainingLogView = false;
   state.projectTimelineView = false;
   state.openSlotsView = false;
   state.tiView = false;
@@ -3072,6 +3097,7 @@ function openHomeView() {
 function exitHomeView() {
   state.homeView = false;
   state.teamWorkloadView = false;
+  state.trainingLogView = false;
   state.projectTimelineView = false;
   state.openSlotsView = false;
   state.tiView = false;
@@ -3094,6 +3120,7 @@ function openStatusSnapshot() {
   state.statusSnapshotView = true;
   state.homeView = false;
   state.teamWorkloadView = false;
+  state.trainingLogView = false;
   state.projectTimelineView = false;
   state.openSlotsView = false;
   state.tiView = false;
@@ -3109,6 +3136,7 @@ function openStatusSnapshot() {
 function exitStatusSnapshot() {
   state.statusSnapshotView = false;
   state.teamWorkloadView = false;
+  state.trainingLogView = false;
   state.projectTimelineView = false;
   state.openSlotsView = false;
   state.tiView = false;
@@ -3131,6 +3159,7 @@ function openTeamWorkloadView() {
   state.homeView = false;
   state.statusSnapshotView = false;
   state.projectTimelineView = false; // v75: ensure mutually exclusive
+  state.trainingLogView = false; // v119
   // Hide sticky countdown bar — workload is cross-project
   const bar = document.getElementById('stickyCountdownBar');
   const main = document.querySelector('.main');
@@ -3140,8 +3169,34 @@ function openTeamWorkloadView() {
   render();
 }
 
+// v119: Training Log page — cross-project view of all training-tagged tasks
+// with per-person hours breakdown (pending, completed, this month, YTD).
+function openTrainingLogView() {
+  state.trainingLogView = true;
+  state.homeView = false;
+  state.statusSnapshotView = false;
+  state.projectTimelineView = false;
+  state.teamWorkloadView = false;
+  state.trainingLogView = false;
+  state.openSlotsView = false;
+  state.tiView = false;
+  const bar = document.getElementById('stickyCountdownBar');
+  const main = document.querySelector('.main');
+  if (bar) bar.style.display = 'none';
+  if (main) main.classList.remove('has-sticky-countdown');
+  saveState();
+  render();
+}
+
+function exitTrainingLogView() {
+  state.trainingLogView = false;
+  saveState();
+  render();
+}
+
 function exitTeamWorkloadView() {
   state.teamWorkloadView = false;
+  state.trainingLogView = false;
   state.projectTimelineView = false;
   state.openSlotsView = false;
   state.tiView = false;
@@ -3164,6 +3219,7 @@ function refreshTeamWorkloadView() {
 function openProjectTimelineView() {
   state.projectTimelineView = true;
   state.teamWorkloadView = false;
+  state.trainingLogView = false;
   state.openSlotsView = false;
   state.tiView = false;
   state.statusSnapshotView = false;
@@ -3199,6 +3255,7 @@ function refreshProjectTimelineView() {
 function openOpenSlotsView() {
   state.openSlotsView = true;
   state.teamWorkloadView = false;
+  state.trainingLogView = false;
   state.projectTimelineView = false;
   state.tiView = false;
   state.statusSnapshotView = false;
@@ -3423,6 +3480,7 @@ function runFindAvailability() {
 function openTeamInsightsView() {
   state.tiView = true;
   state.teamWorkloadView = false;
+  state.trainingLogView = false;
   state.projectTimelineView = false;
   state.openSlotsView = false;
   state.statusSnapshotView = false;
@@ -4761,6 +4819,325 @@ function _aggregateTeamInsights() {
   return stats;
 }
 
+// ============================================================
+// TRAINING LOG (v119)
+// Cross-project view of every task tagged as task.isTraining.
+// Aggregates training hours per assignee: pending, completed
+// this month, completed year-to-date. No changes to underlying
+// task data — this is pure reporting.
+// ============================================================
+
+// Collect all training-tagged tasks across all projects (skip archived).
+// Returns an array of {task, project} refs so renderers have both handles.
+function _collectTrainingTasks() {
+  const out = [];
+  (state.projects || []).forEach(p => {
+    if (p.archived) return;
+    (p.tasks || []).forEach(t => {
+      if (t && t.isTraining) out.push({ task: t, project: p });
+    });
+  });
+  return out;
+}
+
+// Build per-person aggregation. Returns array of { name, pendingHours,
+// pendingCount, completedHoursMonth, completedCountMonth,
+// completedHoursYTD, completedCountYTD, completedHoursAll,
+// completedCountAll } sorted by pending hours descending, then name.
+function _buildTrainingPersonSummary(items) {
+  const now = new Date();
+  const monthStart = new Date(now.getFullYear(), now.getMonth(), 1).getTime();
+  const yearStart = new Date(now.getFullYear(), 0, 1).getTime();
+
+  const buckets = {};
+  const ensure = (name) => {
+    if (!buckets[name]) {
+      buckets[name] = {
+        name,
+        pendingHours: 0, pendingCount: 0,
+        completedHoursMonth: 0, completedCountMonth: 0,
+        completedHoursYTD: 0, completedCountYTD: 0,
+        completedHoursAll: 0, completedCountAll: 0
+      };
+    }
+    return buckets[name];
+  };
+
+  items.forEach(({ task }) => {
+    const hours = (typeof task.estimatedHours === 'number' && task.estimatedHours > 0) ? task.estimatedHours : 0;
+    // Attribute the full task to the primary assignee/lead. Support members
+    // get pro-rated attribution (v94 pattern) so their training hours
+    // reflect actual involvement.
+    const primary = (Array.isArray(task.leads) && task.leads.length > 0)
+      ? task.leads[0]
+      : (task.assignee || '');
+    const supportPct = (typeof task.supportHoursPct === 'number' && task.supportHoursPct >= 0 && task.supportHoursPct <= 100)
+      ? task.supportHoursPct
+      : (typeof state.supportHoursDefaultPct === 'number' ? state.supportHoursDefaultPct : 25);
+    const supportMembers = Array.isArray(task.supportMembers) ? task.supportMembers.filter(x => x && x.trim()) : [];
+    const primaryHours = supportMembers.length > 0 ? hours * (1 - supportPct / 100) : hours;
+    const eachSupportHours = supportMembers.length > 0 ? (hours * supportPct / 100) / supportMembers.length : 0;
+
+    const isDone = task.status === 'done';
+    const completedAt = task.completedAt || 0;
+    const inMonth = completedAt >= monthStart;
+    const inYear = completedAt >= yearStart;
+
+    const applyToBucket = (name, share) => {
+      if (!name) return;
+      const b = ensure(name);
+      if (isDone) {
+        b.completedHoursAll += share;
+        b.completedCountAll += 1;
+        if (inMonth) { b.completedHoursMonth += share; b.completedCountMonth += 1; }
+        if (inYear)  { b.completedHoursYTD += share;   b.completedCountYTD += 1;   }
+      } else {
+        b.pendingHours += share;
+        b.pendingCount += 1;
+      }
+    };
+
+    if (primary) applyToBucket(primary, primaryHours);
+    supportMembers.forEach(m => applyToBucket(m, eachSupportHours));
+  });
+
+  return Object.values(buckets).sort((a, b) => {
+    if (b.pendingHours !== a.pendingHours) return b.pendingHours - a.pendingHours;
+    return a.name.localeCompare(b.name);
+  });
+}
+
+// Format hours to a compact string — 1 decimal, drops the .0 for whole numbers
+function _fmtTrainingHours(n) {
+  if (!n) return '0h';
+  if (Math.abs(n - Math.round(n)) < 0.05) return `${Math.round(n)}h`;
+  return `${(Math.round(n * 10) / 10).toFixed(1)}h`;
+}
+
+function renderTrainingLogView() {
+  const items = _collectTrainingTasks();
+  const summary = _buildTrainingPersonSummary(items);
+
+  // ===== Header stats =====
+  const teamPending = items.filter(x => x.task.status !== 'done')
+    .reduce((s, x) => s + (x.task.estimatedHours || 0), 0);
+  const teamCompletedAll = items.filter(x => x.task.status === 'done')
+    .reduce((s, x) => s + (x.task.estimatedHours || 0), 0);
+  const now = new Date();
+  const monthStart = new Date(now.getFullYear(), now.getMonth(), 1).getTime();
+  const yearStart = new Date(now.getFullYear(), 0, 1).getTime();
+  const teamCompletedMonth = items.filter(x => x.task.status === 'done' && (x.task.completedAt || 0) >= monthStart)
+    .reduce((s, x) => s + (x.task.estimatedHours || 0), 0);
+  const teamCompletedYTD = items.filter(x => x.task.status === 'done' && (x.task.completedAt || 0) >= yearStart)
+    .reduce((s, x) => s + (x.task.estimatedHours || 0), 0);
+
+  const strip = document.getElementById('tlvStatStrip');
+  if (strip) {
+    strip.innerHTML = `
+      <div class="tlv-stat-tile tlv-stat-pending">
+        <div class="tlv-stat-num">${_fmtTrainingHours(teamPending)}</div>
+        <div class="tlv-stat-label">Pending</div>
+        <div class="tlv-stat-sub">${items.filter(x=>x.task.status!=='done').length} task${items.filter(x=>x.task.status!=='done').length===1?'':'s'} across team</div>
+      </div>
+      <div class="tlv-stat-tile tlv-stat-month">
+        <div class="tlv-stat-num">${_fmtTrainingHours(teamCompletedMonth)}</div>
+        <div class="tlv-stat-label">This Month</div>
+        <div class="tlv-stat-sub">Completed in ${now.toLocaleString('en-US', { month: 'long' })}</div>
+      </div>
+      <div class="tlv-stat-tile tlv-stat-ytd">
+        <div class="tlv-stat-num">${_fmtTrainingHours(teamCompletedYTD)}</div>
+        <div class="tlv-stat-label">Year to Date</div>
+        <div class="tlv-stat-sub">Completed in ${now.getFullYear()}</div>
+      </div>
+      <div class="tlv-stat-tile tlv-stat-all">
+        <div class="tlv-stat-num">${_fmtTrainingHours(teamCompletedAll)}</div>
+        <div class="tlv-stat-label">All Time</div>
+        <div class="tlv-stat-sub">Completed since tracking began</div>
+      </div>
+    `;
+  }
+
+  // ===== Per-person grid =====
+  const grid = document.getElementById('tlvPersonGrid');
+  const personCountEl = document.getElementById('tlvPersonCount');
+  if (personCountEl) {
+    personCountEl.textContent = summary.length === 0
+      ? 'No training tasks assigned yet'
+      : `${summary.length} person${summary.length === 1 ? '' : 's'} with training work`;
+  }
+  if (grid) {
+    if (summary.length === 0) {
+      grid.innerHTML = `
+        <div class="tlv-empty">
+          <div class="tlv-empty-icon">🎓</div>
+          <div class="tlv-empty-title">No training tasks yet</div>
+          <div class="tlv-empty-sub">Open any task and click <strong>🎓 Count Toward Training</strong> to start tracking. Regular day-to-day work counts too — this is for anything you consider development for your team.</div>
+        </div>
+      `;
+    } else {
+      grid.innerHTML = summary.map(person => {
+        const avatarPhoto = (typeof getMemberPhoto === 'function') ? getMemberPhoto(person.name) : null;
+        const initials = person.name.split(/\s+/).map(x => x[0]).join('').slice(0, 2).toUpperCase();
+        const avatarBg = (typeof avatarColor === 'function') ? avatarColor(person.name) : '#8899aa';
+        const avatarHtml = avatarPhoto
+          ? `<span class="tlv-person-avatar has-photo"><img src="${avatarPhoto}" alt=""></span>`
+          : `<span class="tlv-person-avatar" style="background:${avatarBg};">${escapeHtml(initials)}</span>`;
+        return `
+          <div class="tlv-person-card">
+            <div class="tlv-person-head">
+              ${avatarHtml}
+              <div class="tlv-person-name">${escapeHtml(person.name)}</div>
+            </div>
+            <div class="tlv-person-metrics">
+              <div class="tlv-person-metric tlv-person-metric-pending">
+                <div class="tlv-metric-num">${_fmtTrainingHours(person.pendingHours)}</div>
+                <div class="tlv-metric-label">Pending</div>
+                <div class="tlv-metric-sub">${person.pendingCount} task${person.pendingCount === 1 ? '' : 's'}</div>
+              </div>
+              <div class="tlv-person-metric tlv-person-metric-month">
+                <div class="tlv-metric-num">${_fmtTrainingHours(person.completedHoursMonth)}</div>
+                <div class="tlv-metric-label">This Month</div>
+                <div class="tlv-metric-sub">${person.completedCountMonth} done</div>
+              </div>
+              <div class="tlv-person-metric tlv-person-metric-ytd">
+                <div class="tlv-metric-num">${_fmtTrainingHours(person.completedHoursYTD)}</div>
+                <div class="tlv-metric-label">YTD</div>
+                <div class="tlv-metric-sub">${person.completedCountYTD} done</div>
+              </div>
+              <div class="tlv-person-metric tlv-person-metric-all">
+                <div class="tlv-metric-num">${_fmtTrainingHours(person.completedHoursAll)}</div>
+                <div class="tlv-metric-label">All Time</div>
+                <div class="tlv-metric-sub">${person.completedCountAll} done</div>
+              </div>
+            </div>
+          </div>
+        `;
+      }).join('');
+    }
+  }
+
+  // ===== Person filter dropdown =====
+  const personSelect = document.getElementById('tlvPersonFilter');
+  if (personSelect) {
+    const currentVal = state.trainingLogPersonFilter || 'all';
+    const names = summary.map(s => s.name);
+    personSelect.innerHTML = `
+      <option value="all">All People</option>
+      ${names.map(n => `<option value="${escapeAttr(n)}" ${currentVal === n ? 'selected' : ''}>${escapeHtml(n)}</option>`).join('')}
+    `;
+    // Sync the status dropdown too
+    const statusSelect = document.getElementById('tlvStatusFilter');
+    if (statusSelect) statusSelect.value = state.trainingLogFilter || 'all';
+  }
+
+  // ===== Task list =====
+  const list = document.getElementById('tlvTaskList');
+  if (list) {
+    const statusFilter = state.trainingLogFilter || 'all';
+    const personFilter = state.trainingLogPersonFilter || 'all';
+    const filtered = items.filter(({ task }) => {
+      if (statusFilter === 'pending' && task.status === 'done') return false;
+      if (statusFilter === 'completed' && task.status !== 'done') return false;
+      if (personFilter !== 'all') {
+        const primary = (Array.isArray(task.leads) && task.leads.length > 0) ? task.leads[0] : (task.assignee || '');
+        const supportMembers = Array.isArray(task.supportMembers) ? task.supportMembers : [];
+        if (primary !== personFilter && !supportMembers.includes(personFilter)) return false;
+      }
+      return true;
+    });
+    // Sort: pending first, then by due date; completed by completedAt desc
+    filtered.sort((a, b) => {
+      const aDone = a.task.status === 'done', bDone = b.task.status === 'done';
+      if (aDone !== bDone) return aDone ? 1 : -1;
+      if (aDone) return (b.task.completedAt || 0) - (a.task.completedAt || 0);
+      const ad = a.task.dueDate || '9999';
+      const bd = b.task.dueDate || '9999';
+      return ad.localeCompare(bd);
+    });
+
+    if (filtered.length === 0) {
+      list.innerHTML = '<div class="tlv-empty-small">No training tasks match the current filters.</div>';
+    } else {
+      list.innerHTML = filtered.map(({ task, project }) => {
+        const stage = STAGES.find(s => s.id === task.stage);
+        const stageChip = stage ? `<span class="tlv-tl-stage">${stage.icon} ${escapeHtml(stage.name)}</span>` : '';
+        const primary = (Array.isArray(task.leads) && task.leads.length > 0) ? task.leads[0] : (task.assignee || '');
+        const supportMembers = Array.isArray(task.supportMembers) ? task.supportMembers.filter(x => x && x.trim()) : [];
+        const supportLabel = supportMembers.length > 0 ? ` + ${supportMembers.length} support` : '';
+        const hoursLabel = (typeof task.estimatedHours === 'number' && task.estimatedHours > 0)
+          ? _fmtTrainingHours(task.estimatedHours)
+          : '—';
+        const dueLabel = task.dueDate ? formatDate(task.dueDate) : '—';
+        const statusClass = task.status === 'done' ? 'tlv-tl-done' : 'tlv-tl-pending';
+        const statusIcon = task.status === 'done' ? '✓' : '○';
+        const statusText = task.status === 'done'
+          ? (task.completedAt ? `Done ${formatDate(new Date(task.completedAt).toISOString().slice(0, 10))}` : 'Done')
+          : (task.status || 'not-started').replace(/-/g, ' ');
+        return `
+          <div class="tlv-tl-row ${statusClass}" onclick="_openTaskFromTrainingLog('${escapeAttr(project.id)}', '${escapeAttr(task.id)}')">
+            <div class="tlv-tl-status" title="${escapeAttr(statusText)}">${statusIcon}</div>
+            <div class="tlv-tl-title">${escapeHtml(task.title || '(untitled)')}</div>
+            <div class="tlv-tl-project">${escapeHtml(project.name || '')}</div>
+            ${stageChip}
+            <div class="tlv-tl-person">${escapeHtml(primary || 'Unassigned')}${supportLabel}</div>
+            <div class="tlv-tl-hours">${hoursLabel}</div>
+            <div class="tlv-tl-due">${dueLabel}</div>
+          </div>
+        `;
+      }).join('');
+    }
+  }
+}
+
+// Open a task from the training log — jumps to the project + opens the modal.
+function _openTaskFromTrainingLog(projectId, taskId) {
+  if (!projectId || !taskId) return;
+  const prev = state.activeProjectId;
+  state.activeProjectId = projectId;
+  if (typeof openTaskModal === 'function') {
+    openTaskModal(null, taskId);
+  }
+  // Note: we don't exit training log view — user can hit Close afterward
+  // to return to their filter+scroll position on next reopen. Restoring
+  // activeProjectId on modal-close would fight the switch-to-project flow
+  // in copyTaskToProject; leaving it alone is fine because the training log
+  // view doesn't read activeProjectId.
+}
+
+// Copy a text summary of team training hours to the clipboard.
+function copyTrainingLogSummary() {
+  const items = _collectTrainingTasks();
+  const summary = _buildTrainingPersonSummary(items);
+  if (summary.length === 0) {
+    alert('No training tasks have been tagged yet.');
+    return;
+  }
+  const now = new Date();
+  const monthName = now.toLocaleString('en-US', { month: 'long', year: 'numeric' });
+  const lines = [
+    'SBG Training Log — Team Summary',
+    `Generated: ${now.toLocaleString()}`,
+    ''
+  ];
+  summary.forEach(p => {
+    lines.push(`${p.name}`);
+    lines.push(`  Pending:     ${_fmtTrainingHours(p.pendingHours)} (${p.pendingCount} task${p.pendingCount === 1 ? '' : 's'})`);
+    lines.push(`  ${monthName}: ${_fmtTrainingHours(p.completedHoursMonth)} (${p.completedCountMonth} done)`);
+    lines.push(`  YTD ${now.getFullYear()}:    ${_fmtTrainingHours(p.completedHoursYTD)} (${p.completedCountYTD} done)`);
+    lines.push(`  All time:    ${_fmtTrainingHours(p.completedHoursAll)} (${p.completedCountAll} done)`);
+    lines.push('');
+  });
+  const text = lines.join('\n');
+  if (navigator.clipboard && navigator.clipboard.writeText) {
+    navigator.clipboard.writeText(text).then(() => {
+      if (typeof showToast === 'function') showToast('Training summary copied to clipboard', 'success');
+      else alert('Copied.');
+    }).catch(() => alert(text));
+  } else {
+    alert(text);
+  }
+}
+
 // Render the entire workload page.
 function renderTeamWorkloadView() {
   // Sync controls to state
@@ -5966,11 +6343,13 @@ function _renderUnassignedPile() {
 function navigateToProjectFromWorkload(projectId) {
   state.activeProjectId = projectId;
   state.teamWorkloadView = false;
+  state.trainingLogView = false;
   state.projectTimelineView = false;
   state.openSlotsView = false;
   state.tiView = false;
   state.homeView = false;
   state.teamWorkloadView = false;
+  state.trainingLogView = false;
   state.projectTimelineView = false;
   state.openSlotsView = false;
   state.tiView = false;
@@ -5981,11 +6360,13 @@ function navigateToProjectFromWorkload(projectId) {
 function openTaskFromWorkload(projectId, taskId) {
   state.activeProjectId = projectId;
   state.teamWorkloadView = false;
+  state.trainingLogView = false;
   state.projectTimelineView = false;
   state.openSlotsView = false;
   state.tiView = false;
   state.homeView = false;
   state.teamWorkloadView = false;
+  state.trainingLogView = false;
   state.projectTimelineView = false;
   state.openSlotsView = false;
   state.tiView = false;
@@ -6885,6 +7266,24 @@ function getMyUnackedTasksAcrossProjects(user) {
   return out;
 }
 
+// v113: Series-deduped count of unack'd tasks for a user. Each recurring
+// series counts as ONE item regardless of how many pre-generated instances
+// exist. Used by sidebar badge + section header count so users see a
+// realistic "things to do" number, not a flooded 60+.
+function getMyUnackedGroupCount(user) {
+  const raw = getMyUnackedTasksAcrossProjects(user);
+  const seenSeries = new Set();
+  let count = 0;
+  raw.forEach(({ task }) => {
+    if (task.seriesId) {
+      if (seenSeries.has(task.seriesId)) return;
+      seenSeries.add(task.seriesId);
+    }
+    count++;
+  });
+  return count;
+}
+
 function getMyUnreadMessagesAcrossProjects(user) {
   if (!user) return [];
   const out = [];
@@ -6945,7 +7344,7 @@ function getHomeBadgeCount() {
     count += getUnreadMessagesForUser(p, user).length;
     count += getUnseenReceiptsForSender(p, user).length;
   });
-  count += getMyUnackedTasksAcrossProjects(user).length;
+  count += getMyUnackedGroupCount(user);
   count += getMyPendingSignoffsAcrossProjects(user).length;
   count += getMyPendingRejectionsAcrossProjects(user).length;
   // Overdue tasks assigned to me
@@ -7220,7 +7619,7 @@ function renderHomeStats(user) {
     const myOverdue = buckets.overdue.length;
     const myToday = buckets.today.length;
     const myUnread = getMyUnreadMessagesAcrossProjects(user).length;
-    const myUnack = getMyUnackedTasksAcrossProjects(user).length;
+    const myUnack = getMyUnackedGroupCount(user);
     if (myOverdue > 0) stats.push(`<div class="home-stat is-critical"><span class="hs-label">My Overdue</span><span class="hs-value">${myOverdue}</span></div>`);
     if (myToday > 0) stats.push(`<div class="home-stat is-warning"><span class="hs-label">My Today</span><span class="hs-value">${myToday}</span></div>`);
     if (myUnack > 0) stats.push(`<div class="home-stat is-critical"><span class="hs-label">Unacknowledged</span><span class="hs-value">${myUnack}</span></div>`);
@@ -7348,27 +7747,70 @@ function renderHomeUnack(user) {
   const subEl = document.getElementById('homeUnackSub');
   if (!el) return;
   const items = getMyUnackedTasksAcrossProjects(user);
-  if (subEl) subEl.textContent = items.length === 0 ? 'All acknowledged' : `${items.length} task${items.length === 1 ? '' : 's'}`;
 
-  if (items.length === 0) {
+  // v113: Collapse series into a single row per seriesId. When a user
+  // creates a weekly recurring task, 8+ pre-generated instances all show
+  // as separate ack items — floods the list even though acking one acks
+  // all (v112 propagation). Group first, then render one row per series
+  // with a badge showing how many occurrences the ack will cover.
+  const grouped = [];       // ordered list of { kind, project, task, seriesCount? }
+  const seenSeries = new Set();
+  items.forEach(({ project, task }) => {
+    if (task.seriesId) {
+      if (seenSeries.has(task.seriesId)) return; // already represented
+      seenSeries.add(task.seriesId);
+      const seriesMembers = items.filter(it =>
+        it.project.id === project.id && it.task.seriesId === task.seriesId
+      );
+      // Pick the earliest-dated instance as the visible row so the series
+      // shows the soonest due date (most actionable).
+      const earliest = seriesMembers
+        .slice()
+        .sort((a, b) => (a.task.dueDate || '9999').localeCompare(b.task.dueDate || '9999'))[0];
+      grouped.push({
+        kind: 'series',
+        project: earliest.project,
+        task: earliest.task,
+        seriesCount: seriesMembers.length
+      });
+    } else {
+      grouped.push({ kind: 'single', project, task });
+    }
+  });
+
+  const groupedCount = grouped.length;
+  const rawCount = items.length;
+  const countLabel = groupedCount === rawCount
+    ? `${groupedCount} task${groupedCount === 1 ? '' : 's'}`
+    : `${groupedCount} item${groupedCount === 1 ? '' : 's'} (covers ${rawCount} instance${rawCount === 1 ? '' : 's'})`;
+  if (subEl) subEl.textContent = groupedCount === 0 ? 'All acknowledged' : countLabel;
+
+  if (groupedCount === 0) {
     el.innerHTML = '<div class="home-empty">✓ No new tasks awaiting acknowledgment.</div>';
     return;
   }
 
-  const btnAll = items.length > 1
-    ? `<div style="margin-bottom:8px;"><button class="btn btn-primary btn-sm" onclick="acknowledgeAllMyTasksFromHome()">✓ Acknowledge All (${items.length})</button></div>`
+  const btnAll = groupedCount > 1
+    ? `<div style="margin-bottom:8px;"><button class="btn btn-primary btn-sm" onclick="acknowledgeAllMyTasksFromHome()">✓ Acknowledge All (${groupedCount})</button></div>`
     : '';
 
-  el.innerHTML = btnAll + items.map(({ project, task }) => {
+  el.innerHTML = btnAll + grouped.map(entry => {
+    const { project, task, kind, seriesCount } = entry;
     const stage = STAGES.find(s => s.id === task.stage) || STAGES[0];
+    const seriesBadge = (kind === 'series' && seriesCount > 1)
+      ? `<span class="hi-series-badge" title="This is a recurring series — one acknowledgement covers all ${seriesCount} occurrences">🔁 ${seriesCount} occurrences</span>`
+      : '';
+    const cadence = (kind === 'series' && task.recurrence && typeof _formatRecurrenceCadence === 'function')
+      ? ` · ${escapeHtml(_formatRecurrenceCadence(task.recurrence))}`
+      : '';
     return `
       <div class="home-item hi-critical" onclick="jumpToTaskFromHome('${project.id}', '${task.id}')">
         <span class="hi-project-chip" title="${escapeHtml(project.name)}">${escapeHtml(project.name)}</span>
         <div class="hi-body">
-          <div class="hi-title">${escapeHtml(task.title)}</div>
-          <div class="hi-meta">${stage.icon} ${escapeHtml(stage.name)}${task.dueDate ? ' · Due ' + formatDateShort(task.dueDate) : ''}</div>
+          <div class="hi-title">${escapeHtml(task.title)} ${seriesBadge}</div>
+          <div class="hi-meta">${stage.icon} ${escapeHtml(stage.name)}${task.dueDate ? ' · Next due ' + formatDateShort(task.dueDate) : ''}${cadence}</div>
         </div>
-        <button class="btn btn-primary btn-sm" onclick="event.stopPropagation(); acknowledgeTaskFromHome('${project.id}', '${task.id}');">✓ Acknowledge</button>
+        <button class="btn btn-primary btn-sm" onclick="event.stopPropagation(); acknowledgeTaskFromHome('${project.id}', '${task.id}');">✓ Acknowledge${kind === 'series' && seriesCount > 1 ? ' Series' : ''}</button>
       </div>
     `;
   }).join('');
@@ -7464,6 +7906,7 @@ function renderHomeRejections(user) {
 function jumpToProjectFromHome(projectId) {
   state.homeView = false;
   state.teamWorkloadView = false;
+  state.trainingLogView = false;
   state.projectTimelineView = false;
   state.openSlotsView = false;
   state.tiView = false;
@@ -7477,6 +7920,7 @@ function jumpToProjectFromHome(projectId) {
 function jumpToTaskFromHome(projectId, taskId) {
   state.homeView = false;
   state.teamWorkloadView = false;
+  state.trainingLogView = false;
   state.projectTimelineView = false;
   state.openSlotsView = false;
   state.tiView = false;
@@ -7492,6 +7936,7 @@ function jumpToTaskFromHome(projectId, taskId) {
 function jumpToMessageFromHome(projectId) {
   state.homeView = false;
   state.teamWorkloadView = false;
+  state.trainingLogView = false;
   state.projectTimelineView = false;
   state.openSlotsView = false;
   state.tiView = false;
@@ -7513,6 +7958,13 @@ function acknowledgeTaskFromHome(projectId, taskId) {
   t.acknowledgedBy = t.assignee || user;
   t.acknowledgedAt = Date.now();
   logTaskAcknowledged(p, t, t.acknowledgedBy);
+  // v115.1: Fix — the home-page ack path was bypassing v112's series-level
+  // propagation, so clicking ✓ Acknowledge Series only cleared the single
+  // representative row. Now propagates ack to every sibling in the series
+  // the same way acknowledgeTask() does, so one click clears all N.
+  if (t.seriesId && typeof _propagateAckToSiblings === 'function') {
+    _propagateAckToSiblings(p, t);
+  }
   saveState();
   renderHomeView();
   renderHomeSidebarBtn();
@@ -7523,7 +7975,16 @@ function acknowledgeAllMyTasksFromHome() {
   if (!user) return;
   const items = getMyUnackedTasksAcrossProjects(user);
   if (items.length === 0) return;
-  if (!confirm(`Acknowledge all ${items.length} new task${items.length === 1 ? '' : 's'} across all projects?`)) return;
+  // v115.1: show the grouped count in the confirm dialog to match the button
+  // label ("Acknowledge All (N)") — was showing raw instance count which
+  // could read as "Acknowledge all 31 tasks?" when the button said "4".
+  const groupedCount = (typeof getMyUnackedGroupCount === 'function')
+    ? getMyUnackedGroupCount(user)
+    : items.length;
+  const promptLabel = groupedCount === items.length
+    ? `Acknowledge all ${items.length} new task${items.length === 1 ? '' : 's'} across all projects?`
+    : `Acknowledge all ${groupedCount} item${groupedCount === 1 ? '' : 's'} (covering ${items.length} instance${items.length === 1 ? '' : 's'}) across all projects?`;
+  if (!confirm(promptLabel)) return;
   const now = Date.now();
   items.forEach(({ task }) => {
     task.acknowledged = true;
@@ -8418,6 +8879,67 @@ function buildRescheduledPastDueBadgeHtml(task, options) {
 
 // v89: Populate the reschedule banner inside the task edit modal.
 // Pass the task object, or null to hide the banner.
+// v100: Render the recurring-series info banner in the task modal.
+// Shows current position, total instances, cadence, and lets user know
+// they'll be prompted about scope when they save.
+function _renderTaskModalSeriesBanner(task) {
+  const el = document.getElementById('taskModalSeriesBanner');
+  if (!el) return;
+  const project = state.projects.find(p => p.id === state.activeProjectId);
+  if (!task || !task.seriesId || !project) {
+    el.style.display = 'none';
+    el.innerHTML = '';
+    return;
+  }
+  const members = getSeriesMembers(project, task);
+  if (members.length <= 1) {
+    // Task claims to be in a series but has no siblings — show a subtler banner
+    // so user knows the future instances will be created after this one is set.
+    el.style.display = 'block';
+    el.style.cssText = 'display:block; margin:6px 0 10px 0; padding:10px 14px; background:rgba(10,37,64,0.05); border:1px solid rgba(10,37,64,0.2); border-radius:6px; color:var(--sbg-navy, #0a2540); font-size:12px; line-height:1.5;';
+    const cadence = _formatRecurrenceCadence(task.recurrence);
+    el.innerHTML = `🔁 <strong>Recurring task (${escapeHtml(cadence)})</strong> — future instances will be pre-generated after you save.`;
+    return;
+  }
+  const idx = members.findIndex(m => m.id === task.id);
+  const total = members.length;
+  const position = idx >= 0 ? (idx + 1) : '?';
+  const cadence = _formatRecurrenceCadence(task.recurrence);
+  const nextInstance = members[idx + 1];
+  const prevInstance = idx > 0 ? members[idx - 1] : null;
+  const nextPhrase = nextInstance && nextInstance.dueDate
+    ? ` &middot; Next: <strong>${formatDate(nextInstance.dueDate)}</strong>`
+    : '';
+  const prevPhrase = prevInstance && prevInstance.dueDate
+    ? ` &middot; Previous: <strong>${formatDate(prevInstance.dueDate)}</strong>`
+    : '';
+  el.style.display = 'block';
+  el.style.cssText = 'display:block; margin:6px 0 10px 0; padding:10px 14px; background:rgba(10,37,64,0.06); border:1px solid rgba(10,37,64,0.25); border-radius:6px; color:var(--sbg-navy, #0a2540); font-size:12px; line-height:1.5;';
+  el.innerHTML = `
+    🔁 <strong>Occurrence ${position} of ${total}</strong> in a ${escapeHtml(cadence)} series${prevPhrase}${nextPhrase}
+    <div style="margin-top:5px; font-size:11px; color:var(--text-dim, #6b7687); font-style:italic;">
+      When you save, you'll be asked whether to apply changes to this occurrence only, this + all future, or the entire series.
+      <br>Acknowledging this instance also acknowledges all sibling occurrences in the series.
+    </div>
+  `;
+}
+
+// v100: Return a friendly cadence label for a recurrence rule
+// ("weekly", "every 2 weeks", "daily", "monthly on the 15th", etc.).
+function _formatRecurrenceCadence(rec) {
+  if (!rec || !rec.pattern || rec.pattern === 'none') return 'recurring';
+  const interval = parseInt(rec.interval, 10) || 1;
+  switch (rec.pattern) {
+    case 'daily':   return interval === 1 ? 'daily' : `every ${interval} days`;
+    case 'weekly':  return interval === 1 ? 'weekly' : `every ${interval} weeks`;
+    case 'biweekly':return 'every 2 weeks';
+    case 'monthly': return interval === 1 ? 'monthly' : `every ${interval} months`;
+    case 'quarterly': return 'quarterly';
+    case 'yearly':  return interval === 1 ? 'yearly' : `every ${interval} years`;
+    default:        return rec.pattern;
+  }
+}
+
 function _renderTaskModalRescheduledBanner(task) {
   const el = document.getElementById('taskModalRescheduledBanner');
   if (!el) return;
@@ -8451,8 +8973,33 @@ function _renderTaskModalRescheduledBanner(task) {
 // Computes the next due date for a recurring task based on its pattern.
 // Returns null if recurrence has ended (past endDate or hit count limit).
 // Args:
-//   task: the source task with .recurrence and .dueDate (or anchor date)
-//   anchorDate: optional override — defaults to task.dueDate
+// v114/v115: Business-day check for recurrence pre-generation. Uses the
+// existing Schedule Calendar helpers (isWeekend + isHoliday backed by
+// state.holidays) so users get ONE holiday list to manage across the
+// app — the Schedule Calendar under Settings. Editing the Schedule
+// Calendar list automatically affects recurrence skips. Per-task opt-out
+// via task.recurrence.skipNonBusinessDays === false.
+function _isBusinessDay(dateStr) {
+  if (!dateStr) return true;
+  if (typeof isWeekend === 'function' && isWeekend(dateStr)) return false;
+  if (typeof isHoliday === 'function' && isHoliday(dateStr)) return false;
+  return true;
+}
+
+function _advanceToBusinessDay(dateStr) {
+  if (!dateStr) return dateStr;
+  let d = new Date(dateStr + 'T00:00:00');
+  for (let i = 0; i < 14; i++) {
+    const y = d.getFullYear();
+    const m = String(d.getMonth() + 1).padStart(2, '0');
+    const day = String(d.getDate()).padStart(2, '0');
+    const ymd = `${y}-${m}-${day}`;
+    if (_isBusinessDay(ymd)) return ymd;
+    d.setDate(d.getDate() + 1);
+  }
+  return dateStr;
+}
+
 function computeNextRecurrenceDate(task, anchorDate) {
   const rec = task.recurrence;
   if (!rec || !rec.pattern || rec.pattern === 'none') return null;
@@ -8525,7 +9072,20 @@ function computeNextRecurrenceDate(task, anchorDate) {
   const yyyy = next.getFullYear();
   const mm = String(next.getMonth() + 1).padStart(2, '0');
   const dd = String(next.getDate()).padStart(2, '0');
-  return `${yyyy}-${mm}-${dd}`;
+  let result = `${yyyy}-${mm}-${dd}`;
+  // v114: Skip weekends + US federal holidays unless the task explicitly
+  // opts out (rec.skipNonBusinessDays === false). Default is on so daily
+  // tasks don't spawn Saturday/Sunday and weekly tasks on July 4 roll
+  // forward to July 5+. Respect the endDate cap after the shift.
+  if (rec.skipNonBusinessDays !== false && !_isBusinessDay(result)) {
+    result = _advanceToBusinessDay(result);
+    if (rec.endDate) {
+      const end = new Date(rec.endDate + 'T23:59:59');
+      const rolled = new Date(result + 'T00:00:00');
+      if (rolled > end) return null;
+    }
+  }
+  return result;
 }
 
 // Returns a human-readable description of a recurrence pattern
@@ -8572,6 +9132,200 @@ function describeRecurrence(rec) {
 // Generates the next instance of a recurring task and adds it to the project.
 // Called when a recurring task is marked Done. Returns the new task or null
 // if recurrence has ended.
+// =============================================================
+// v100: Recurring series — pre-generation of future instances.
+// Previously, a recurring task only spawned its "next" instance when the
+// current one was marked complete. That kept the tracker clean but hid
+// upcoming instances from the workload aggregator, calendar, and any
+// forward-looking view. v100 pre-generates a rolling 60-day window of
+// future instances so:
+//   1. Workload chart shows real forward hours for recurring work
+//   2. Calendar / board / table all naturally include the next occurrences
+//   3. Users can edit any instance directly and choose to apply the change
+//      to just this, this + future, or the entire series (Outlook-style)
+// The horizon is intentionally short (60 days) to keep the task list
+// manageable — a rolling refresh on state load tops it back up.
+// =============================================================
+function ensureSeriesInstancesGenerated(project, sourceTask, options) {
+  if (!project || !sourceTask) return { added: 0 };
+  if (!isRecurringTask(sourceTask)) return { added: 0 };
+  const horizonDays = (options && options.horizonDays) || 60;
+  const seriesId = sourceTask.seriesId || sourceTask.id;
+  // Backfill seriesId on the source itself if missing
+  if (!sourceTask.seriesId) sourceTask.seriesId = seriesId;
+
+  // Find all existing members of this series in the project
+  const members = (project.tasks || []).filter(t => t.seriesId === seriesId);
+  if (members.length === 0) return { added: 0 };
+
+  // Anchor from the latest-dated instance so we continue the chain
+  const latestDated = members
+    .filter(t => t.dueDate)
+    .sort((a, b) => b.dueDate.localeCompare(a.dueDate))[0];
+  if (!latestDated) return { added: 0 };
+
+  const horizon = new Date();
+  horizon.setDate(horizon.getDate() + horizonDays);
+  const horizonStr = formatDateForInput(horizon);
+
+  if (latestDated.dueDate >= horizonStr) return { added: 0 };
+
+  // Template for cloning: use the latest-dated instance (most likely to
+  // reflect the "current" state of the series). If user just edited an
+  // earlier instance and picked "this + future", the caller passes that
+  // as sourceTask and we should use IT as the template so field changes
+  // propagate forward.
+  const template = (sourceTask.dueDate && sourceTask.dueDate >= latestDated.dueDate)
+    ? sourceTask : latestDated;
+
+  let anchorDate = latestDated.dueDate;
+  let currentInstance = (latestDated.recurrence && latestDated.recurrence.instanceNumber) || members.length;
+  let added = 0;
+  const seenDueDates = new Set(members.filter(m => m.dueDate).map(m => m.dueDate));
+  const maxIterations = 200;
+
+  for (let i = 0; i < maxIterations; i++) {
+    const nextDate = computeNextRecurrenceDate(template, anchorDate);
+    if (!nextDate) break;
+    if (nextDate > horizonStr) break;
+
+    // Respect count limit if set on the series
+    const countLimit = template.recurrence && template.recurrence.count;
+    if (countLimit && currentInstance + 1 > countLimit) break;
+
+    // Dedup: never create two instances on the same due date within one series
+    if (seenDueDates.has(nextDate)) {
+      anchorDate = nextDate;
+      continue;
+    }
+
+    const newTask = _createRecurrenceInstanceFromTemplate(template, nextDate, seriesId, currentInstance + 1);
+    project.tasks.push(newTask);
+    seenDueDates.add(nextDate);
+    added++;
+    anchorDate = nextDate;
+    currentInstance++;
+  }
+
+  // v112: If any existing sibling in the series is already acknowledged,
+  // inherit that ack state onto the newly pre-generated instances so users
+  // don't get re-flooded with "acknowledge me" items every time the rolling
+  // window extends. Uses whichever member has the earliest ack timestamp
+  // as the source (the "first person to ack" wins for the whole series).
+  if (added > 0) {
+    const allMembers = (project.tasks || []).filter(t => t.seriesId === seriesId);
+    const ackedSource = allMembers
+      .filter(t => t.acknowledged && t.acknowledgedAt)
+      .sort((a, b) => (a.acknowledgedAt || 0) - (b.acknowledgedAt || 0))[0];
+    if (ackedSource) {
+      _propagateAckToSiblings(project, ackedSource);
+    } else {
+      // Even without a fully-acked source, one member's leadAck entries may
+      // exist independently (partial multi-lead ack). Sweep any member with
+      // populated leadAck as a source so entries propagate to new siblings.
+      const leadAckSource = allMembers.find(t => t.leadAck && Object.keys(t.leadAck).length > 0);
+      if (leadAckSource) _propagateAckToSiblings(project, leadAckSource);
+    }
+  }
+
+  return { added, seriesId, horizonStr };
+}
+
+// v100: Create a single new recurring instance from a template. Shared
+// helper used by both the pre-generation loop and the legacy on-complete
+// generation so field-reset logic stays consistent in one place.
+function _createRecurrenceInstanceFromTemplate(template, dueDate, seriesId, instanceNumber) {
+  const newTask = _deepCopyForRecurrence(template);
+  newTask.id = uid();
+  newTask.seriesId = seriesId;
+  newTask.status = 'not-started';
+  newTask.dueDate = dueDate;
+  newTask.dayOffset = null;
+  newTask.dateAnchor = null;
+  newTask.acknowledged = !template.assignee && !(Array.isArray(template.leads) && template.leads.length > 0);
+  newTask.acknowledgedBy = '';
+  newTask.acknowledgedAt = null;
+  newTask.acknowledgedOverrideBy = '';
+  newTask.acknowledgedOverrideAt = null;
+  newTask.completionAcknowledged = true;
+  newTask.completionAcknowledgedBy = '';
+  newTask.completionAcknowledgedAt = null;
+  newTask.completionRejected = false;
+  newTask.completionRejectedBy = '';
+  newTask.completionRejectedAt = null;
+  newTask.completionRejectionReason = '';
+  newTask.completionRejectionNotes = '';
+  newTask.completionRejectionAcknowledged = false;
+  newTask.messages = [];
+  if (Array.isArray(newTask.checklist)) {
+    newTask.checklist = newTask.checklist.map(item => ({
+      ...item, done: false, doneBy: '', doneAt: null
+    }));
+  }
+  if (Array.isArray(newTask.deliverables)) {
+    newTask.deliverables = newTask.deliverables.map(item => ({
+      ...item, done: false, doneBy: '', doneAt: null
+    }));
+  }
+  if (Array.isArray(newTask.tipAcknowledgments)) newTask.tipAcknowledgments = [];
+  newTask.completedAt = null;
+  newTask.completedBy = '';
+  // v103: reset per-lead ack/completion state. leadAck (object keyed by
+  // lead name) tracks each co-lead's acknowledgment; leadCompletion (same
+  // shape) tracks each co-lead marking their portion done. Without these
+  // resets the pre-generated instance was appearing as already-completed
+  // by whichever lead completed the last real instance.
+  newTask.leadAck = {};
+  newTask.leadCompletion = {};
+  // v103: reset best-practice acknowledgment tracking so each new instance
+  // requires re-acknowledgment (the tip is often the point of the recurrence).
+  newTask.bestPracticeAck = {};
+  // v100: internal flag on the source task to prevent double-spawn on
+  // status-change re-renders. Never carry it forward to a fresh instance.
+  delete newTask._recurrenceSpawned;
+  newTask.createdAt = Date.now();
+  newTask.recurrence = {
+    ...template.recurrence,
+    parentId: seriesId,
+    instanceNumber: instanceNumber
+  };
+  // Reschedule-past-due badge is per-instance — pre-generated instances start clean
+  newTask.rescheduledFromPastDue = false;
+  newTask.rescheduledFromPastDueMeta = null;
+  return newTask;
+}
+
+// v100: Return all instances belonging to the same series as the given
+// task, sorted by dueDate ascending. Empty array if not part of a series.
+function getSeriesMembers(project, task) {
+  if (!project || !task || !task.seriesId) return [];
+  return (project.tasks || [])
+    .filter(t => t.seriesId === task.seriesId)
+    .sort((a, b) => {
+      const da = a.dueDate || '9999-99-99';
+      const db = b.dueDate || '9999-99-99';
+      return da.localeCompare(db);
+    });
+}
+
+// v100: Rolling refresh — walk every project and top up each recurring
+// series to the 60-day horizon. Called on state load so the tracker
+// always has forward visibility on recurring work.
+function refreshAllSeriesInstances() {
+  if (!Array.isArray(state.projects)) return 0;
+  let totalAdded = 0;
+  const seenSeries = new Set();
+  state.projects.forEach(project => {
+    (project.tasks || []).forEach(task => {
+      if (!task.seriesId || seenSeries.has(task.seriesId)) return;
+      seenSeries.add(task.seriesId);
+      const result = ensureSeriesInstancesGenerated(project, task, { horizonDays: 60 });
+      totalAdded += result.added;
+    });
+  });
+  return totalAdded;
+}
+
 function generateNextRecurrenceInstance(project, completedTask) {
   if (!isRecurringTask(completedTask)) return null;
   const nextDate = computeNextRecurrenceDate(completedTask);
@@ -8581,6 +9335,14 @@ function generateNextRecurrenceInstance(project, completedTask) {
   // otherwise this is the first instance and itself becomes the parent.
   const parentId = completedTask.recurrence.parentId || completedTask.id;
   const instanceNumber = (completedTask.recurrence.instanceNumber || 1) + 1;
+
+  // v100: Dedup guard — if the pre-generation already put an instance on this
+  // date for this series, don't create a duplicate. Skip the whole call.
+  const seriesId = completedTask.seriesId || parentId;
+  const alreadyExists = (project.tasks || []).some(t =>
+    t.seriesId === seriesId && t.dueDate === nextDate && t.id !== completedTask.id
+  );
+  if (alreadyExists) return null;
 
   // Check count limit if set on the original recurrence
   if (completedTask.recurrence.count && instanceNumber > completedTask.recurrence.count) {
@@ -8648,12 +9410,23 @@ function generateNextRecurrenceInstance(project, completedTask) {
   // Explicitly clear completion timestamps (if _deepCopyForRecurrence carried them)
   newTask.completedAt = null;
   newTask.completedBy = '';
+  // v103: reset per-lead ack/completion state (leadAck, leadCompletion)
+  // and per-user best-practice ack. Without these, when a lead completes
+  // one instance, all subsequent generated instances appear already-marked-
+  // complete for that lead. See v103 note in _createRecurrenceInstanceFromTemplate.
+  newTask.leadAck = {};
+  newTask.leadCompletion = {};
+  newTask.bestPracticeAck = {};
+  delete newTask._recurrenceSpawned;
   // Carry forward recurrence settings, pointing back to parent
   newTask.recurrence = {
     ...completedTask.recurrence,
     parentId: parentId,
     instanceNumber: instanceNumber
   };
+  // v100: ensure seriesId is set — the on-complete path may have been
+  // creating tasks without it before the migration ran
+  newTask.seriesId = completedTask.seriesId || parentId;
 
   project.tasks.push(newTask);
   return newTask;
@@ -8693,6 +9466,7 @@ function updateRecurrencePatternUI() {
   const daysGroup = document.getElementById('recDaysOfWeekGroup');
   const dayOfMonthGroup = document.getElementById('recDayOfMonthGroup');
   const endGroup = document.getElementById('recEndGroup');
+  const skipGroup = document.getElementById('recSkipNonBusinessDaysGroup');
   const intervalUnit = document.getElementById('recIntervalUnit');
   const summary = document.getElementById('recSummaryStatus');
 
@@ -8700,6 +9474,7 @@ function updateRecurrencePatternUI() {
   daysGroup.style.display = 'none';
   dayOfMonthGroup.style.display = 'none';
   endGroup.style.display = 'none';
+  if (skipGroup) skipGroup.style.display = 'none';
 
   if (pattern === 'none') {
     summary.textContent = 'Not recurring';
@@ -8711,6 +9486,7 @@ function updateRecurrencePatternUI() {
   summary.textContent = 'Recurring';
   summary.classList.add('active');
   endGroup.style.display = 'block';
+  if (skipGroup) skipGroup.style.display = 'block';
 
   switch (pattern) {
     case 'daily':
@@ -8779,6 +9555,10 @@ function extractRecurrenceFromModal() {
 
   const count = parseInt(document.getElementById('recCount').value, 10);
   if (count >= 1) rec.count = count;
+
+  // v114: Skip weekends + US federal holidays (default true, saved on rec)
+  const skipEl = document.getElementById('recSkipNonBusinessDays');
+  rec.skipNonBusinessDays = skipEl ? !!skipEl.checked : true;
 
   return rec;
 }
@@ -10125,6 +10905,9 @@ function loadRecurrenceIntoModal(task) {
   document.getElementById('recDayOfMonth').value = '';
   document.getElementById('recEndDate').value = '';
   document.getElementById('recCount').value = '';
+  // v114: default skip on for new tasks
+  const skipReset = document.getElementById('recSkipNonBusinessDays');
+  if (skipReset) skipReset.checked = true;
   document.querySelectorAll('.rec-day-btn').forEach(btn => btn.classList.remove('active'));
 
   const seriesInfo = document.getElementById('recSeriesInfo');
@@ -10156,6 +10939,10 @@ function loadRecurrenceIntoModal(task) {
   if (rec.dayOfMonth) document.getElementById('recDayOfMonth').value = rec.dayOfMonth;
   if (rec.endDate) document.getElementById('recEndDate').value = rec.endDate;
   if (rec.count) document.getElementById('recCount').value = rec.count;
+
+  // v114: Skip weekends + US federal holidays — default true when unset
+  const skipEl = document.getElementById('recSkipNonBusinessDays');
+  if (skipEl) skipEl.checked = (rec.skipNonBusinessDays !== false);
 
   if (section) section.open = true;
 
@@ -11025,6 +11812,8 @@ function openTaskModal(defaultStatus='not-started', taskId=null) {
     document.getElementById('taskModalTitle').textContent = 'Edit Task';
     // v89: Populate the "Rescheduled from past-due" banner if applicable
     _renderTaskModalRescheduledBanner(t);
+    // v100: Populate the series banner if this task is part of a recurring series
+    _renderTaskModalSeriesBanner(t);
     deleteBtn.style.display = 'inline-flex';
     const saveToMasterBtn = document.getElementById('saveToMasterBtn');
     if (saveToMasterBtn) saveToMasterBtn.style.display = 'inline-flex';
@@ -11046,6 +11835,7 @@ function openTaskModal(defaultStatus='not-started', taskId=null) {
     document.getElementById('taskPriority').value = t.priority||'medium';
     // Critical button — load from task.critical flag
     if (typeof setTaskCriticalUI === 'function') setTaskCriticalUI(!!t.critical);
+    if (typeof setTaskTrainingUI === 'function') setTaskTrainingUI(!!t.isTraining);
     // Multi-Lead picker — clear the input and seed the chip list from leads array
     document.getElementById('taskAssignee').value = '';
     loadLeadsIntoChips(t);
@@ -11099,6 +11889,8 @@ function openTaskModal(defaultStatus='not-started', taskId=null) {
     document.getElementById('taskModalTitle').textContent = 'New Task';
     // v89: hide reschedule banner on new-task creation
     _renderTaskModalRescheduledBanner(null);
+    // v100: hide series banner on new-task creation
+    _renderTaskModalSeriesBanner(null);
     deleteBtn.style.display = 'none';
     const saveToMasterBtn = document.getElementById('saveToMasterBtn');
     if (saveToMasterBtn) saveToMasterBtn.style.display = 'none';
@@ -11113,6 +11905,7 @@ function openTaskModal(defaultStatus='not-started', taskId=null) {
     document.getElementById('taskPriority').value = 'medium';
     // New tasks default to non-critical
     if (typeof setTaskCriticalUI === 'function') setTaskCriticalUI(false);
+    if (typeof setTaskTrainingUI === 'function') setTaskTrainingUI(false);
     const defAssignee = (state.grouping === 'assignee' && state.activeAssignee && state.activeAssignee !== 'all' && state.activeAssignee !== 'unassigned') ? state.activeAssignee : '';
     // Multi-Lead picker — clear input; if a default assignee was inferred from
     // the active grouping, seed it as the single Lead.
@@ -11174,6 +11967,9 @@ function openTaskModal(defaultStatus='not-started', taskId=null) {
 
   // Render rejection notice at top of task modal (if task was rejected)
   renderTaskModalRejectionNotice();
+  // v111: Render awaiting-sign-off notice at top of task modal (if task is
+  // done + not signed off + not rejected)
+  renderTaskModalSignoffNotice();
 
   // Populate the project context chip — always show which project this task belongs to
   renderTaskModalProjectChip(project);
@@ -11613,6 +12409,32 @@ function setTaskCriticalUI(isCritical) {
 // Read the Critical button's current state. Returns boolean.
 function getTaskCriticalUI() {
   const btn = document.getElementById('taskCriticalBtn');
+  if (!btn) return false;
+  return btn.getAttribute('aria-pressed') === 'true';
+}
+
+// v119: Training tag — mirrors the Critical button pattern. Tags the task
+// as counting toward training so it shows up in the Training Log. Task
+// stays assigned to its project as normal — this is purely a metadata flag
+// for cross-project training-hours reporting.
+function toggleTaskTraining() {
+  const btn = document.getElementById('taskTrainingBtn');
+  if (!btn) return;
+  const isTraining = btn.getAttribute('aria-pressed') === 'true';
+  setTaskTrainingUI(!isTraining);
+}
+
+function setTaskTrainingUI(isTraining) {
+  const btn = document.getElementById('taskTrainingBtn');
+  if (!btn) return;
+  btn.setAttribute('aria-pressed', isTraining ? 'true' : 'false');
+  btn.classList.toggle('training-btn-active', !!isTraining);
+  const labelEl = btn.querySelector('.training-btn-label');
+  if (labelEl) labelEl.textContent = isTraining ? 'Counts as Training — click to remove' : 'Count Toward Training';
+}
+
+function getTaskTrainingUI() {
+  const btn = document.getElementById('taskTrainingBtn');
   if (!btn) return false;
   return btn.getAttribute('aria-pressed') === 'true';
 }
@@ -12704,6 +13526,273 @@ function copyEmailTaskBody() {
   }
 }
 
+// v118: Shared helper — builds a NEW task object from a source task, keeping
+// all reusable work-defining fields (title, stage, source, hours, checklist,
+// deliverables, best practice, category, priority, critical flag, recurrence,
+// role requirements, tips) and resetting per-instance fields (people, due
+// date, status, history, completions, acknowledgments). Used by both
+// duplicateTask (same project) and copyTaskToProject (different project).
+//
+// Reset fields = assignee, leads, support, supportMembers, ballInCourt,
+// dueDate (recomputed from anchor+offset when target project has anchor,
+// otherwise blank), status = 'not-started', all completion/acknowledgement
+// state, messages, activity log, seriesId (starts a fresh series if the
+// duplicate has recurrence), reschedule flags.
+//
+// The recurrence rule itself carries over so if the source is a weekly bid
+// review, the duplicate is also weekly — but with a new seriesId so its
+// instance pool is independent.
+function _buildTaskCopyForDuplicate(source, targetProject) {
+  if (!source) return null;
+  const validAnchors = ['bid-start','bid-day','pre-bid','rfi-due'];
+  const anchor = validAnchors.includes(source.dateAnchor) ? source.dateAnchor : 'bid-start';
+  // Compute due date from target project's anchor + source's offset if we can
+  let anchorDate = '';
+  if (targetProject) {
+    if (anchor === 'bid-day')      anchorDate = (targetProject.dueDate || '').trim();
+    else if (anchor === 'pre-bid') anchorDate = (targetProject.prebidDate || '').trim();
+    else if (anchor === 'rfi-due') anchorDate = (targetProject.rfiDueDate || '').trim();
+    else                            anchorDate = (targetProject.startDate || '').trim();
+  }
+  const offset = (typeof source.dayOffset === 'number') ? source.dayOffset : ((typeof source.offset === 'number') ? source.offset : 0);
+  const dueDate = anchorDate && typeof addBusinessDays === 'function'
+    ? addBusinessDays(anchorDate, offset).date
+    : '';
+
+  // Deep-clone checklist + deliverables so editing the copy doesn't mutate source
+  const checklistCopy = Array.isArray(source.checklist)
+    ? source.checklist.map(c => ({
+        id: (typeof uid === 'function') ? uid() : ('c' + Date.now() + Math.random()),
+        text: c.text || '',
+        required: !!c.required,
+        completed: false,
+        done: false,
+        doneBy: '',
+        doneAt: null
+      })).filter(c => c.text)
+    : [];
+  const deliverablesCopy = Array.isArray(source.deliverables)
+    ? source.deliverables.map(d => ({
+        id: (typeof uid === 'function') ? uid() : ('d' + Date.now() + Math.random()),
+        text: d.text || d.description || '',
+        description: d.description || d.text || '',
+        completed: false,
+        done: false,
+        doneBy: '',
+        doneAt: null
+      })).filter(d => d.text || d.description)
+    : [];
+  // Deep-clone recurrence if present, but null out parentId so pre-gen
+  // treats the duplicate as its own series root when saved.
+  let recurrenceCopy = null;
+  if (source.recurrence && typeof source.recurrence === 'object' && source.recurrence.pattern && source.recurrence.pattern !== 'none') {
+    recurrenceCopy = { ...source.recurrence };
+    delete recurrenceCopy.parentId;
+  }
+
+  return {
+    id: (typeof uid === 'function') ? uid() : ('t' + Date.now()),
+    // KEPT — work definition
+    title: source.title || '',
+    stage: source.stage || 'project-setup',
+    category: source.category || 'General',
+    source: source.source || '',
+    priority: source.priority || 'medium',
+    dayOffset: offset,
+    dateAnchor: anchor,
+    critical: !!source.critical,
+    isTraining: !!source.isTraining,
+    estimatedHours: (typeof source.estimatedHours === 'number' && source.estimatedHours > 0) ? source.estimatedHours : null,
+    supportHoursPct: (typeof source.supportHoursPct === 'number') ? source.supportHoursPct : null,
+    notes: source.notes || '',
+    bestPracticeNotes: source.bestPracticeNotes || source.bestPractice || '',
+    scopePackage: source.scopePackage || '',
+    requiresSenior: !!source.requiresSenior,
+    requiresLead1: !!source.requiresLead1,
+    requiresLead2: !!source.requiresLead2,
+    checklist: checklistCopy,
+    deliverables: deliverablesCopy,
+    recurrence: recurrenceCopy,
+    // RESET — people
+    assignee: '',
+    leads: [],
+    support: '',
+    supportMembers: [],
+    ballInCourt: 'Lead',
+    // RESET — dates + status
+    dueDate,
+    status: 'not-started',
+    // RESET — completion + acknowledgement + rejection state
+    completedAt: null,
+    completedBy: '',
+    acknowledged: false,
+    acknowledgedBy: '',
+    acknowledgedAt: null,
+    completionAcknowledged: false,
+    completionAcknowledgedBy: '',
+    completionAcknowledgedAt: null,
+    completionRejected: false,
+    completionRejectedBy: '',
+    completionRejectedAt: null,
+    completionRejectionReason: '',
+    completionRejectionNotes: '',
+    completionRejectionAcknowledged: false,
+    // RESET — per-lead state (Multi-Lead)
+    leadAck: {},
+    leadCompletion: {},
+    bestPracticeAck: {},
+    // RESET — series + reschedule bookkeeping
+    seriesId: null,
+    rescheduledFromPastDue: false,
+    rescheduledFromPastDueMeta: null,
+    // RESET — history
+    messages: [],
+    activityLog: [],
+    // FRESH
+    createdAt: Date.now()
+  };
+}
+
+// v118: Duplicate the current task within the same project. Opens the new
+// task in the modal so the user can immediately assign it, adjust the date,
+// etc. Keeps work-defining fields, resets people/dates/status/history.
+function duplicateTask() {
+  if (!editingTaskId) {
+    alert('Save the task first, then duplicate it.');
+    return;
+  }
+  const project = state.projects.find(p => p.id === state.activeProjectId);
+  if (!project) return;
+  const source = project.tasks.find(x => x.id === editingTaskId);
+  if (!source) return;
+
+  const copy = _buildTaskCopyForDuplicate(source, project);
+  if (!copy) return;
+  // Nudge the title so the user knows which is which
+  copy.title = source.title + ' (copy)';
+
+  project.tasks.push(copy);
+  saveState();
+  closeModal('taskModal');
+  render();
+
+  setTimeout(() => {
+    // Open the duplicate for editing so the user can immediately fill in
+    // assignee, due date, etc.
+    if (typeof openTaskModal === 'function') openTaskModal(null, copy.id);
+  }, 100);
+}
+
+// v118: Copy the current task to a different project. Opens a project
+// picker. Once selected, the copy is created in the target project with
+// the due date recomputed from that project's anchors + the source offset.
+let _pendingCopyToProjectTaskId = null;
+function copyTaskToProject() {
+  if (!editingTaskId) {
+    alert('Save the task first, then copy it.');
+    return;
+  }
+  const project = state.projects.find(p => p.id === state.activeProjectId);
+  if (!project) return;
+  const source = project.tasks.find(x => x.id === editingTaskId);
+  if (!source) return;
+
+  const otherProjects = (state.projects || []).filter(p => p.id !== project.id && !p.archived);
+  if (otherProjects.length === 0) {
+    alert('No other projects available to copy to.');
+    return;
+  }
+  _pendingCopyToProjectTaskId = editingTaskId;
+  _openCopyToProjectPicker(source, otherProjects);
+}
+
+function _openCopyToProjectPicker(sourceTask, projects) {
+  // Sort: currently bidding + soonest due first
+  const sorted = projects.slice().sort((a, b) => {
+    const da = a.dueDate || '9999-12-31';
+    const db = b.dueDate || '9999-12-31';
+    return da.localeCompare(db);
+  });
+  const rowsHtml = sorted.map(p => {
+    const daysLeft = (typeof getDaysLeft === 'function') ? getDaysLeft(p.dueDate) : null;
+    const daysLabel = daysLeft === null ? '' :
+      (daysLeft < 0 ? `<span style="color:var(--sbg-red);">${Math.abs(daysLeft)}d late</span>` :
+       daysLeft === 0 ? `<span style="color:var(--sbg-red);">due today</span>` :
+       `<span style="color:var(--text-dim);">${daysLeft}d left</span>`);
+    return `
+      <div class="ctp-project-row" onclick="_confirmCopyToProject('${escapeAttr(p.id)}')">
+        <div class="ctp-name">${escapeHtml(p.name || 'Untitled project')}</div>
+        <div class="ctp-meta">
+          <span>${(p.tasks || []).length} task${(p.tasks || []).length === 1 ? '' : 's'}</span>
+          ${daysLabel ? '<span>·</span>' : ''}
+          ${daysLabel}
+        </div>
+      </div>
+    `;
+  }).join('');
+
+  const previewHtml = `
+    <div class="ctp-source-preview">
+      <div class="ctp-source-label">Copying:</div>
+      <div class="ctp-source-title">${escapeHtml(sourceTask.title || '(untitled)')}</div>
+      <div class="ctp-source-note">Assignee, support, due date, status, and history will be reset in the copy. Everything else — hours, checklist, deliverables, best practice — carries over.</div>
+    </div>
+  `;
+
+  const modal = document.getElementById('copyToProjectModal');
+  if (!modal) {
+    // Build the modal DOM on first use
+    const html = `
+      <div class="modal-backdrop" id="copyToProjectModal" style="z-index:1100;">
+        <div class="modal" style="max-width:640px;">
+          <h3>📤 Copy Task to Project</h3>
+          <div id="ctpSourcePreview"></div>
+          <div id="ctpProjectList" style="max-height:52vh; overflow-y:auto; margin-top:14px;"></div>
+          <div class="modal-actions">
+            <button class="btn" onclick="closeModal('copyToProjectModal'); _pendingCopyToProjectTaskId = null;">Cancel</button>
+          </div>
+        </div>
+      </div>
+    `;
+    document.body.insertAdjacentHTML('beforeend', html);
+  }
+  document.getElementById('ctpSourcePreview').innerHTML = previewHtml;
+  document.getElementById('ctpProjectList').innerHTML = rowsHtml;
+  document.getElementById('copyToProjectModal').classList.add('active');
+}
+
+function _confirmCopyToProject(targetProjectId) {
+  const sourceTaskId = _pendingCopyToProjectTaskId;
+  if (!sourceTaskId) return;
+  const sourceProject = state.projects.find(p => p.id === state.activeProjectId);
+  const target = state.projects.find(p => p.id === targetProjectId);
+  if (!sourceProject || !target) return;
+  const source = sourceProject.tasks.find(t => t.id === sourceTaskId);
+  if (!source) return;
+
+  const copy = _buildTaskCopyForDuplicate(source, target);
+  if (!copy) return;
+
+  if (!Array.isArray(target.tasks)) target.tasks = [];
+  target.tasks.push(copy);
+  saveState();
+  closeModal('copyToProjectModal');
+  _pendingCopyToProjectTaskId = null;
+
+  setTimeout(() => {
+    const goToTarget = confirm(`✓ Copied "${source.title}" to "${target.name}".\n\nHours, checklist, deliverables, and best practice carried over. Assignee, support, and due date reset — set them in the copy.\n\nSwitch to "${target.name}" and open the new task now?`);
+    if (goToTarget) {
+      state.activeProjectId = target.id;
+      state.homeView = false;
+      saveState();
+      render();
+      setTimeout(() => {
+        if (typeof openTaskModal === 'function') openTaskModal(null, copy.id);
+      }, 100);
+    }
+  }, 100);
+}
+
 function saveTaskToMasterTemplate() {
   if (!editingTaskId) {
     alert('Save the task first, then promote it to a Master Template.');
@@ -12731,6 +13820,57 @@ function saveTaskToMasterTemplate() {
   // remembers whether the offset is from Bid Start or Bid Day.
   const dateAnchor = (typeof _modalDateAnchor !== 'undefined' && ['bid-start','bid-day','pre-bid','rfi-due'].includes(_modalDateAnchor)) ? _modalDateAnchor : 'bid-start';
 
+  // v118: also capture the REUSABLE work-defining fields so the template
+  // stores the full picture — hours, checklist, deliverables, best practice,
+  // critical flag, and role requirements. Previously only 7 basic fields
+  // were saved, which is why loading the template into a new project didn't
+  // carry over the hours / checklist / deliverables the user had set up.
+  const hoursRaw = document.getElementById('taskHours') ? document.getElementById('taskHours').value : '';
+  const hoursParsed = hoursRaw === '' ? null : parseFloat(hoursRaw);
+  const estimatedHours = (hoursParsed !== null && !isNaN(hoursParsed) && hoursParsed > 0)
+    ? Math.round(hoursParsed * 4) / 4
+    : (existing.estimatedHours || null);
+  const critical = document.getElementById('taskCritical')
+    ? document.getElementById('taskCritical').checked
+    : !!existing.critical;
+  // Take pending arrays from the modal if the user has been editing them;
+  // otherwise fall back to what's on the existing task record.
+  const checklistItems = (typeof pendingChecklist !== 'undefined' && Array.isArray(pendingChecklist))
+    ? pendingChecklist
+    : (Array.isArray(existing.checklist) ? existing.checklist : []);
+  const deliverableItems = (typeof pendingDeliverables !== 'undefined' && Array.isArray(pendingDeliverables))
+    ? pendingDeliverables
+    : (Array.isArray(existing.deliverables) ? existing.deliverables : []);
+  // Best practice notes live under different names in template vs project
+  // (template uses `tips`, project uses `bestPracticeNotes`). Read from the
+  // modal, fall back to task field.
+  const tipsEl = document.getElementById('taskBestPractice') || document.getElementById('taskBestPracticeNotes');
+  const tips = tipsEl ? tipsEl.value.trim() : (existing.bestPracticeNotes || existing.bestPractice || '');
+  // Role requirement flags — checkboxes may or may not exist depending on
+  // modal layout, so fall back to existing task values.
+  const requiresSenior = document.getElementById('taskRequiresSenior')
+    ? document.getElementById('taskRequiresSenior').checked
+    : !!existing.requiresSenior;
+  const requiresLead1 = document.getElementById('taskRequiresLead1')
+    ? document.getElementById('taskRequiresLead1').checked
+    : !!existing.requiresLead1;
+  const requiresLead2 = document.getElementById('taskRequiresLead2')
+    ? document.getElementById('taskRequiresLead2').checked
+    : !!existing.requiresLead2;
+
+  const templateData = {
+    title, stage, category, source, priority, offset, dateAnchor,
+    estimatedHours, critical, tips,
+    checklist: checklistItems.map(c => ({
+      text: (typeof c === 'string') ? c : (c.text || ''),
+      required: !!(c && c.required)
+    })).filter(c => c.text),
+    deliverables: deliverableItems.map(d => ({
+      text: (typeof d === 'string') ? d : (d.text || d.description || '')
+    })).filter(d => d.text),
+    requiresSenior, requiresLead1, requiresLead2
+  };
+
   if (!Array.isArray(state.taskTemplates) || state.taskTemplates.length === 0) {
     alert('No templates exist. Open Manage Task Templates to create one first.');
     return;
@@ -12738,11 +13878,11 @@ function saveTaskToMasterTemplate() {
 
   // If only one template exists, save directly. Otherwise show picker.
   if (state.taskTemplates.length === 1) {
-    return doSaveTaskToTemplate(state.taskTemplates[0].id, { title, stage, category, source, priority, offset, dateAnchor });
+    return doSaveTaskToTemplate(state.taskTemplates[0].id, templateData);
   }
 
   // Stash the task data + open the template picker
-  pendingSaveToTemplateData = { title, stage, category, source, priority, offset, dateAnchor };
+  pendingSaveToTemplateData = templateData;
   openSaveToTemplatePicker();
 }
 
@@ -12805,6 +13945,32 @@ function doSaveTaskToTemplate(templateId, taskData) {
     (t.stage || '') === data.stage
   );
 
+  // v118: normalize the full field set that will be written. Applies to both
+  // the new-task and the update-existing branches so the template stores the
+  // complete work-defining picture (hours, checklist, deliverables, tips,
+  // critical, role flags) — not just the 7 basic fields.
+  const fullFields = {
+    title: data.title,
+    stage: data.stage,
+    category: data.category,
+    source: data.source,
+    priority: data.priority,
+    offset: data.offset,
+    dateAnchor: (['bid-start','bid-day','pre-bid','rfi-due'].includes(data.dateAnchor)) ? data.dateAnchor : 'bid-start',
+    critical: !!data.critical,
+    estimatedHours: (typeof data.estimatedHours === 'number' && data.estimatedHours > 0) ? data.estimatedHours : null,
+    tips: (data.tips || '').trim(),
+    checklist: Array.isArray(data.checklist)
+      ? data.checklist.map(c => ({ text: c.text || '', required: !!c.required })).filter(c => c.text)
+      : [],
+    deliverables: Array.isArray(data.deliverables)
+      ? data.deliverables.map(d => ({ text: d.text || '' })).filter(d => d.text)
+      : [],
+    requiresSenior: !!data.requiresSenior,
+    requiresLead1: !!data.requiresLead1,
+    requiresLead2: !!data.requiresLead2
+  };
+
   if (duplicate) {
     const dupStage = STAGES.find(s => s.id === duplicate.stage);
     const stageName = dupStage ? dupStage.name : duplicate.stage;
@@ -12813,19 +13979,14 @@ function doSaveTaskToTemplate(templateId, taskData) {
       pendingSaveToTemplateData = null;
       return;
     }
-    duplicate.title = data.title;
-    duplicate.category = data.category;
-    duplicate.source = data.source;
-    duplicate.priority = data.priority;
-    duplicate.offset = data.offset;
-    // v63: also update anchor
-    duplicate.dateAnchor = (['bid-start','bid-day','pre-bid','rfi-due'].includes(data.dateAnchor)) ? data.dateAnchor : 'bid-start';
+    // Overwrite all reusable fields on the existing template entry
+    Object.assign(duplicate, fullFields);
     tmpl.updatedAt = Date.now();
     syncLegacyMasterTasks();
     saveState();
     closeModal('saveToTmplModal');
     pendingSaveToTemplateData = null;
-    setTimeout(() => alert(`✓ Updated existing task in "${tmpl.name}" template:\n\n"${data.title}"`), 50);
+    setTimeout(() => alert(`✓ Updated existing task in "${tmpl.name}" template:\n\n"${data.title}"\n\nHours, checklist, deliverables, best practice, and role flags all carried through.`), 50);
     return;
   }
 
@@ -12833,6 +13994,13 @@ function doSaveTaskToTemplate(templateId, taskData) {
   const stageObj = STAGES.find(s => s.id === data.stage);
   const stageLabel = stageObj ? `${stageObj.icon} ${stageObj.name}` : data.stage;
   const offsetLabel = data.offset === 0 ? 'On bid start day' : (data.offset > 0 ? `D+${data.offset} (${data.offset} days after bid start)` : `D${data.offset} (${Math.abs(data.offset)} days before bid start)`);
+  const extrasLine = [
+    fullFields.estimatedHours ? `${fullFields.estimatedHours}h` : null,
+    fullFields.critical ? '🔥 Critical' : null,
+    fullFields.checklist.length ? `${fullFields.checklist.length} checklist item${fullFields.checklist.length === 1 ? '' : 's'}` : null,
+    fullFields.deliverables.length ? `${fullFields.deliverables.length} deliverable${fullFields.deliverables.length === 1 ? '' : 's'}` : null,
+    fullFields.tips ? 'Best-practice notes' : null
+  ].filter(Boolean).join(' · ') || '(none)';
 
   const previewMsg = `Save this task to template "${tmpl.name}"?\n\n` +
     `Title:    ${data.title}\n` +
@@ -12840,24 +14008,16 @@ function doSaveTaskToTemplate(templateId, taskData) {
     `Category: ${data.category || '(none)'}\n` +
     `Source:   ${data.source || '(none)'}\n` +
     `Priority: ${data.priority}\n` +
-    `Offset:   ${offsetLabel}\n\n` +
-    `Future projects loading "${tmpl.name}" will get this task.\n\n` +
+    `Offset:   ${offsetLabel}\n` +
+    `Extras:   ${extrasLine}\n\n` +
+    `Future projects loading "${tmpl.name}" will get this task with the full work setup.\n\n` +
     `Note: Assignee, status, due date, notes, and messages will NOT be copied — only reusable template fields.`;
 
   if (!confirm(previewMsg)) {
     return; // keep modal open in case user wants to pick a different template
   }
 
-  tmpl.tasks.push({
-    title: data.title,
-    stage: data.stage,
-    category: data.category,
-    source: data.source,
-    priority: data.priority,
-    offset: data.offset,
-    // v63: propagate anchor choice to the new template task
-    dateAnchor: (['bid-start','bid-day','pre-bid','rfi-due'].includes(data.dateAnchor)) ? data.dateAnchor : 'bid-start'
-  });
+  tmpl.tasks.push({ ...fullFields });
   tmpl.updatedAt = Date.now();
   syncLegacyMasterTasks();
   saveState();
@@ -12865,8 +14025,231 @@ function doSaveTaskToTemplate(templateId, taskData) {
   pendingSaveToTemplateData = null;
 
   setTimeout(() => {
-    alert(`✓ Added to template "${tmpl.name}":\n\n"${data.title}"\n\nView or edit via Sidebar → Manage Task Templates → switch to "${tmpl.name}".`);
+    alert(`✓ Added to template "${tmpl.name}":\n\n"${data.title}"\n\nHours, checklist, deliverables, best practice, and role flags all included.\n\nView or edit via Sidebar → Manage Task Templates → switch to "${tmpl.name}".`);
   }, 50);
+}
+
+// v100: Series scope prompt — decides whether to show the "Apply to..."
+// dialog after a save. Only prompts when the task is part of a series
+// with at least one other member that has status !== 'done'.
+function _seriesScopeShouldPrompt(project, task) {
+  if (!project || !task || !task.seriesId) return false;
+  const members = getSeriesMembers(project, task);
+  const otherIncomplete = members.filter(m => m.id !== task.id && m.status !== 'done');
+  return otherIncomplete.length > 0;
+}
+
+// v100: Compute the delta between old + new values for fields that should
+// propagate to series siblings. Only fields the user actually changed
+// get included so we don't overwrite sibling values.
+function _computeSeriesPropagateDelta(existing, data, oldSnapshot) {
+  const delta = {};
+  const PROPAGATE_FIELDS = [
+    'title', 'category', 'priority', 'notes', 'source', 'scopePackage',
+    'assignee', 'leads', 'supportMembers', 'support',
+    'estimatedHours', 'supportHoursPct',
+    'critical', 'checklist', 'deliverables',
+    'tips', 'bestPractice',
+    'requiresSenior', 'requiresLead1', 'requiresLead2'
+  ];
+  PROPAGATE_FIELDS.forEach(field => {
+    const oldVal = oldSnapshot ? oldSnapshot[field] : undefined;
+    const newVal = data[field];
+    const changed = (typeof oldVal === 'object' || typeof newVal === 'object')
+      ? JSON.stringify(oldVal || null) !== JSON.stringify(newVal || null)
+      : oldVal !== newVal;
+    if (changed) {
+      delta[field] = newVal;
+    }
+  });
+  return delta;
+}
+
+// v100: Apply a field delta to selected series members based on scope.
+// scope: 'this-only' | 'this-and-future' | 'entire-series'
+// Completed instances are never touched — history stays intact.
+function _applySeriesPropagate(project, existing, delta, scope) {
+  if (!project || !existing || !delta || Object.keys(delta).length === 0) return 0;
+  if (scope === 'this-only') return 0;
+  const members = getSeriesMembers(project, existing);
+  const anchorDate = existing.dueDate || '';
+  let targets;
+  if (scope === 'this-and-future') {
+    targets = members.filter(m =>
+      m.id !== existing.id && m.status !== 'done' && (m.dueDate || '') >= anchorDate
+    );
+  } else if (scope === 'entire-series') {
+    targets = members.filter(m =>
+      m.id !== existing.id && m.status !== 'done'
+    );
+  } else {
+    return 0;
+  }
+  targets.forEach(m => {
+    Object.keys(delta).forEach(field => {
+      const val = delta[field];
+      if (Array.isArray(val) || (val && typeof val === 'object')) {
+        m[field] = JSON.parse(JSON.stringify(val));
+      } else {
+        m[field] = val;
+      }
+    });
+  });
+  return targets.length;
+}
+
+// v100: Delete series members by scope.
+function _applySeriesDelete(project, existing, scope) {
+  if (!project || !existing) return 0;
+  const members = getSeriesMembers(project, existing);
+  const anchorDate = existing.dueDate || '';
+  let toDelete;
+  if (scope === 'this-only') {
+    toDelete = [existing];
+  } else if (scope === 'this-and-future') {
+    toDelete = members.filter(m =>
+      m.status !== 'done' && (m.id === existing.id || (m.dueDate || '') >= anchorDate)
+    );
+  } else if (scope === 'entire-series') {
+    toDelete = members.filter(m => m.status !== 'done');
+  } else {
+    return 0;
+  }
+  const idsToDelete = new Set(toDelete.map(m => m.id));
+  project.tasks = project.tasks.filter(t => !idsToDelete.has(t.id));
+  return toDelete.length;
+}
+
+// v100: Open the "Apply changes to..." dialog. User picks scope, we apply
+// delta, then invoke finishCallback. On cancel, still finishCallback runs
+// (this task's own changes stay committed — cancel just skips propagation).
+function _openSeriesScopeDialog(project, existing, delta, finishCallback) {
+  const modal = document.getElementById('seriesScopeModal');
+  if (!modal) {
+    console.warn('[v100] Series scope modal missing; defaulting to this-only');
+    if (typeof finishCallback === 'function') finishCallback();
+    return;
+  }
+  const summary = document.getElementById('seriesScopeSummary');
+  const members = getSeriesMembers(project, existing);
+  const total = members.length;
+  const changedFields = Object.keys(delta);
+  const changedFieldsList = changedFields.length > 0
+    ? changedFields.map(f => _humanizeFieldName(f)).join(', ')
+    : '(no propagable field changes — status/date changes only affect this occurrence)';
+  const remainingIncomplete = members.filter(m => m.id !== existing.id && m.status !== 'done').length;
+  const futureIncomplete = members.filter(m =>
+    m.id !== existing.id && m.status !== 'done' && (m.dueDate || '') >= (existing.dueDate || '')
+  ).length;
+  if (summary) {
+    summary.innerHTML = `
+      <div style="font-size:11.5px; color:var(--text-dim, #6b7687); margin-bottom:8px; line-height:1.4;">
+        Series of <strong style="color:var(--sbg-navy, #0a2540);">${total}</strong> occurrences · Changed: <strong>${escapeHtml(changedFieldsList)}</strong>
+      </div>
+    `;
+  }
+  const optFutureCount = document.getElementById('seriesScopeFutureCount');
+  if (optFutureCount) optFutureCount.textContent = futureIncomplete;
+  const optAllCount = document.getElementById('seriesScopeAllCount');
+  if (optAllCount) optAllCount.textContent = remainingIncomplete;
+  _pendingSeriesScope = { project, existing, delta, finishCallback };
+  const radios = modal.querySelectorAll('input[name="seriesScope"]');
+  radios.forEach(r => { r.checked = (r.value === 'this-only'); });
+  modal.classList.add('active');
+}
+
+let _pendingSeriesScope = null;
+
+function confirmSeriesScope() {
+  const modal = document.getElementById('seriesScopeModal');
+  if (!modal || !_pendingSeriesScope) return;
+  const { project, existing, delta, finishCallback } = _pendingSeriesScope;
+  const selected = modal.querySelector('input[name="seriesScope"]:checked');
+  const scope = selected ? selected.value : 'this-only';
+  let propagated = 0;
+  if (scope !== 'this-only') {
+    propagated = _applySeriesPropagate(project, existing, delta, scope);
+  }
+  modal.classList.remove('active');
+  _pendingSeriesScope = null;
+  if (propagated > 0 && typeof _spawnToast === 'function') {
+    _spawnToast({
+      id: 'series_' + Date.now(),
+      type: 'task-assigned',
+      message: `Propagated changes to ${propagated} other occurrence${propagated === 1 ? '' : 's'} in the series`,
+      taskTitle: existing.title,
+      projectName: project.name,
+      createdAt: Date.now(),
+      recipientName: getCurrentUser()
+    });
+  }
+  if (typeof finishCallback === 'function') finishCallback();
+}
+
+function cancelSeriesScope() {
+  const modal = document.getElementById('seriesScopeModal');
+  if (modal) modal.classList.remove('active');
+  const cb = _pendingSeriesScope && _pendingSeriesScope.finishCallback;
+  _pendingSeriesScope = null;
+  if (typeof cb === 'function') cb();
+}
+
+function _humanizeFieldName(field) {
+  const map = {
+    title: 'Title', category: 'Category', priority: 'Priority',
+    notes: 'Notes', source: 'Source', scopePackage: 'Scope',
+    assignee: 'Assignee', leads: 'Leads', supportMembers: 'Support Members',
+    support: 'Primary Support', estimatedHours: 'Projected Hours',
+    supportHoursPct: 'Support Hours %', critical: 'Critical Flag',
+    checklist: 'Checklist', deliverables: 'Deliverables', tips: 'Tips',
+    bestPractice: 'Best Practice', requiresSenior: 'Requires Senior',
+    requiresLead1: 'Requires Lead 1', requiresLead2: 'Requires Lead 2'
+  };
+  return map[field] || field;
+}
+
+// v100: Extracted tail of saveTask's edit branch — runs notifications,
+// activity log, recurrence-on-complete spawn, and finalization (saveState,
+// closeModal, render). Extracted so the recurring-series scope dialog can
+// call this after the user chooses propagation scope.
+function _finishSaveTaskEdit(project, existing, oldStatus, newStatus, oldSnapshot) {
+  // v90: emit notifications for status and assignment changes.
+  _notifyTaskStatusChange(project, existing, oldStatus, newStatus, getCurrentUser());
+  _notifyTaskAssignment(project, existing, oldSnapshot.assignee, existing.assignee, getCurrentUser());
+  // v91: notify assignee + leads when the due date shifted
+  _notifyTaskDueDateChanged(project, existing, oldSnapshot.dueDate, existing.dueDate, getCurrentUser());
+  // v91: notify assignee + leads when projected hours changed
+  _notifyTaskHoursChanged(
+    project,
+    existing,
+    oldSnapshot.estimatedHours,
+    (typeof existing.estimatedHours === 'number') ? existing.estimatedHours : null,
+    getCurrentUser()
+  );
+  // ACTIVITY LOG: capture status changes separately from general edits
+  if (oldStatus !== newStatus) {
+    logTaskStatusChanged(project, existing, oldStatus, newStatus);
+  }
+  logTaskEdited(project, existing, oldSnapshot);
+  // RECURRENCE: if this task transitioned to done and is recurring, spawn next instance
+  if (newStatus === 'done' && oldStatus !== 'done' && isRecurringTask(existing) && !existing._recurrenceSpawned) {
+    const newInstance = generateNextRecurrenceInstance(project, existing);
+    if (newInstance) {
+      existing._recurrenceSpawned = true;
+      const desc = describeRecurrence(existing.recurrence);
+      setTimeout(() => alert(`✓ Next recurring instance created\n\n"${newInstance.title}"\nDue: ${formatDate(newInstance.dueDate)}\n\nPattern: ${desc}`), 100);
+    } else {
+      setTimeout(() => alert(`✓ Task completed — recurrence series has ended.`), 100);
+    }
+  }
+  if (oldStatus === 'done' && newStatus !== 'done') {
+    delete existing._recurrenceSpawned;
+  }
+  // Generate change summary + auto-post alert to assignee/support
+  postTaskModificationAlert(project, existing, oldSnapshot);
+  saveState();
+  closeModal('taskModal');
+  render();
 }
 
 function saveTask() {
@@ -12894,6 +14277,9 @@ function saveTask() {
     // Critical flag — replaces priority as the authoritative importance signal.
     // task.priority is preserved for backward compat with legacy reads.
     critical: (typeof getTaskCriticalUI === 'function') ? getTaskCriticalUI() : false,
+    // v119: Training tag — flags the task for the Training Log so the assignee's
+    // learning hours can be tracked. Doesn't change how the task lives in the project.
+    isTraining: (typeof getTaskTrainingUI === 'function') ? getTaskTrainingUI() : false,
     // Multi-Lead: pendingLeads holds the working chip list. assignee mirrors leads[0].
     leads: pendingLeads.slice(),
     assignee: pendingLeads[0] || '',
@@ -13032,45 +14418,24 @@ function saveTask() {
       data.completionAcknowledgedAt = null;
     }
     Object.assign(existing, data);
-    // v90: emit notifications for status and assignment changes.
-    // Placed after Object.assign so existing.assignee reflects the new value
-    // for _notifyTaskAssignment (which reads the task's current title etc.).
-    _notifyTaskStatusChange(project, existing, oldStatus, newStatus, getCurrentUser());
-    _notifyTaskAssignment(project, existing, oldSnapshot.assignee, existing.assignee, getCurrentUser());
-    // v91: notify assignee + leads when the due date shifted
-    _notifyTaskDueDateChanged(project, existing, oldSnapshot.dueDate, existing.dueDate, getCurrentUser());
-    // v91: notify assignee + leads when projected hours changed
-    _notifyTaskHoursChanged(
-      project,
-      existing,
-      oldSnapshot.estimatedHours,
-      (typeof existing.estimatedHours === 'number') ? existing.estimatedHours : null,
-      getCurrentUser()
-    );
-    // ACTIVITY LOG: capture status changes separately from general edits
-    // Always run logTaskEdited too so multi-field saves (e.g. status + assignee
-    // in one go) capture all field deltas — logTaskEdited will skip the status
-    // field internally so we don't double-log it.
-    if (oldStatus !== newStatus) {
-      logTaskStatusChanged(project, existing, oldStatus, newStatus);
+    // v100: If this task is part of a series with siblings, hold up the
+    // normal completion here and ask the user how far the changes should
+    // propagate. The mutation to `existing` has already happened; the
+    // dialog will decide whether to also mutate siblings, then call
+    // _finishSaveTaskEdit to run notifications, activity log, save, close.
+    if (existing.seriesId && typeof _seriesScopeShouldPrompt === 'function' && _seriesScopeShouldPrompt(project, existing)) {
+      const propagateDelta = _computeSeriesPropagateDelta(existing, data, oldSnapshot);
+      // v101: Close the task modal FIRST so the series dialog isn't hidden
+      // behind it. Then open the series dialog — the user gets a clean
+      // single-modal flow (Outlook style).
+      closeModal('taskModal');
+      _openSeriesScopeDialog(project, existing, propagateDelta, () => {
+        _finishSaveTaskEdit(project, existing, oldStatus, newStatus, oldSnapshot);
+      });
+      return; // early exit — dialog will drive the rest
     }
-    logTaskEdited(project, existing, oldSnapshot);
-    // RECURRENCE: if this task transitioned to done and is recurring, spawn next instance
-    if (newStatus === 'done' && oldStatus !== 'done' && isRecurringTask(existing) && !existing._recurrenceSpawned) {
-      const newInstance = generateNextRecurrenceInstance(project, existing);
-      if (newInstance) {
-        existing._recurrenceSpawned = true;
-        const desc = describeRecurrence(existing.recurrence);
-        setTimeout(() => alert(`✓ Next recurring instance created\n\n"${newInstance.title}"\nDue: ${formatDate(newInstance.dueDate)}\n\nPattern: ${desc}`), 100);
-      } else {
-        setTimeout(() => alert(`✓ Task completed — recurrence series has ended.`), 100);
-      }
-    }
-    if (oldStatus === 'done' && newStatus !== 'done') {
-      delete existing._recurrenceSpawned;
-    }
-    // Generate change summary + auto-post alert to assignee/support
-    postTaskModificationAlert(project, existing, oldSnapshot);
+    _finishSaveTaskEdit(project, existing, oldStatus, newStatus, oldSnapshot);
+    return;
   } else {
     // New tasks: unacknowledged if assigned, auto-ack if unassigned (nothing to ack)
     const isAssigned = data.assignee && data.assignee.trim();
@@ -13091,22 +14456,128 @@ function saveTask() {
     logTaskCreated(project, newTask);
     // v90: notify newly assigned people
     _notifyTaskAssignment(project, newTask, '', newTask.assignee, getCurrentUser());
+    // v100: if this new task is recurring, seed it with a seriesId and
+    // pre-generate its 60-day future instances so workload picks them up
+    // immediately.
+    if (isRecurringTask(newTask)) {
+      newTask.seriesId = newTask.id; // new task is its own series root
+      const result = ensureSeriesInstancesGenerated(project, newTask, { horizonDays: 60 });
+      if (result.added > 0) {
+        console.log(`[v100] Pre-generated ${result.added} recurring instances for "${newTask.title}"`);
+      }
+    }
   }
   saveState();
   closeModal('taskModal');
   render();
 }
 function deleteTask() {
-  if (!confirm('Delete this task?')) return;
-  const project = state.projects.find(p=>p.id===state.activeProjectId);
-  // Capture task snapshot for the log before removing it
+  const project = state.projects.find(p => p.id === state.activeProjectId);
+  if (!project) return;
   const taskToDelete = project.tasks.find(t => t.id === editingTaskId);
-  if (taskToDelete) logTaskDeleted(project, taskToDelete);
+  if (!taskToDelete) return;
+  // v104: series-aware delete. If the task is part of a series with other
+  // incomplete siblings, show the Outlook-style delete dialog. Otherwise
+  // fall back to the original one-line confirm.
+  if (taskToDelete.seriesId && typeof _seriesScopeShouldPrompt === 'function' && _seriesScopeShouldPrompt(project, taskToDelete)) {
+    // Close the task modal first so the delete dialog is the only visible modal
+    closeModal('taskModal');
+    _openSeriesDeleteDialog(project, taskToDelete);
+    return;
+  }
+  if (!confirm('Delete this task?')) return;
+  logTaskDeleted(project, taskToDelete);
   project.tasks = project.tasks.filter(t => t.id !== editingTaskId);
   saveState();
   closeModal('taskModal');
   render();
 }
+
+// v104: Open the series delete dialog. Populates count chips and stashes
+// context for the confirm/cancel handlers. Similar structure to
+// _openSeriesScopeDialog but with delete-specific messaging.
+let _pendingSeriesDelete = null;
+function _openSeriesDeleteDialog(project, existing) {
+  const modal = document.getElementById('seriesDeleteModal');
+  if (!modal) {
+    // Fallback — modal missing, just delete this instance with a confirm.
+    if (!confirm('Delete this task?')) return;
+    logTaskDeleted(project, existing);
+    project.tasks = project.tasks.filter(t => t.id !== existing.id);
+    saveState();
+    render();
+    return;
+  }
+  const summary = document.getElementById('seriesDeleteSummary');
+  const members = getSeriesMembers(project, existing);
+  const total = members.length;
+  const cadence = _formatRecurrenceCadence(existing.recurrence);
+  const remainingIncomplete = members.filter(m => m.id !== existing.id && m.status !== 'done').length;
+  const futureIncomplete = members.filter(m =>
+    m.id !== existing.id && m.status !== 'done' && (m.dueDate || '') >= (existing.dueDate || '')
+  ).length;
+  const completedCount = members.filter(m => m.status === 'done').length;
+  const completedNote = completedCount > 0
+    ? ` · ${completedCount} completed instance${completedCount === 1 ? '' : 's'} will be preserved`
+    : '';
+  if (summary) {
+    summary.innerHTML = `
+      <div style="font-size:11.5px; color:var(--text-dim, #6b7687); margin-bottom:8px; line-height:1.4;">
+        Series of <strong style="color:var(--sbg-navy, #0a2540);">${total}</strong> occurrences (${escapeHtml(cadence)})${escapeHtml(completedNote)}
+      </div>
+    `;
+  }
+  const optFutureCount = document.getElementById('seriesDeleteFutureCount');
+  if (optFutureCount) optFutureCount.textContent = futureIncomplete;
+  const optAllCount = document.getElementById('seriesDeleteAllCount');
+  if (optAllCount) optAllCount.textContent = remainingIncomplete;
+  _pendingSeriesDelete = { project, existing };
+  const radios = modal.querySelectorAll('input[name="seriesDeleteScope"]');
+  radios.forEach(r => { r.checked = (r.value === 'this-only'); });
+  modal.classList.add('active');
+}
+
+function confirmSeriesDelete() {
+  const modal = document.getElementById('seriesDeleteModal');
+  if (!modal || !_pendingSeriesDelete) return;
+  const { project, existing } = _pendingSeriesDelete;
+  const selected = modal.querySelector('input[name="seriesDeleteScope"]:checked');
+  const scope = selected ? selected.value : 'this-only';
+  // Log the delete BEFORE we blow the tasks away so the activity log has
+  // access to task data. For multi-instance deletes, log just the source
+  // task with an annotation of how many total were removed.
+  const beforeCount = project.tasks.length;
+  logTaskDeleted(project, existing);
+  const removedCount = _applySeriesDelete(project, existing, scope);
+  const afterCount = project.tasks.length;
+  const actualRemoved = beforeCount - afterCount;
+  modal.classList.remove('active');
+  _pendingSeriesDelete = null;
+  saveState();
+  render();
+  // Non-blocking confirmation toast
+  if (typeof _spawnToast === 'function' && actualRemoved > 0) {
+    const scopeLabel = scope === 'this-only' ? 'occurrence'
+      : (scope === 'this-and-future' ? 'this + future occurrences'
+      : 'all incomplete occurrences');
+    _spawnToast({
+      id: 'series_del_' + Date.now(),
+      type: 'task-unassigned',
+      message: `Deleted ${actualRemoved} ${scopeLabel === 'occurrence' ? 'occurrence' : 'occurrences'} of "${existing.title}" from the series`,
+      taskTitle: existing.title,
+      projectName: project.name,
+      createdAt: Date.now(),
+      recipientName: getCurrentUser()
+    });
+  }
+}
+
+function cancelSeriesDelete() {
+  const modal = document.getElementById('seriesDeleteModal');
+  if (modal) modal.classList.remove('active');
+  _pendingSeriesDelete = null;
+}
+
 function updateTaskStatus(taskId, status) {
   const project = state.projects.find(p=>p.id===state.activeProjectId);
   const t = project.tasks.find(x=>x.id===taskId);
@@ -13214,6 +14685,12 @@ function acknowledgeCompletion(taskId, event) {
   }
   saveState();
   render();
+  // v111: If the task modal is open on this task, refresh both notices so
+  // the "awaiting sign-off" one disappears immediately.
+  if (document.getElementById('taskModal').classList.contains('active')) {
+    if (typeof renderTaskModalSignoffNotice === 'function') renderTaskModalSignoffNotice();
+    if (typeof renderTaskModalRejectionNotice === 'function') renderTaskModalRejectionNotice();
+  }
 }
 
 function acknowledgeAllCompletions() {
@@ -13370,6 +14847,12 @@ function confirmRejectCompletion() {
   rejectingTaskId = null;
   selectedRejectReason = '';
   render();
+  // v111: If the task modal is open on this task, refresh both notices so
+  // the "awaiting sign-off" one disappears and the rejection notice appears.
+  if (document.getElementById('taskModal').classList.contains('active')) {
+    if (typeof renderTaskModalSignoffNotice === 'function') renderTaskModalSignoffNotice();
+    if (typeof renderTaskModalRejectionNotice === 'function') renderTaskModalRejectionNotice();
+  }
 }
 
 function postCompletionRejectionMessage(project, task, reason, notes, lead, config) {
@@ -13589,6 +15072,117 @@ function renderTaskModalRejectionNotice() {
   }
 }
 
+// v111: Render the "Awaiting Sign-Off" notice at the top of the task modal
+// when a task has been marked done but the Lead Estimator hasn't signed off
+// and it hasn't been rejected. Provides ✓ Sign Off and ✗ Reject buttons so
+// the lead can act without leaving the modal. Previously the only path to
+// these actions was the Today page's "Awaiting sign-off" section — opening
+// the task itself gave you no way to act on the completion.
+function renderTaskModalSignoffNotice() {
+  const existing = document.getElementById('taskModalSignoffNotice');
+  if (existing) existing.remove();
+
+  if (!editingTaskId) return;
+  const project = state.projects.find(p => p.id === state.activeProjectId);
+  if (!project) return;
+  const t = project.tasks.find(x => x.id === editingTaskId);
+  if (!t) return;
+  // Only show when done AND not yet signed off AND not currently rejected
+  if (t.status !== 'done') return;
+  if (t.completionAcknowledged) return;
+  if (t.completionRejected) return;
+
+  const lead = (project.leadEstimator || '').trim();
+  const completedBy = escapeHtml(t.completedBy || 'someone');
+  const completedAt = t.completedAt
+    ? new Date(t.completedAt).toLocaleString('en-US', { month: 'short', day: 'numeric', year: 'numeric', hour: 'numeric', minute: '2-digit' })
+    : '';
+  const leadPhrase = lead
+    ? `Only <strong>${escapeHtml(lead)}</strong> (project Lead Estimator) may sign off or reject.`
+    : `No Lead Estimator is set on this project — set one under "Edit Project" before you can sign off or reject.`;
+
+  const buttonsHtml = lead
+    ? `<div class="tmsn-actions">
+         <button class="tmsn-btn tmsn-btn-accept" onclick="acknowledgeCompletion('${t.id}', event)" title="Sign off on this completion (Lead Estimator only)">✓ Sign Off</button>
+         <button class="tmsn-btn tmsn-btn-reject" onclick="openRejectCompletionModal('${t.id}', event)" title="Reject the completion and send back to the assignee">✗ Reject Completion</button>
+       </div>`
+    : '';
+
+  const html = `
+    <div class="task-modal-signoff-notice" id="taskModalSignoffNotice">
+      <div class="tmsn-header">⏳ AWAITING SIGN-OFF</div>
+      <div class="tmsn-body">
+        Marked complete by <strong>${completedBy}</strong>${completedAt ? ` on ${escapeHtml(completedAt)}` : ''}.
+        <br>${leadPhrase}
+      </div>
+      ${buttonsHtml}
+      <span class="tmsn-hint">You'll be prompted to confirm your identity when signing off or rejecting.</span>
+    </div>
+  `;
+
+  // Insert right after the task title input's form-group wrapper (top of
+  // modal, same anchor as the rejection notice so both appear in the same
+  // consistent location).
+  const taskTitleInput = document.getElementById('taskTitle');
+  if (taskTitleInput) {
+    const wrapper = taskTitleInput.closest('.form-group');
+    if (wrapper && wrapper.parentNode) {
+      wrapper.insertAdjacentHTML('afterend', html);
+    }
+  }
+}
+
+// v112: Series-level acknowledgement helper. When a user acks any single
+// instance of a recurring series, copy that ack state to every sibling in
+// the series so the user doesn't get flooded with 60+ ack items for one
+// weekly task. Handles both the simple task.acknowledged flag and the
+// per-lead task.leadAck object (Multi-Lead). Called AFTER the source task
+// has been mutated so we can copy the fresh state directly.
+//
+// Behavior:
+//   - For the simple ack (acknowledged / acknowledgedBy / acknowledgedAt):
+//     copy the source's values to every sibling that doesn't already have
+//     a more-recent ack.
+//   - For per-lead ack (leadAck[user]): if the source has a leadAck entry
+//     for the current user, copy that entry to every sibling that doesn't
+//     have one for the same user. Sibling leadAck entries for OTHER leads
+//     are preserved.
+//   - Completed instances (status === 'done') are still updated for
+//     future consistency, but no notifications fire for them.
+//
+// Returns the number of sibling tasks that were updated.
+function _propagateAckToSiblings(project, sourceTask) {
+  if (!project || !sourceTask || !sourceTask.seriesId) return 0;
+  const siblings = (project.tasks || []).filter(t =>
+    t.seriesId === sourceTask.seriesId && t.id !== sourceTask.id
+  );
+  if (siblings.length === 0) return 0;
+  let updated = 0;
+  siblings.forEach(sib => {
+    let changed = false;
+    // Simple flag propagation
+    if (sourceTask.acknowledged && !sib.acknowledged) {
+      sib.acknowledged = true;
+      sib.acknowledgedBy = sourceTask.acknowledgedBy || sib.acknowledgedBy || '';
+      sib.acknowledgedAt = sourceTask.acknowledgedAt || Date.now();
+      changed = true;
+    }
+    // Per-lead leadAck propagation — copy every entry the source has
+    // that the sibling is missing.
+    if (sourceTask.leadAck && typeof sourceTask.leadAck === 'object') {
+      if (!sib.leadAck || typeof sib.leadAck !== 'object') sib.leadAck = {};
+      Object.keys(sourceTask.leadAck).forEach(key => {
+        if (!sib.leadAck[key] || !sib.leadAck[key].ackedAt) {
+          sib.leadAck[key] = { ...sourceTask.leadAck[key] };
+          changed = true;
+        }
+      });
+    }
+    if (changed) updated++;
+  });
+  return updated;
+}
+
 function acknowledgeTask(taskId, event) {
   // Stop click from also opening the task modal
   if (event) { event.stopPropagation(); event.preventDefault(); }
@@ -13644,6 +15238,15 @@ function acknowledgeTask(taskId, event) {
   logTaskAcknowledged(project, t, t.acknowledgedBy || user);
   // v90: notify project lead + task leads that the assignee ack'd
   _notifyTaskAcknowledged(project, t, t.acknowledgedBy || user);
+  // v112: Series-level ack — propagate this ack to every sibling in the
+  // series so the user doesn't have to individually acknowledge 60+
+  // pre-generated instances of the same recurring task.
+  if (t.seriesId && typeof _propagateAckToSiblings === 'function') {
+    const propagated = _propagateAckToSiblings(project, t);
+    if (propagated > 0) {
+      console.log(`[v112] Propagated ack to ${propagated} sibling instance${propagated === 1 ? '' : 's'} in series`);
+    }
+  }
   saveState();
   render();
 }
@@ -13858,6 +15461,30 @@ function getCurrentUser() {
 // (task assigned, acknowledged, completed, rejected, reassigned, message
 // posted) should call this. Dedup within 5 seconds prevents double-fires
 // from re-renders; the 200-entry cap keeps localStorage small.
+// v105: Return the full set of people "associated" with a task for the
+// purpose of notifications: assignee, all task leads, all support members
+// (both legacy primary task.support AND additional task.supportMembers,
+// mirroring the v95 aggregator fix), plus the project lead. Set semantics
+// dedupe automatically. Used by notification helpers so a signed-in user
+// sees toasts/bell entries for anything on tasks they're involved with,
+// not just tasks explicitly addressed to them by role-specific logic.
+function _getTaskAssociatedPeople(project, task) {
+  const set = new Set();
+  if (!project || !task) return set;
+  const owner = ((project.leadEstimator || '') + '').trim();
+  if (owner) set.add(owner);
+  const assignee = ((task.assignee || '') + '').trim();
+  if (assignee) set.add(assignee);
+  if (Array.isArray(task.leads)) {
+    task.leads.forEach(n => { if (n && n.trim()) set.add(n.trim()); });
+  }
+  if (task.support && task.support.trim()) set.add(task.support.trim());
+  if (Array.isArray(task.supportMembers)) {
+    task.supportMembers.forEach(n => { if (n && n.trim()) set.add(n.trim()); });
+  }
+  return set;
+}
+
 function _emitNotification(evt) {
   if (!evt || !evt.type) return;
   if (!Array.isArray(state.notifications)) state.notifications = [];
@@ -13913,12 +15540,16 @@ function _notifyTaskStatusChange(project, task, oldStatus, newStatus, actorName)
   const assignee = ((task.assignee || '') + '').trim();
   const leads = Array.isArray(task.leads) ? task.leads.filter(Boolean).map(x => x.trim()) : [];
 
-  // Marked complete → notify the project lead + all task leads (not the actor)
+  // v105: Fire status-change notifications to EVERYONE associated with the
+  // task (assignee, all leads, all support members, project lead) so
+  // whoever's signed in sees updates on tasks they're involved with,
+  // regardless of their specific role. Self-filter in _emitNotification
+  // still prevents notifying the actor about their own action.
+  const associated = _getTaskAssociatedPeople(project, task);
+
+  // Marked complete → notify everyone associated
   if (newStatus === 'done' && oldStatus !== 'done') {
-    const recipients = new Set();
-    if (owner) recipients.add(owner);
-    leads.forEach(n => recipients.add(n));
-    recipients.forEach(r => {
+    associated.forEach(r => {
       _emitNotification({
         type: 'task-completed',
         taskId: task.id,
@@ -13931,12 +15562,9 @@ function _notifyTaskStatusChange(project, task, oldStatus, newStatus, actorName)
       });
     });
   }
-  // Un-doing a complete → notify same recipients (someone re-opened the task)
+  // Un-doing a complete → notify everyone associated
   if (oldStatus === 'done' && newStatus !== 'done') {
-    const recipients = new Set();
-    if (owner) recipients.add(owner);
-    leads.forEach(n => recipients.add(n));
-    recipients.forEach(r => {
+    associated.forEach(r => {
       _emitNotification({
         type: 'task-reopened',
         taskId: task.id,
@@ -13949,14 +15577,9 @@ function _notifyTaskStatusChange(project, task, oldStatus, newStatus, actorName)
       });
     });
   }
-  // v92: Moved to In Progress → notify project lead + task leads that work
-  // has started (skip when task was previously done — v90 reopened event
-  // already covers that transition and re-emitting here would double-notify).
+  // v92: Moved to In Progress → notify everyone associated
   if (newStatus === 'in-progress' && oldStatus !== 'in-progress' && oldStatus !== 'done') {
-    const recipients = new Set();
-    if (owner) recipients.add(owner);
-    leads.forEach(n => recipients.add(n));
-    recipients.forEach(r => {
+    associated.forEach(r => {
       _emitNotification({
         type: 'task-in-progress',
         taskId: task.id,
@@ -13969,14 +15592,10 @@ function _notifyTaskStatusChange(project, task, oldStatus, newStatus, actorName)
       });
     });
   }
-  // v92: Moved to Blocked → notify project lead + task leads that the task
-  // is stuck. This is the highest-value status notification since blocked
-  // work often needs someone to unblock it.
+  // v92: Moved to Blocked → notify everyone associated (highest value —
+  // blocked work needs someone to help unblock it).
   if (newStatus === 'blocked' && oldStatus !== 'blocked' && oldStatus !== 'done') {
-    const recipients = new Set();
-    if (owner) recipients.add(owner);
-    leads.forEach(n => recipients.add(n));
-    recipients.forEach(r => {
+    associated.forEach(r => {
       _emitNotification({
         type: 'task-blocked',
         taskId: task.id,
@@ -13989,13 +15608,9 @@ function _notifyTaskStatusChange(project, task, oldStatus, newStatus, actorName)
       });
     });
   }
-  // v92: Moved to Pending → notify project lead + task leads that the task
-  // is waiting on something external.
+  // v92: Moved to Pending → notify everyone associated
   if (newStatus === 'pending' && oldStatus !== 'pending' && oldStatus !== 'done') {
-    const recipients = new Set();
-    if (owner) recipients.add(owner);
-    leads.forEach(n => recipients.add(n));
-    recipients.forEach(r => {
+    associated.forEach(r => {
       _emitNotification({
         type: 'task-pending',
         taskId: task.id,
@@ -14051,15 +15666,13 @@ function _notifyTaskAssignment(project, task, oldAssignee, newAssignee, actorNam
 }
 
 // Emit "task acknowledged" — assignee acknowledged their new task.
-// Recipient = project lead + all task leads.
+// v105: Recipients = everyone associated with the task (assignee, leads,
+// support, project lead) — the self-filter still keeps the actor out of
+// their own notification.
 function _notifyTaskAcknowledged(project, task, actorName) {
   if (!project || !task) return;
   const actor = (actorName || getCurrentUser() || 'Someone').trim();
-  const owner = ((project.leadEstimator || '') + '').trim();
-  const leads = Array.isArray(task.leads) ? task.leads.filter(Boolean).map(x => x.trim()) : [];
-  const recipients = new Set();
-  if (owner) recipients.add(owner);
-  leads.forEach(n => recipients.add(n));
+  const recipients = _getTaskAssociatedPeople(project, task);
   recipients.forEach(r => {
     _emitNotification({
       type: 'task-acknowledged',
@@ -14104,18 +15717,11 @@ function _notifyTaskDueDateChanged(project, task, oldDate, newDate, actorName) {
   const n = (newDate || '').trim();
   if (o === n) return;
   const actor = (actorName || getCurrentUser() || 'Someone').trim();
-  const assignee = ((task.assignee || '') + '').trim();
-  const leads = Array.isArray(task.leads) ? task.leads.filter(Boolean).map(x => x.trim()) : [];
-  const recipients = new Set();
-  if (assignee) recipients.add(assignee);
-  leads.forEach(r => recipients.add(r));
-  // Also loop project lead in — they need to see date churn on their projects
-  const owner = ((project.leadEstimator || '') + '').trim();
-  if (owner) recipients.add(owner);
+  // v105: everyone associated with the task
+  const recipients = _getTaskAssociatedPeople(project, task);
   // Direction phrase for the message body
   let direction = '';
   if (o && n) {
-    // Compare as dates for earlier/later phrasing
     try {
       const od = new Date(o + 'T00:00:00');
       const nd = new Date(n + 'T00:00:00');
@@ -14147,23 +15753,15 @@ function _notifyTaskDueDateChanged(project, task, oldDate, newDate, actorName) {
 }
 
 // v91: Emit "projected hours changed" — someone changed a task's
-// estimatedHours value. Recipients: assignee + task leads + project lead
-// (workload just shifted for the people doing the work).
+// estimatedHours value. v105: everyone associated with the task.
 function _notifyTaskHoursChanged(project, task, oldHours, newHours, actorName) {
   if (!project || !task) return;
-  // Normalize null / undefined / string versions to a consistent number-or-null
   const norm = v => (typeof v === 'number' && !isNaN(v)) ? v : null;
   const o = norm(oldHours);
   const n = norm(newHours);
   if (o === n) return;
   const actor = (actorName || getCurrentUser() || 'Someone').trim();
-  const assignee = ((task.assignee || '') + '').trim();
-  const leads = Array.isArray(task.leads) ? task.leads.filter(Boolean).map(x => x.trim()) : [];
-  const recipients = new Set();
-  if (assignee) recipients.add(assignee);
-  leads.forEach(r => recipients.add(r));
-  const owner = ((project.leadEstimator || '') + '').trim();
-  if (owner) recipients.add(owner);
+  const recipients = _getTaskAssociatedPeople(project, task);
   const oFmt = (o === null) ? '(none)' : (o + 'h');
   const nFmt = (n === null) ? '(none)' : (n + 'h');
   let deltaPhrase = '';
@@ -14188,17 +15786,11 @@ function _notifyTaskHoursChanged(project, task, oldHours, newHours, actorName) {
 }
 
 // Emit "message received" — someone posted a comment on a task thread.
+// v105: everyone associated with the task.
 function _notifyMessagePosted(project, task, messageAuthor, messagePreview) {
   if (!project || !task) return;
   const actor = (messageAuthor || getCurrentUser() || 'Someone').trim();
-  const owner = ((project.leadEstimator || '') + '').trim();
-  const assignee = ((task.assignee || '') + '').trim();
-  const leads = Array.isArray(task.leads) ? task.leads.filter(Boolean).map(x => x.trim()) : [];
-  const recipients = new Set();
-  if (owner) recipients.add(owner);
-  if (assignee) recipients.add(assignee);
-  leads.forEach(n => recipients.add(n));
-  // Don't notify the actor themselves — self-filtering happens in _emitNotification
+  const recipients = _getTaskAssociatedPeople(project, task);
   recipients.forEach(r => {
     _emitNotification({
       type: 'message-posted',
@@ -14261,6 +15853,11 @@ function _refreshNotificationBell() {
   }
   // v93: silenced-state indicator dot
   bell.classList.toggle('toasts-silenced', !!state.toastsSilenced);
+  // v105: manager-mode indicator on the bell (team-wide scope)
+  bell.classList.toggle('bell-manager-mode', state.notificationScope === 'team');
+  bell.setAttribute('title', state.notificationScope === 'team'
+    ? 'Recent activity (Lead Manager Mode — seeing all team notifications)'
+    : 'Recent activity');
 }
 
 function toggleNotificationDropdown() {
@@ -14334,8 +15931,13 @@ function _notificationSeverity(type) {
     case 'task-completed':
     case 'task-acknowledged':
       return { severity: 'success', title: 'GOOD NEWS' };
+    // v108: task-assigned + task-reassigned get their own attention-grabbing
+    // severity ('assigned', SBG gold accent) so the signed-in user clearly
+    // catches when work has landed on their plate. Titles are more explicit.
     case 'task-assigned':
+      return { severity: 'assigned', title: 'NEW TASK ASSIGNED' };
     case 'task-reassigned':
+      return { severity: 'assigned', title: 'TASK REASSIGNED TO YOU' };
     case 'task-unassigned':
     case 'task-in-progress':
     case 'task-pending':
@@ -14368,12 +15970,16 @@ function _spawnToast(notif) {
     if (!me) return; // No identity → nothing is "mine"
     if ((notif.recipientName || '').toLowerCase() !== me) return;
   }
-  const container = document.getElementById('toastContainer');
-  if (!container) return;
-  // Cap concurrent toasts — keep newest 5, silently drop older
-  const existing = container.querySelectorAll('.toast-card');
+  // v115: Assignment toasts pop center-screen with red border for extra
+  // presence; other toasts stack top-right as before.
+  const isAssignmentToast = (notif.type === 'task-assigned' || notif.type === 'task-reassigned');
+  const targetLayer = isAssignmentToast
+    ? document.getElementById('toastCenterLayer')
+    : document.getElementById('toastContainer');
+  if (!targetLayer) return;
+  // Cap concurrent toasts — keep newest 5 in either layer
+  const existing = targetLayer.querySelectorAll('.toast-card');
   if (existing.length >= 5) {
-    // Remove oldest with a graceful animation
     _dismissToastElement(existing[existing.length - 1]);
   }
   const sev = _notificationSeverity(notif.type);
@@ -14383,19 +15989,30 @@ function _spawnToast(notif) {
   const clickHandler = notif.taskId
     ? `event.stopPropagation();_dismissToast('${escapeAttr(toastId)}');openTaskModal(null,'${escapeAttr(notif.taskId)}')`
     : `event.stopPropagation();_dismissToast('${escapeAttr(toastId)}')`;
+  // v108/v109: Render inline action buttons in the toast based on notif
+  // type + recipient eligibility. Helper returns an HTML string or ''.
+  const actionsHtml = _buildToastActionsHtml(notif, toastId);
+  const centerClass = isAssignmentToast ? ' toast-assignment-center' : '';
   const html = `
-    <div class="toast-card toast-severity-${sev.severity}" id="${toastId}" onclick="${clickHandler}">
+    <div class="toast-card toast-severity-${sev.severity}${centerClass}" id="${toastId}" onclick="${clickHandler}">
       <div class="toast-icon">${icon}</div>
       <div class="toast-body">
         <div class="toast-title">${escapeHtml(sev.title)}</div>
         <div class="toast-msg">${escapeHtml(notif.message || '')}</div>
         ${projectMeta ? `<div class="toast-meta">${projectMeta}</div>` : ''}
+        ${actionsHtml}
       </div>
       <button class="toast-close" onclick="event.stopPropagation();_dismissToast('${escapeAttr(toastId)}')" title="Dismiss">×</button>
     </div>
   `;
-  // Insert new toast at the TOP of the container so newest is on top
-  container.insertAdjacentHTML('afterbegin', html);
+  // Insert new toast at the TOP of the layer so newest is on top
+  targetLayer.insertAdjacentHTML('afterbegin', html);
+  // v115: toggle backdrop on center layer when it holds any toast
+  if (isAssignmentToast) {
+    targetLayer.classList.add('has-toast');
+  }
+  // v106: refresh the dismiss-all chip visibility + count
+  _refreshDismissAllChip();
   // Play chime
   try {
     if (typeof playMessageChime === 'function') playMessageChime();
@@ -14409,15 +16026,226 @@ function _dismissToast(toastId) {
 
 function _dismissToastElement(el) {
   if (!el || el.classList.contains('toast-dismissing')) return;
+  const wasCenter = el.classList.contains('toast-assignment-center');
   el.classList.add('toast-dismissing');
   // Remove after animation completes
-  setTimeout(() => { if (el && el.parentNode) el.parentNode.removeChild(el); }, 260);
+  setTimeout(() => {
+    if (el && el.parentNode) el.parentNode.removeChild(el);
+    // v106: after removal, refresh the dismiss-all chip (may hide if count drops)
+    _refreshDismissAllChip();
+    // v115: clear backdrop on center layer if it's now empty
+    if (wasCenter) {
+      const centerLayer = document.getElementById('toastCenterLayer');
+      if (centerLayer && centerLayer.querySelectorAll('.toast-card').length === 0) {
+        centerLayer.classList.remove('has-toast');
+      }
+    }
+  }, 260);
 }
 
 function dismissAllToasts() {
   const container = document.getElementById('toastContainer');
-  if (!container) return;
-  container.querySelectorAll('.toast-card').forEach(el => _dismissToastElement(el));
+  const centerLayer = document.getElementById('toastCenterLayer');
+  if (container) {
+    container.querySelectorAll('.toast-card').forEach(el => _dismissToastElement(el));
+  }
+  if (centerLayer) {
+    centerLayer.querySelectorAll('.toast-card').forEach(el => _dismissToastElement(el));
+  }
+  // v106: hide immediately for snappy feedback (the animation-driven refresh
+  // above will also fire but this feels more responsive)
+  const chip = document.getElementById('toastDismissAll');
+  if (chip) chip.style.display = 'none';
+  const cont = document.getElementById('toastContainer');
+  if (cont) cont.style.top = '100px';
+}
+
+// v109: Build the inline action button row for a toast. Different
+// notification types get different actions, and each action is only
+// rendered when the toast recipient is eligible to take it. Returns an
+// HTML string or '' when the toast has no actionable buttons.
+function _buildToastActionsHtml(notif, toastId) {
+  if (!notif || !notif.taskId || !notif.projectId) return '';
+  const project = state.projects.find(p => p.id === notif.projectId);
+  const task = project ? (project.tasks || []).find(t => t.id === notif.taskId) : null;
+  if (!project || !task) return '';
+  const recipient = (notif.recipientName || '').toLowerCase();
+  const openBtn = `<button class="toast-action-btn toast-action-secondary" onclick="event.stopPropagation();_dismissToast('${escapeAttr(toastId)}');_openTaskFromToast('${escapeAttr(notif.projectId)}','${escapeAttr(notif.taskId)}')" title="Open the task to see details">Open task →</button>`;
+
+  // task-assigned / task-reassigned → ✓ Acknowledge (v108)
+  if (notif.type === 'task-assigned' || notif.type === 'task-reassigned') {
+    return `<div class="toast-actions">
+      <button class="toast-action-btn toast-action-primary"
+              onclick="event.stopPropagation();_acknowledgeTaskFromToast('${escapeAttr(notif.projectId)}','${escapeAttr(notif.taskId)}','${escapeAttr(toastId)}')"
+              title="Acknowledge this task without leaving the page">✓ Acknowledge</button>
+      ${openBtn}
+    </div>`;
+  }
+
+  // task-completed → ✓ Sign off, only when the recipient is the
+  // project Lead Estimator and the task isn't already signed off.
+  if (notif.type === 'task-completed') {
+    const lead = (project.leadEstimator || '').toLowerCase();
+    if (lead && lead === recipient && !task.completionAcknowledged) {
+      return `<div class="toast-actions">
+        <button class="toast-action-btn toast-action-primary"
+                onclick="event.stopPropagation();_signOffCompletionFromToast('${escapeAttr(notif.projectId)}','${escapeAttr(notif.taskId)}','${escapeAttr(toastId)}')"
+                title="Sign off on this completed task (Lead Estimator only)">✓ Sign off</button>
+        <button class="toast-action-btn toast-action-primary toast-action-danger"
+                onclick="event.stopPropagation();_rejectCompletionFromToast('${escapeAttr(notif.projectId)}','${escapeAttr(notif.taskId)}','${escapeAttr(toastId)}')"
+                title="Reject the completion and send back to assignee (Lead Estimator only)">✗ Reject</button>
+        ${openBtn}
+      </div>`;
+    }
+  }
+
+  // completion-rejected → ✓ Acknowledge Rejection, only when recipient
+  // is the assignee or a support member and rejection not yet ack'd.
+  if (notif.type === 'completion-rejected') {
+    const assignee = (task.assignee || '').toLowerCase();
+    const supports = new Set();
+    if (task.support && task.support.trim()) supports.add(task.support.toLowerCase());
+    if (Array.isArray(task.supportMembers)) task.supportMembers.forEach(s => { if (s) supports.add(String(s).toLowerCase()); });
+    const isEligible = (assignee && assignee === recipient) || supports.has(recipient);
+    if (isEligible && !task.completionRejectionAcknowledged) {
+      return `<div class="toast-actions">
+        <button class="toast-action-btn toast-action-primary toast-action-danger"
+                onclick="event.stopPropagation();_acknowledgeRejectionFromToast('${escapeAttr(notif.projectId)}','${escapeAttr(notif.taskId)}','${escapeAttr(toastId)}')"
+                title="Acknowledge the rejection so the alert clears">✓ Acknowledge Rejection</button>
+        ${openBtn}
+      </div>`;
+    }
+  }
+
+  // task-blocked → just an Open task button — someone needs to look
+  if (notif.type === 'task-blocked') {
+    return `<div class="toast-actions">${openBtn}</div>`;
+  }
+
+  return '';
+}
+
+// v109: Cross-project safe wrapper that opens the task modal.
+function _openTaskFromToast(projectId, taskId) {
+  if (!projectId || !taskId) return;
+  if (state.activeProjectId !== projectId) state.activeProjectId = projectId;
+  openTaskModal(null, taskId);
+}
+
+// v111: Reject a completion directly from the toast. Opens the existing
+// reject-reason picker modal (which itself prompts the lead for identity
+// confirmation). Cross-project safe. Toast is dismissed optimistically
+// since the user is committing to the reject flow; if they cancel the
+// reject modal, the notification remains in the bell to retry.
+function _rejectCompletionFromToast(projectId, taskId, toastId) {
+  if (!projectId || !taskId) return;
+  const project = state.projects.find(p => p.id === projectId);
+  if (!project) { console.warn('[v111] Reject: project not found', projectId); return; }
+  const task = project.tasks.find(t => t.id === taskId);
+  if (!task) { console.warn('[v111] Reject: task not found', taskId); return; }
+  state.activeProjectId = projectId;
+  _dismissToast(toastId);
+  openRejectCompletionModal(taskId);
+}
+
+// v109: Sign off on a completed task directly from the toast. Wraps
+// acknowledgeCompletion which prompts the lead to confirm identity.
+// Only dismisses toast if the sign-off actually took (user could cancel).
+function _signOffCompletionFromToast(projectId, taskId, toastId) {
+  if (!projectId || !taskId) return;
+  const project = state.projects.find(p => p.id === projectId);
+  if (!project) { console.warn('[v109] Sign-off: project not found', projectId); return; }
+  const task = project.tasks.find(t => t.id === taskId);
+  if (!task) { console.warn('[v109] Sign-off: task not found', taskId); return; }
+  const prevActive = state.activeProjectId;
+  state.activeProjectId = projectId;
+  try {
+    acknowledgeCompletion(taskId);
+    if (task.completionAcknowledged) {
+      _dismissToast(toastId);
+    } else {
+      // Sign-off didn't take (user cancelled the prompt); roll back
+      state.activeProjectId = prevActive;
+    }
+  } catch (err) {
+    console.warn('[v109] Sign-off failed:', err);
+    state.activeProjectId = prevActive;
+  }
+}
+
+// v109: Acknowledge a completion rejection directly from the toast.
+// Same cross-project pattern as _acknowledgeTaskFromToast.
+function _acknowledgeRejectionFromToast(projectId, taskId, toastId) {
+  if (!projectId || !taskId) return;
+  const project = state.projects.find(p => p.id === projectId);
+  if (!project) { console.warn('[v109] Rejection ack: project not found', projectId); return; }
+  const task = project.tasks.find(t => t.id === taskId);
+  if (!task) { console.warn('[v109] Rejection ack: task not found', taskId); return; }
+  const prevActive = state.activeProjectId;
+  state.activeProjectId = projectId;
+  try {
+    acknowledgeRejection(taskId);
+    if (task.completionRejectionAcknowledged) {
+      _dismissToast(toastId);
+    } else {
+      state.activeProjectId = prevActive;
+    }
+  } catch (err) {
+    console.warn('[v109] Rejection ack failed:', err);
+    state.activeProjectId = prevActive;
+  }
+}
+
+// v108: Acknowledge a task directly from an assignment toast. Uses
+// cross-project awareness — flips state.activeProjectId first if the task
+// lives in a different project than what's currently active (same pattern
+// as v88 cross-project openTaskModal). Dismisses the toast on success so
+// the user gets a snappy confirmation.
+function _acknowledgeTaskFromToast(projectId, taskId, toastId) {
+  if (!projectId || !taskId) return;
+  const project = state.projects.find(p => p.id === projectId);
+  if (!project) {
+    console.warn('[v108] Toast ack: project not found', projectId);
+    return;
+  }
+  const task = project.tasks.find(t => t.id === taskId);
+  if (!task) {
+    console.warn('[v108] Toast ack: task not found', taskId);
+    return;
+  }
+  // Set active project so acknowledgeTask (which reads state.activeProjectId)
+  // finds the right task. Don't switch views — user stays where they are.
+  const prevActive = state.activeProjectId;
+  state.activeProjectId = projectId;
+  try {
+    acknowledgeTask(taskId);
+    // Dismiss the toast — the user has done what it was asking for.
+    _dismissToast(toastId);
+  } catch (err) {
+    console.warn('[v108] Toast ack failed:', err);
+    // Roll back the project switch since it didn't take
+    state.activeProjectId = prevActive;
+  }
+}
+
+// v106: Show/hide the "Dismiss all" chip based on current live toast count.
+// Appears at 2+ toasts. Also nudges the toast container down so the chip
+// doesn't overlap the first toast.
+function _refreshDismissAllChip() {
+  const chip = document.getElementById('toastDismissAll');
+  const countEl = document.getElementById('toastDismissAllCount');
+  const container = document.getElementById('toastContainer');
+  if (!chip || !container) return;
+  const count = container.querySelectorAll('.toast-card:not(.toast-dismissing)').length;
+  if (count >= 2) {
+    if (countEl) countEl.textContent = String(count);
+    chip.style.display = 'inline-flex';
+    // v110: chip sits at top:100px, push container to 142px so it clears
+    container.style.top = '142px';
+  } else {
+    chip.style.display = 'none';
+    container.style.top = '100px';
+  }
 }
 
 // v93: Toggle whether toasts should pop up at all. Bell dropdown still
@@ -14462,6 +16290,9 @@ function _renderNotificationDropdown() {
     <button class="notif-scope-btn ${scope === 'mine' ? 'active' : ''}" onclick="setNotificationScope('mine')">Just Mine</button>
     <button class="notif-scope-btn ${scope === 'team' ? 'active' : ''}" onclick="setNotificationScope('team')">Team-wide</button>
   `;
+  // v107: sync the prominent Manager Mode toggle in the dropdown header
+  const mgrToggle = document.getElementById('notifManagerToggle');
+  if (mgrToggle) mgrToggle.checked = (scope === 'team');
   // v93: keep silence-toggle button label in sync with current state
   const silenceBtn = document.getElementById('notifSilenceBtn');
   if (silenceBtn) {
@@ -14728,10 +16559,47 @@ function openCurrentUserModal() {
 
 function saveCurrentUser() {
   const val = document.getElementById('currentUserSelect').value.trim();
+  const previousUser = (state.currentUser || '').trim();
   state.currentUser = val;
   saveState();
   closeModal('currentUserModal');
   render();
+  // v105: On user-switch, catch up on unread notifications addressed to the
+  // new user by popping the last few as toasts. This makes it feel like the
+  // signed-in user gets notifications on any task they're associated with,
+  // even ones generated while another user was signed in on this browser.
+  if (val && val.toLowerCase() !== previousUser.toLowerCase()) {
+    if (typeof _popCatchUpToasts === 'function') {
+      _popCatchUpToasts(val);
+    }
+  }
+}
+
+// v105: Pop up to N recent unread notifications for the given user as
+// toasts. Called when a user signs in / switches identity so they see
+// what happened while they were signed in as someone else. Respects the
+// existing toastsSilenced kill switch.
+function _popCatchUpToasts(user) {
+  if (!user) return;
+  if (state.toastsSilenced) return;
+  const notifs = Array.isArray(state.notifications) ? state.notifications : [];
+  const me = user.toLowerCase();
+  const cutoff24h = Date.now() - (24 * 60 * 60 * 1000);
+  const lastSeen = state.notificationsLastSeenAt || 0;
+  // Find recent unread notifications where this user is the recipient
+  const unreadForMe = notifs
+    .filter(n => (n.recipientName || '').toLowerCase() === me)
+    .filter(n => (n.createdAt || 0) > Math.max(lastSeen, cutoff24h))
+    .slice(0, 5); // cap at 5 catch-up toasts
+  if (unreadForMe.length === 0) return;
+  // Reverse so oldest pops first, newest ends on top of the stack
+  unreadForMe.reverse().forEach((notif, idx) => {
+    setTimeout(() => {
+      if (typeof _spawnToast === 'function') _spawnToast(notif);
+    }, idx * 350); // slight stagger so they slide in one after another
+  });
+  // Log so devs can see the catch-up happened
+  console.log(`[v105] Popped ${unreadForMe.length} catch-up toast${unreadForMe.length === 1 ? '' : 's'} for ${user}`);
 }
 
 // Update the "Acknowledge All Mine" and "Override All" buttons in the view switcher.
@@ -16146,6 +18014,26 @@ function getDefaultAdvancements() {
 
   return [
     // ---------- High-impact ----------
+    advImplemented('high-impact', 'Training Log — tag any task as counting toward training + dedicated per-person hours page', "Two coordinated additions. (1) NEW '🎓 Count Toward Training' button on the task modal, right next to Mark as Critical. Toggle it on any task — regular day-to-day work like takeoff review, BC configuration, or client walkthroughs can all count as team development. Task stays assigned to its project as normal; this is just a metadata tag. Tagged tasks get a small gold 🎓 TRAINING chip on the board so you can see them at a glance. (2) NEW 🎓 Training Log page in the sidebar. Cross-project view showing team-wide training hours pending, completed this month, YTD, and all-time. Per-person cards break down each estimator's numbers with color-coded metric tiles (red=pending, gold=this month, navy=YTD, gray=all-time). Detailed task list at the bottom filters by person and status; click any row to jump into the task. 📋 Copy Summary button dumps a plain-text roll-up to the clipboard for reporting.", "Shipped Jul 10, 2026 in response to: 'I would like the ability to tag any task as Training in other words I would like to be able to have any normal task be tagged and tracked for assignees to reflect even though it is a task that is normal day to day business as precon manager i consider it to be apart of training as well. I would like also a separate log and or page that shows everyones current and past training hours completed, pending, etc to be used for reference. All task remain as is and assigned to each project accordingly, I just want to tag them.' Design choice: simple boolean task.isTraining flag (no sub-category or notes for v1 — the user asked for the simplest possible tag; sub-categories can be added later if needed for reporting granularity). Ten pieces. (1) Schema — task.isTraining boolean, no backfill needed since all reads use !!task.isTraining which defaults to false for legacy tasks. state.trainingLogView boolean (navigation flag), state.trainingLogFilter ('all'|'pending'|'completed'), state.trainingLogPersonFilter (name or 'all') — all persisted so filters survive reloads. (2) Task modal button — .training-btn mirrors .critical-btn pattern: 🎓 outline when off (dashed 2px gold border, gold text on transparent), filled solid gold when on. Sits inline right of the Critical button in the same form group (relabeled Critical → Critical / Training since both live there now). toggleTaskTraining / setTaskTrainingUI / getTaskTrainingUI follow the exact naming pattern of the critical helpers. Wired into openTaskModal (loads state from t.isTraining) and saveTask (writes via getTaskTrainingUI). Also wired into v118's _buildTaskCopyForDuplicate so training tag carries through Duplicate + Copy to Project. (3) Task card chip — .training-chip renders alongside .critical-chip when task.isTraining, in the standard SBG gold. Overdue-card override flips it to white-on-red matching the critical-chip pattern for legibility. (4) Sidebar button — new .snapshot-sidebar-btn with 🎓 icon, 'Training Log' label, 'Team training hours · pending & completed' subtitle. Sits right after Team Workload in the sidebar. Same button pattern as Team Workload / Project Timeline / Open Slots so it feels native. (5) Navigation wiring — openTrainingLogView sets trainingLogView=true, resets homeView/statusSnapshotView/projectTimelineView/teamWorkloadView/openSlotsView/tiView so mutual exclusion holds. exitTrainingLogView flips it back. A batch pass added state.trainingLogView=false to 15 existing view-switch entry points (selectProject, openHomeView, openStatusSnapshot, all the other openXView functions) so navigating away from Training Log always clears the flag — same pattern that fixed the v54 Team Workload navigation bug. (6) Render dispatcher — new branch after the Team Workload branch: if state.trainingLogView, hide all other views, show #trainingLogView, call renderTrainingLogView. (7) DOM structure — #trainingLogView contains a header (title + subtitle + action buttons Copy Summary / Refresh / Close), a 4-tile stat strip (Pending / This Month / YTD / All Time — each tile has a left-border accent in its section color), a per-person section with #tlvPersonGrid, and a task-detail section with status + person filter dropdowns and #tlvTaskList. (8) Data pipeline — _collectTrainingTasks walks state.projects (skipping archived) and returns {task, project} refs for every isTraining task. _buildTrainingPersonSummary aggregates per-name totals using the v94 support-hours-pro-rating pattern (primary lead gets the primary share; support members split the support percentage evenly). Bucketizes into pending, this-month completed, YTD completed, all-time completed based on task.status === 'done' and task.completedAt against month/year starts. (9) Rendering — renderTrainingLogView writes the stat strip, per-person cards (each showing 4 metric tiles color-matched to the header stats), and the task list (grid with status icon, title, project, stage, person, hours, due date). Empty states for no-training-tagged and no-matches-current-filter. Task rows click through to _openTaskFromTrainingLog which temporarily sets activeProjectId + opens the task modal so users can jump to any training task without leaving the log page context. (10) copyTrainingLogSummary — builds a plain-text summary (header + per-person block with pending / this-month / YTD / all-time hours) and copies to clipboard via navigator.clipboard. Falls back to alert() on non-clipboard environments. CSS: full .tlv-* family (~350 lines) covering header, stat strip, section wrappers, person grid + cards, metric tiles, filter dropdowns, task list rows with responsive column collapse below 1100px, empty states. Uses SBG gold as the primary accent to visually distinguish from Team Workload's blue treatment. Reports and cards use Barlow Condensed for numbers and labels matching the rest of the app's typography system. Verified: JS syntax clean; symbol references all resolve; view element registered in dispatcher; sidebar button routes correctly."),
+    advImplemented('high-impact', 'Task actions: Duplicate, Copy to Project, and Save to Master Template all keep full work setup', "Three related fixes to task reuse. (1) NEW '📋 Duplicate' button on the task modal footer creates a copy of the task in the same project — same title (with '(copy)' suffix), stage, source, hours, category, priority, critical flag, checklist, deliverables, best-practice notes, recurrence rule, and role-requirement flags. Resets assignee, leads, support, due date, status, activity log, messages, acknowledgements, and completion state so the duplicate is a fresh work item. Opens the copy for editing so you can immediately assign it and set the due date. (2) NEW '📤 Copy to Project' button opens a picker of your other active projects. Pick one and the task is copied over with its due date recalculated from the target project's bid dates (via the same anchor + offset math the template loader uses). Same field-preservation rules as Duplicate. Prompts to switch to the target project and open the copy after. (3) FIX '⭐ Save to Master Template' was only saving 7 fields (title, stage, category, source, priority, offset, dateAnchor) — hours, checklist, deliverables, best-practice notes, critical flag, and role-requirement flags were silently dropped. Now saves the complete work-defining picture so loading the template into a future project brings back everything you had set up. Update-existing-template-entry path also updated to overwrite the full field set.", "Shipped Jul 10, 2026 in response to: 'I want to be able to duplicate a task within the same project as well as copy to another project if needed. Also, I noticed when saving task to template it does not carry over all the checklist, hours, information. I want to make sure when Duplicating, Copying, Saving to Master Template that it does the following: Keeps Task Name, Stage, Source, Hours, etc in place and starts fresh Assignees, Support, and Due Dates.' Seven pieces. (1) Shared helper _buildTaskCopyForDuplicate(source, targetProject) — the single source of truth for what carries over vs resets in a task clone. Keeps ~20 work-defining fields (title, stage, category, source, priority, offset, dateAnchor, critical, estimatedHours, supportHoursPct, notes, bestPracticeNotes, scopePackage, requiresSenior/Lead1/Lead2, deep-cloned checklist with new item ids + reset done state, deep-cloned deliverables with new ids + reset done state, deep-cloned recurrence rule with parentId stripped so the copy starts a fresh series). Resets ~15 per-instance fields (assignee, leads, support, supportMembers, ballInCourt='Lead', dueDate (recomputed from target project's anchor + offset), status='not-started', all completion/ack/rejection stamps, per-lead leadAck / leadCompletion / bestPracticeAck objects, seriesId=null, reschedule bookkeeping, messages=[], activityLog=[]). Fresh id and createdAt. Same helper drives Duplicate and Copy-to-Project so behavior stays consistent. (2) duplicateTask() — pulls the current editingTaskId, calls _buildTaskCopyForDuplicate with the SAME project as target, appends '(copy)' to the title, pushes to project.tasks, saves state, closes and reopens the modal on the new task so the user lands on the copy ready to edit. (3) copyTaskToProject() — filters state.projects to other non-archived projects, opens a picker modal listing them sorted by soonest bid due. Empty state alerts if there are no other projects. (4) _openCopyToProjectPicker builds the modal DOM on first use (lazy-created since most users won't hit this feature often), showing a source-task preview panel + one clickable row per project with name, task count, and days-left/days-late badge. (5) _confirmCopyToProject builds the copy against the TARGET project so due date is recomputed from the target's own startDate/dueDate/prebidDate/rfiDueDate, pushes to target.tasks, and offers a confirm to switch to the target and open the new task. (6) saveTaskToMasterTemplate now reads and captures the full field set from the modal — reading estimatedHours from taskHours input (quarter-hour rounded), critical from taskCritical checkbox, pendingChecklist and pendingDeliverables arrays (falling back to existing task values if the pending arrays aren't populated), best-practice text from taskBestPractice / taskBestPracticeNotes, requiresSenior/Lead1/Lead2 from their checkboxes. (7) doSaveTaskToTemplate builds a normalized fullFields object with the same 15+ reusable fields and uses it in BOTH the update-existing path (Object.assign onto the duplicate) and the new-entry path (tmpl.tasks.push({ ...fullFields })). Preview confirm dialog now shows an 'Extras' summary line listing what's included (hours, critical flag, checklist count, deliverable count, best-practice presence) so the user can verify. Round-trip verified: template → new project via existing _addTemplateTasksToProject already handled the rich fields (v39 / v49); the gap was purely on the save side, now closed. CSS: new .ctp-source-preview + .ctp-project-row family for the copy-to-project picker — subtle navy accent, hover lift, matches existing modal patterns. JS syntax clean."),
+    advImplemented('polish', 'Top header: milestone version chip matching the sidebar footer', "The version tag in the top-left app header used to render as a plain flat pill ('V116 · Built Jul 10, 2026') while the sidebar footer had the full milestone treatment — navy-red-gold gradient background, shimmer sweep, 🎉 celebration prefix. Now both surfaces match: the top header shows the same milestone chip ('🎉 V119'), and the build date sits next to it as a smaller monospace annotation so nothing is lost.", "Shipped Jul 10, 2026 in response to a screenshot request asking for the milestone chip style to also appear at the top of the app. Three pieces. (1) New CSS class .brand-text .version-stamp.version-stamp-milestone mirrors the sidebar footer .sf-version-milestone treatment: Barlow Condensed 12px 800-weight uppercase, 3x10px padding, 4px radius, navy→red→gold 135deg gradient background, subtle 1px white inner border ring, 2x6px navy drop shadow. Uses the shared milestone-shimmer keyframe animation (3.5s ease-in-out infinite) via a positioned ::after pseudo-element that sweeps a 40%-wide translucent white streak across every ~3s — same feel as the sidebar. (2) New paired .brand-text .version-built class for the build date so it can breathe next to the chip rather than being crammed inside it: JetBrains Mono 9.5px, 55%-opacity white, small margin-left gap. (3) Markup swap: the subtitle span was one flat 'V116 · Built Jul 10, 2026' pill; now it's two elements — the milestone chip carrying '🎉 V119' and a sibling span carrying 'Built Jul 10, 2026'. Same title attribute pattern as the sidebar footer chip. Sidebar footer chip left untouched — it was already correct. JS unchanged."),
+    advImplemented('bugfix', 'Today page: ✓ Acknowledge Series now actually propagates to the whole series', "Clicking ✓ Acknowledge Series on a recurring row in the Today page's Awaiting Acknowledgment section was only clearing that single instance — the other 27 siblings stayed put. The dedup display (v113) was working, but under the hood the ack was one-at-a-time. Now one click clears the entire series across all its instances, matching the behavior everywhere else in the app.", "Shipped Jul 10, 2026 in response to: 'Today Screen: When clicking Acknowledge Series it does not go away and seems to just be acknowledge recurring task one at a time. Does not work the way it does everywhere else.' Root cause: acknowledgeTaskFromHome was a duplicated stub predating v112 — it set task.acknowledged/acknowledgedBy/acknowledgedAt directly and never routed through acknowledgeTask (which is where v112 wired the _propagateAckToSiblings call). So the button label read 'Series' via v113's row-level display logic, but the click handler behaved like a per-instance ack. Two fixes. (1) acknowledgeTaskFromHome now checks task.seriesId and calls _propagateAckToSiblings(project, task) after the local ack — same pattern acknowledgeTask uses. One click → every unack'd sibling in the series flips to acknowledged with matching acknowledgedBy/acknowledgedAt. (2) acknowledgeAllMyTasksFromHome confirm dialog now uses the grouped count via getMyUnackedGroupCount so the confirm prompt matches the button label. Was 'Acknowledge all 31 new tasks across all projects?' when the button read 'Acknowledge All (4)'. Now reads 'Acknowledge all 4 items (covering 31 instances) across all projects?' when grouping actually collapsed rows, or the plain 'Acknowledge all N tasks' label when it didn't. Belt and suspenders — since each iteration still touches every task individually, propagation would be redundant for the bulk case; leaving that path alone. JS syntax clean."),
+    advImplemented('high-impact', 'Multi-fix: Schedule Calendar integration + Project Alerts dedup + center-screen assignment toast + collapsed sidebar sections + version sync', "Five coordinated fixes shipped together. (1) Recurrence now respects the Schedule Calendar's holiday list (Settings → Schedule Calendar) rather than a duplicate hardcoded federal list — so editing the master holiday list customizes recurrence skips app-wide. (2) Project Alerts UNACKNOWLEDGED tab now deduplicates recurring series into one row with a gold '🔁 N occurrences' badge and '✓ Acknowledge Series' button — matches v113's Today page behavior so users don't see 54+ individual instances of one weekly task. (3) Assignment toasts (task-assigned / task-reassigned) now pop CENTER-SCREEN with a thick red border, gold left accent, gold-red gradient shadow, subtle blur backdrop, and a 2.5s pulse animation — high-visibility 'in your face but not too much' treatment. Other toasts still stack top-right. (4) Currently Bidding sidebar section is now collapsible and defaults to collapsed (matching Past Pursuits + Archived). (5) Version sync — the stale V83 subtitle in the app header has been updated to match the sidebar chip; both now show V119 with today's build date.", "Shipped Jul 10, 2026 in response to a batch of five fixes in one message. Investigation revealed the existing Schedule Calendar system (state.holidays + isWeekend + isHoliday helpers, populated by getDefaultHolidays()) so v114's duplicate _getUsFederalHolidays / _observedHolidayDates / _nthWeekdayOfMonth / _fmtYmd / _usFederalHolidaysCache / _getHolidayName / _isBusinessDay all got deleted. New _isBusinessDay is a thin wrapper around isWeekend + isHoliday. _advanceToBusinessDay inline-formats YMD without needing the helper. The recurrence UI hint now points users to the Schedule Calendar as the authoritative holiday source rather than listing 11 hardcoded federal holidays. Project Alerts dedup: modified the render loop at line ~50164 to build a displayTasks array by iterating tierTasks, tracking seen seriesIds, and using the earliest-dated instance as the series representative. The count label reads 'N items (covers M instances)' when grouping collapsed rows. renderAlertItem now checks seriesId + sibling count for the unacknowledged tier and appends a gold .ai-series-badge next to the title (' 🔁 8 occurrences' pill) with matching v113 gradient. The ✓ Acknowledge button label switches to '✓ Acknowledge Series' when the row represents a series, with a matching tooltip. Cross-project ack works via existing v112 propagation. Sidebar collapse: renderProjectList now emits Currently Bidding wrapped in a clickable .project-section-header with chevron, gated on state.currentlyBiddingExpanded === true. Toggle handler toggleCurrentlyBidding() matches togglePastPursuits pattern (flip + save + re-render). state.currentlyBiddingExpanded added with default false, so all users see it collapsed on first load. Center-screen assignment toast: new #toastCenterLayer div fixed inset:0 z-index:10002 flex-centered with a semi-opaque navy backdrop + 1px blur; assignment toasts spawn here instead of the top-right container. New .toast-assignment-center class overrides positioning + sizing: 500px wide (max 100vw-40px), 3px red border all around with 8px gold left border, gradient background, 60px red shadow with pulse animation. Larger 30px icon, 15px title, 13.5px message. _spawnToast now branches on notif.type — assignment → center layer + add class; other → normal container. _dismissToastElement clears the .has-toast class on the center layer when it empties (fades the backdrop). dismissAllToasts sweeps both layers. Version sync: line 6 meta and line 18955 subtitle both bumped from V83 (which was multiple versions stale) to V119; sidebar footer built-date updated to Jul 10, 2026. Also the sed pass bumped all V114→V119 references throughout the file. JS syntax clean."),
+    advImplemented('high-impact', 'Recurring tasks: skip weekends + US federal holidays by default', "When a recurring occurrence would land on a Saturday, Sunday, or federal holiday, it now rolls forward to the next business day. So a daily task no longer spawns instances on Sat/Sun, a weekly Wednesday task that hits July 4 shifts to July 5+, etc. All 11 US federal holidays covered (New Year's Day, MLK Day, Presidents Day, Memorial Day, Juneteenth, Independence Day, Labor Day, Columbus Day, Veterans Day, Thanksgiving, Christmas) plus their federal observed dates (a Saturday holiday is observed Friday; a Sunday holiday is observed Monday — both are skipped). Behavior can be toggled off per-task via a new 'Skip weekends & US federal holidays' checkbox in the recurrence section of the task modal — default ON for all new recurring tasks, opt out for genuine 7-day rotations like site security.", "Shipped Jul 6, 2026 in response to: 'on recurring events I want to skip weekends and holidays (Example if task is Daily I don't want it for Saturday and Sunday as well).' Six pieces. (1) Federal holiday computation: _getUsFederalHolidays(year) builds a Set of YYYY-MM-DD strings for a given year, cached per-year so we only compute once per session. Uses _nthWeekdayOfMonth for the six rule-based holidays (MLK 3rd Mon Jan, Presidents 3rd Mon Feb, Memorial last Mon May, Labor 1st Mon Sep, Columbus 2nd Mon Oct, Thanksgiving 4th Thu Nov). Fixed-date holidays go through _observedHolidayDates which returns BOTH the actual date and the federal-observance shift (Saturday holiday → Friday observed; Sunday holiday → Monday observed) so pre-gen skips them both. Verified 2026 output: Jul 4 (Sat) correctly generates Jul 3 as observed; both are non-business days. (2) _isBusinessDay(dateStr): returns false when weekend or in the holidays Set. _advanceToBusinessDay(dateStr): rolls forward one day at a time up to a 14-day safety cap. Never infinite-loops even with corrupt data. (3) _getHolidayName(dateStr): reverse lookup that returns 'Independence Day', 'Thanksgiving', etc. — used for readable UI messaging when a date is skipped. (4) computeNextRecurrenceDate: at the end of the pattern-specific date math, checks rec.skipNonBusinessDays (defaults true when unset — always-on behavior for pre-v114 tasks that never had the field). If the computed date is not a business day, rolls forward via _advanceToBusinessDay and re-checks the endDate cap after the shift so a rolled date that jumps past endDate correctly returns null. (5) UI toggle: new checkbox in the recurrence form group '☑ Skip weekends & US federal holidays' with an explanatory hint listing all 11 federal holidays + observed-date rule. Shows/hides with the pattern (visible only when pattern != none). Populated from rec.skipNonBusinessDays on modal load (defaults checked when field is missing). Saved back into rec.skipNonBusinessDays on modal save. Reset to checked on new-task modal open. (6) Backward-compatible: existing pre-generated instances on weekends/holidays stay put (they were legitimately created under old behavior; user can delete/edit them). Only NEW pre-gen (rolling refresh extending the horizon, or new tasks) applies the skip logic. Because rec.skipNonBusinessDays defaults true when unset, existing recurring tasks automatically get the new behavior for future occurrences — no migration needed. JS syntax clean; verified holiday output for 2026 with a standalone Node test."),
+    advImplemented('high-impact', 'Awaiting Ack list: collapsed to one row per recurring series with occurrence count badge', "v112 made acking any single instance propagate to the whole series, but the Awaiting Ack list on the Today page + sidebar badge still counted every pre-generated instance separately — so users still SAW 60 rows to work through even though clicking one would clear them all. This ships the display fix: recurring series now show as ONE row in the Awaiting Ack list with a gold '🔁 8 occurrences' badge and an '✓ Acknowledge Series' button. Sidebar badge and Home stats tile show the deduped count too. The row displays the EARLIEST upcoming instance's due date so you know when the next occurrence hits. Non-recurring tasks continue to show as individual rows.", "Shipped Jul 6, 2026 in response to: 'it still has to where a user sees all 60 task to acknowledge every time a recurring task is created (Example) I want acknowledgement for recurring new task to show up as one item and be a series acknowledgement.' Right call — v112 gave you the propagation, but the display was still flooded. Four pieces. (1) renderHomeUnack rewritten to group items by seriesId before rendering. Walks the raw list, uses a Set of seen seriesIds to dedupe, picks the earliest-dated instance as the row's visible representative (soonest due date = most actionable). Non-series tasks pass through as individual entries. Result: series → one row; standalone tasks → one row each. (2) Section header sub-text updated: shows 'N items (covers M instances)' when grouping actually collapsed anything, otherwise the plain 'N task(s)' label. So users see honest bookkeeping about how much work the shorter list actually represents. (3) Row visual: title now has a gold '🔁 N occurrences' pill badge next to it (only when N > 1). The Acknowledge button reads '✓ Acknowledge Series' instead of '✓ Acknowledge' when the row represents a series. Meta line shows 'Next due' instead of 'Due' and appends the cadence (' · weekly' etc.) from _formatRecurrenceCadence. (4) New helper getMyUnackedGroupCount(user): series-deduped version of the count, used by getHomeBadgeCount (sidebar red count badge) and by the Home stats 'Unacknowledged' tile. Both were pulling raw .length before — now they reflect the number of ACTUAL things to do, not the raw instance count. Backward-compatible: the raw getMyUnackedTasksAcrossProjects list is unchanged so any other caller keeps working; the ack Button still routes through acknowledgeTaskFromHome which triggers v112's series propagation to clear all siblings at once. CSS: .hi-series-badge uses SBG gold gradient (matching the v100 milestone badge style) so it visually reads as an SBG-branded 'this is special' pill. JS syntax clean."),
+    advImplemented('high-impact', 'Recurring series: series-level acknowledgement — one ack covers the whole series', "Creating a weekly recurring task used to spawn 8+ pre-generated instances that each needed individual acknowledgement — flooding the Awaiting Ack section with '60 items to ack' for a single logical piece of work. Now, acknowledging ANY one instance in a series automatically propagates the ack state to every sibling in that series. Works from the task modal, from the ✓ Acknowledge button on toasts, from the bulk 'Acknowledge All My Tasks' flow, and from Multi-Lead per-lead ack. Also inherits ack state onto newly pre-generated instances when the rolling window extends, so users don't get re-flooded each time the window advances.", "Shipped Jul 6, 2026 in response to: 'When someone creates a recurring task, I would like for it to be a consolidated acknowledgement for that task. In other words each time a recurring task is created a user will have to acknowledge 60 or more items each time and seems flooded. I would like this single acknowledgement function to work across the system including toasts.' Four pieces. (1) New helper _propagateAckToSiblings(project, sourceTask) walks every task in the same series (by seriesId), and for each sibling that isn't already acked: copies task.acknowledged, task.acknowledgedBy, task.acknowledgedAt from the source. Also copies every task.leadAck[user] entry the source has that the sibling is missing — so if a specific co-lead has personally acked, that propagates independently of the flat flag. Never overwrites a sibling's more-recent ack state. (2) Hook in acknowledgeTask: after the existing logTaskAcknowledged + _notifyTaskAcknowledged, if the source task has a seriesId the propagation helper runs. Console logs the count of siblings updated. Notification only fires once for the source ack — no notification spam per sibling. (3) Hook in ensureSeriesInstancesGenerated: after the pre-generation loop creates new instances (either at task-create time or during the rolling refresh on load), if any pre-existing sibling in the series is already acked, its state propagates to the newly created siblings. Uses the earliest-acked source (first ack wins for the whole series). Also handles the partial-multi-lead case where leadAck entries exist without the flat flag being flipped. (4) Task modal series banner (v100): the hint text under the 'Occurrence N of M in a weekly series' banner now explicitly tells the user 'Acknowledging this instance also acknowledges all sibling occurrences in the series' so the behavior is discoverable. Backward-compatible: existing single-task acks continue to work; only series-tagged tasks trigger propagation. JS syntax clean. NOTE: only affects acknowledgement (assignee/lead accepting the work). Completion sign-off remains per-instance since each weekly instance is a separate piece of work that needs its own approval when done."),
+    advImplemented('high-impact', 'Task modal: Sign Off / Reject Completion notice + reject action added to completion toast', "Two gaps closed. (1) The task modal had no way to sign off or reject a completed task — the only path was the Today page's 'Awaiting sign-off' section, so opening the full task view left you stranded. Now a gold 'AWAITING SIGN-OFF' notice appears at the top of the modal whenever the task is done, not signed off, and not rejected. Green ✓ Sign Off and red ✗ Reject Completion buttons sit right below the notice text, mirroring the existing rejection notice pattern. (2) The completion toast (v109) had ✓ Sign off but was missing ✗ Reject — added as a red danger button next to Sign off, wired through the same reject-reason picker modal.", "Shipped Jul 6, 2026 in response to: 'multiple areas, toast, including opening the full task that I cannot reject a completion or within the full task view can not acknowledge either.' Root cause: acknowledgeCompletion and openRejectCompletionModal had only ONE UI entry point each (the Today page). openTaskModal never rendered any notice about pending sign-off — so a completed task in the task modal showed no indication that the lead needed to act. Six pieces. (1) CSS: new .task-modal-signoff-notice family mirrors .task-modal-rejection-notice structure but uses SBG gold (#c07f00) instead of red. Two variant buttons — .tmsn-btn-accept (green) and .tmsn-btn-reject (red) — using the SBG palette. (2) renderTaskModalSignoffNotice(): shows the notice only when editingTaskId exists, task.status === 'done', task.completionAcknowledged === false, task.completionRejected === false. Header reads '⏳ AWAITING SIGN-OFF'. Body shows who completed it and when, plus the lead identity phrase. Two action buttons wired to the existing acknowledgeCompletion(taskId, event) and openRejectCompletionModal(taskId, event) which each pop their own identity prompt for the lead. Hint line explains 'You'll be prompted to confirm your identity'. If no lead is set on the project, the buttons are hidden and the body warns to set a Lead Estimator. Inserted after the task title input (same anchor as the rejection notice for consistent placement). (3) Hook into openTaskModal: renderTaskModalSignoffNotice() called right after renderTaskModalRejectionNotice() so both notices are painted on every modal open. (4) Refresh hooks: acknowledgeCompletion and confirmRejectCompletion now call both renderTaskModalSignoffNotice and renderTaskModalRejectionNotice when the task modal is open — so signing off from the notice makes it disappear immediately, and rejecting swaps the sign-off notice for the rejection notice without needing to close/reopen the modal. (5) Toast reject action: _buildToastActionsHtml's task-completed branch now renders TWO primary buttons — the gold ✓ Sign off (v109) plus a new red danger ✗ Reject next to it, both gated on recipient being the project lead AND task not already signed off. (6) _rejectCompletionFromToast wrapper: sets state.activeProjectId first (cross-project safe), dismisses the toast optimistically since the user is committing to the reject flow, and opens the reject reason picker modal via openRejectCompletionModal(taskId). If the user cancels the reject modal, the notification remains in the bell so they can retry from there. JS syntax clean."),
+    advImplemented('polish', 'Toasts + Dismiss All: pushed below the navy header so they no longer blur into it', "Toasts and the Dismiss All chip previously sat at top:20px, which put them squarely inside the ~83px sticky navy header. The chip's dark navy background especially blended into the header's own navy — visually indistinguishable. Both moved to top:100px so they now sit clearly below the header's red border with a small breathing gap. When the Dismiss All chip appears (2+ toasts), the toast container pushes to top:142px so nothing overlaps.", "Shipped Jul 6, 2026 in response to: 'the toast pop ups are a little too far up page and the dismiss all gets blurred in with top header.' Two coordinated changes. (1) CSS: both .toast-dismiss-all and .toast-container baseline top values moved from 20px → 100px. This puts them below the sticky header (14px padding-top + 52px logo height + 14px padding-bottom + 3px red border ≈ 83px) with a ~17px breathing gap. Container comment updated to note it gets pushed to 142px when the chip is visible. (2) JS: _refreshDismissAllChip and dismissAllToasts updated to use 100px baseline / 142px pushed-down (was 20px / 62px). The 42px chip clearance stays the same — it was calibrated correctly, just the anchor was too high. No behavior changes to the toasts themselves or the chip logic. JS syntax clean."),
+    advImplemented('high-impact', 'Toast inline actions: extended to Sign off completed tasks and Acknowledge rejections', "v108 added ✓ Acknowledge + Open task buttons to assignment toasts. v109 extends the same inline-action pattern to the other two notification types that have a natural action for the recipient: task-completed toasts show ✓ Sign off (only when the recipient is the project Lead Estimator) and completion-rejected toasts show ✓ Acknowledge Rejection (only when the recipient is the assignee or a support member). Both are cross-project safe. task-blocked toasts get an Open task → button since blocking usually needs someone to look. All other notification types (in-progress, pending, reopened, date changed, hours changed, message posted, unassigned) still render clean informational toasts without action buttons — those events don't have a single obvious inline action.", "Shipped Jul 6, 2026 in response to: 'great but also do have built in acknowledgement for any other activity toast that require it'. Six pieces. (1) Refactored v108's inline ternary in _spawnToast into a helper: _buildToastActionsHtml(notif, toastId) inspects notif.type + recipient eligibility and returns an HTML string (or '' when no actions apply). Keeps the spawn template clean and makes adding future action types easy. (2) task-completed action: only renders ✓ Sign off when the recipient matches project.leadEstimator AND task.completionAcknowledged is not already true. Prevents non-leads from seeing a button they can't use and prevents duplicate sign-offs. Wraps _signOffCompletionFromToast which calls the existing acknowledgeCompletion (whose Lead Estimator identity prompt still fires — belt-and-suspenders). (3) completion-rejected action: only renders ✓ Acknowledge Rejection when the recipient is the task assignee OR one of the support members (task.support + task.supportMembers, additive per v95) AND task.completionRejectionAcknowledged is not already true. Uses a new .toast-action-danger red variant of the primary button so users viscerally understand it's about a rejection, not a positive action. Wraps _acknowledgeRejectionFromToast which calls acknowledgeRejection. (4) Common Open task → secondary button: extracted into a shared local so all three action types share the same open-task-in-current-view behavior. Wired through _openTaskFromToast (v109) which sets state.activeProjectId to the target project before calling openTaskModal — matches the v88 cross-project pattern. (5) task-blocked toasts: no acknowledgement makes sense (blocking needs actual unblocking work), but an Open task → button is useful so the user can jump straight to the task and see what's blocking. Rendered as a single secondary button. (6) All three wrappers (sign-off, rejection-ack, task-ack) share the same cross-project safety pattern: temporarily switch state.activeProjectId, call the underlying flow, dismiss toast on success (checked via the appropriate flag on the task since the flow may have been cancelled at a prompt), roll back activeProjectId on failure. Doesn't switch views — user stays on their current page. JS syntax clean."),
+    advImplemented('high-impact', 'Assignment toasts: prominent NEW TASK ASSIGNED framing + inline ✓ Acknowledge button', "Assignment notifications used to blend into the routine navy 'ACTIVITY' toasts. They now get their own attention-grabbing severity: SBG-gold 6px left border, gold-tinted background wash, gold-glow attention pulse for 2.2 seconds when it lands, and larger gold 'NEW TASK ASSIGNED' (or 'TASK REASSIGNED TO YOU' for reassignments) title text. The toast also includes two inline action buttons: gold '✓ Acknowledge' (acknowledges the task directly without leaving the page) and 'Open task →' (opens the task modal to review before acking). Cross-project safe — acknowledging from a toast about a task in a different project works transparently.", "Shipped Jul 6, 2026 in response to: 'Toast pop up for Newly assigned task i would like for it to pop up and me described as \"New Task Assigned\" instead of activity and give it some visibility so users clearly catch it. Should also add ability to Acknowledge the task within the toast?' Four pieces. (1) _notificationSeverity switch: task-assigned + task-reassigned split out of the generic 'info/ACTIVITY' bucket into their own 'assigned' severity with distinct titles. task-assigned → 'NEW TASK ASSIGNED'; task-reassigned → 'TASK REASSIGNED TO YOU'. Rest of the notification types unchanged. (2) CSS .toast-card.toast-severity-assigned: 6px gold left border (thicker than the 4px default for other severities so it visually stands apart even at a glance), subtle gold gradient background wash (rgba 192,127,0,0.06 → white 45%), stronger gold shadow, and a 2.2s one-shot 'assigned-attention' keyframe animation that pulses the shadow larger/brighter in the middle then settles. Title text uses gold color, 13px font (1px larger than other severities), 800 weight, 0.5px letter-spacing. Icon renders at 24px (2px larger). (3) Inline action buttons: new .toast-actions container renders below the message + meta line when notification.type is task-assigned or task-reassigned AND both notif.taskId and notif.projectId are present. Row contains two .toast-action-btn buttons: primary gold '✓ Acknowledge' with hover-lift feedback, secondary transparent 'Open task →' for users who want to review first. Both stopPropagation on click so the toast-body click-to-open handler doesn't also fire. (4) _acknowledgeTaskFromToast(projectId, taskId, toastId): cross-project safe wrapper around acknowledgeTask. Finds the project + task, sets state.activeProjectId to the target project (same pattern as v88's cross-project openTaskModal so acknowledgeTask — which uses activeProjectId internally — finds the right task), calls acknowledgeTask(taskId), and dismisses the toast on success. Rolls back activeProjectId on failure. Console-warns on missing project/task. Doesn't switch views — the user stays on whatever page they were on. JS syntax clean."),
+    advImplemented('quality-of-life', 'Manager Mode: prominent one-click toggle inside the bell dropdown', "Added a labeled iOS-style toggle switch inside the notification bell dropdown header: '👁 LEAD MANAGER MODE' with an obvious gold-when-on switch. Click the bell → flip the toggle → you're in Manager Mode (or out of it). The old segmented pill (Just Mine / Team-wide) still works and stays as a secondary control. The Settings modal checkbox also still works. All three UI entry points share state.notificationScope so flipping any one flips them all.", "Shipped Jul 6, 2026 in response to: 'where do turn off and on manager mode?' Fair critique — the v105 implementation put the toggle in two places (Settings modal + Team-wide button in the bell dropdown footer) and neither was obvious. Solution: put a prominent labeled switch right where users go when they think about notifications — inside the bell dropdown itself. Four pieces. (1) New HTML row: .notif-manager-row inside the bell dropdown header, containing a Barlow Condensed uppercase label '👁 LEAD MANAGER MODE' and an iOS-style checkbox switch. Row has a subtle navy→gold linear gradient background with a light navy border so it visually stands out from the rest of the dropdown as a settings toggle, not a scope selector. (2) Switch CSS: standard checkbox-hidden-with-slider pattern. Gray track by default, SBG gold when checked. White thumb slides 18px on toggle with 0.2s transition. Explicitly resets the global input styling (width, padding, border, background) that would otherwise blow up the checkbox — same issue as the v102 giant-radio bug, learned lesson applied preemptively. (3) toggleManagerModeFromBell handler: reads the checkbox, calls setNotificationScope('team'|'mine') which flows through the existing plumbing, and also syncs the Settings checkbox if that modal happens to be open. (4) _renderNotificationDropdown extended to sync the switch's checked state from state.notificationScope every time the dropdown renders. Because setNotificationScope calls _renderNotificationDropdown, changes from ANY entry point (bell segmented pill, bell switch, Settings checkbox) propagate to all others. State is single source of truth; all UI controls are just views onto it. JS syntax clean."),
+    advImplemented('quality-of-life', 'Toasts: Dismiss All chip appears above the stack when 2+ toasts are showing', "Small dark navy pill sits above the toast stack with 'Dismiss all (N)' where N is the current live toast count. Clicking clears every visible toast with the same slide-out animation as individual dismissals. Only visible when 2 or more toasts are on screen — one-off toasts still just have their own X. Useful when sign-in catch-up, Manager Mode, or a burst of events fills the corner with toasts you don't need to individually process.", "Shipped Jul 6, 2026 in response to: 'toast need to have a dismiss all option, just in case for some reason toast gets populated with a ton of notifications.' Fair concern — v105 sign-in catch-up plus Manager Mode plus a rapid burst of events could easily land 5+ toasts, which is a lot of Xs to click. Four pieces. (1) New button element #toastDismissAll placed inside the header-stats area right before the toast-container in DOM order, but rendered at fixed top:20px right:20px with z-index 10001 (one above the container). Dark navy background with red count chip nested inside, matching SBG palette. Text 'Dismiss all' + count pill. Uses Barlow Condensed uppercase for the label, JetBrains Mono for the number. (2) CSS animation: same toast-slide-in keyframes as the toast cards so the chip's arrival feels consistent. Hover darkens the background slightly and translates left 2px — same feedback pattern as toast card hover. (3) _refreshDismissAllChip helper reads the current live toast count (excluding those in mid-dismiss animation) and shows the chip when count >= 2. Updates the count number. Also nudges the toast container's top offset from 20px → 62px when visible so the chip doesn't overlap the first toast. Called from both _spawnToast (after a new toast is added) and _dismissToastElement's setTimeout (after animation removes an old one). (4) dismissAllToasts extended to hide the chip immediately (before the animations complete) for snappy feel — the animation-driven refresh also fires but the immediate hide feels more responsive. Also snaps container back to top:20px. JS syntax clean. No changes to how toasts themselves render or the chime — this is purely additive UX."),
+    advImplemented('high-impact', 'Notifications: broader recipient set + sign-in catch-up + Lead Manager Mode', "Three changes to make notifications feel right for the signed-in user. (1) Every task-level notification (completed, reopened, in-progress, blocked, pending, acknowledged, date changed, hours changed, message posted) now fires to EVERYONE associated with the task — assignee, all leads, all support members (both primary task.support AND additional supportMembers), and project lead — not just a narrow role-specific subset. If you're on a task in any role, you see events on it. (2) When you switch signed-in user via the header chip, up to 5 recent unread notifications for the new user pop as toasts one-after-another (350ms stagger) — catch-up for what you missed while signed in as someone else. Respects the toast-silence toggle. (3) New 'Lead Manager Mode' setting in the Settings modal, with 👁 icon indicator on the bell when enabled. Sets your notification scope to team-wide (see EVERY notification in the system, not just yours). Same setting as the Team-wide toggle in the bell dropdown but now easier to find and clearly labeled for the manager use case.", "Shipped Jul 6, 2026 in response to: 'pop up notifications only appear to pop up when i as the signed in user make changes etc, I want it to be where the signed in user gets notifications on any task they are associated with regardless of who made change (Assigned task, cmarked complete, etc) and as the Lead Manager I want option to see every notification, thoughts?' Investigation note: pointed out to user that the underlying constraint is single-browser localStorage — cross-browser real-time push requires the Firebase migration they've been considering. Within the single-browser constraint, three tractable improvements. Six pieces. (1) New helper _getTaskAssociatedPeople(project, task) returns a Set of everyone with a stake in the task: project.leadEstimator, task.assignee, task.leads[], task.support (legacy primary), task.supportMembers[] (additional). Mirrors the v95 aggregator fix's additive treatment of the two support fields — never uses else-if because they're additive. (2) _notifyTaskStatusChange rewritten to use this Set for all 5 status transitions (task-completed, task-reopened, task-in-progress, task-blocked, task-pending). Previously each transition had its own narrow recipient set (usually project lead + task leads only). Now support members and assignees also get notified. Self-filter in _emitNotification still keeps the actor out of their own event. (3) Same expansion for _notifyTaskAcknowledged, _notifyTaskDueDateChanged, _notifyTaskHoursChanged, _notifyMessagePosted. Every associated person now gets the event. (4) Sign-in catch-up: saveCurrentUser now compares old and new user; if changed, calls _popCatchUpToasts(newUser). That function finds unread notifications where recipientName === newUser AND createdAt > max(notificationsLastSeenAt, 24h ago), takes up to 5, reverses so oldest pops first, and spawns them as toasts with a 350ms stagger. Respects state.toastsSilenced (never fires when silenced). Console-logs the count. (5) Lead Manager Mode setting: new checkbox in Settings modal labeled '👁 Lead Manager Mode — see notifications for the entire team'. openSettingsModal populates from state.notificationScope. toggleManagerMode calls the existing setNotificationScope('team'|'mine') and refreshes the bell so both controls (this and the bell dropdown Just Mine/Team-wide toggle) stay perfectly in sync. Hint copy explains what it does and mentions the bell indicator. (6) Bell indicator: new CSS .notification-bell-btn.bell-manager-mode::before renders a small 👁 badge on the bottom-left of the bell in SBG gold when team scope is active. Bell tooltip also updates to note 'Lead Manager Mode — seeing all team notifications'. JS syntax clean. Backward-compatible with existing state.notificationScope values."),
+    advImplemented('high-impact', 'Recurring series: Outlook-style delete dialog (this / this+future / entire series)', "Deleting a task in a recurring series now pops the same three-scope dialog as the edit flow: Just this occurrence / This and all future / The entire series. Consistent with the edit UX, so users don't have to think about it. Warning line reminds users that completed instances are always preserved regardless of scope (history stays intact). Red Delete button so accidental clicks are visually flagged. If the task isn't in a series, the old plain confirm() dialog still fires — no change for one-off tasks.", "Shipped Jul 6, 2026 in response to: 'what about when i delete task edit series?' Legitimate gap — v100 built _applySeriesDelete but never wired the delete button to it. Four pieces. (1) New #seriesDeleteModal HTML: three-scope radio group mirroring the edit dialog, with delete-specific copy ('Delete only this instance...' etc.), a permanent-preservation note about completed instances, and a red 🗑 Delete button. Count chips get a red variant (.sso-count-danger) to visually distinguish delete counts from edit counts. (2) CSS: same 440px max-width and 1100 z-index as the scope modal. Selector combined via comma so #seriesScopeModal and #seriesDeleteModal share sizing and stacking. New .btn.btn-danger class provides SBG-red button with hover darkening. (3) deleteTask rewrite: checks if the task has a seriesId + siblings via the existing _seriesScopeShouldPrompt helper. If yes, closes the task modal first (so the delete dialog isn't hidden behind it — same fix as v101) and opens the delete dialog. If no siblings, falls through to the original confirm() — one-off tasks and last-remaining series members still get the simple prompt. (4) Dialog handlers: _openSeriesDeleteDialog populates summary line (Series of N (weekly) · X completed instances will be preserved when applicable) and count chips for future-incomplete and all-incomplete siblings. confirmSeriesDelete reads the scope, calls _applySeriesDelete (which already handled scope semantics from v100), saves state, renders, and pops a confirmation toast with the actual removed count. cancelSeriesDelete just closes with no side effects. logTaskDeleted still records the deletion in the project's activity log for the source task. JS syntax clean."),
+    advImplemented('high-impact', 'Recurring series: pre-generated instances start fresh (leadAck / leadCompletion / bestPracticeAck reset)', "Pre-generated future recurring instances were carrying over three per-user state fields from the template: leadAck (per-lead acknowledgment tracking), leadCompletion (per-lead 'my portion is done' tracking), and bestPracticeAck (per-user 'I read the tip' tracking). Result: after any lead completed one instance in a series, EVERY future instance showed that lead as already-completed and already-acknowledged, so people opened them and saw phantom completion state that never actually happened for that occurrence. Fix resets all three to empty {} on every newly-created instance, in both the pre-generation path (_createRecurrenceInstanceFromTemplate) and the legacy on-complete generator (generateNextRecurrenceInstance). One-time cleanup pass runs on state load to zero out these fields on existing pre-v103 ghost instances so users don't have to rebuild their series from scratch.", "Shipped Jul 6, 2026 in response to: 'on recurring task it is copying where assignee has marked complete for every recurring task, I need each task when duplicated to start fresh in other words.' Root cause investigation: _deepCopyForRecurrence uses structuredClone which correctly deep-clones every field including nested objects. My v100 reset explicitly cleared status, completedAt, completedBy, acknowledged, acknowledgedBy/At, acknowledgedOverrideBy/At, completionAcknowledged*, completionRejected*, messages, checklist item done states, deliverables item done states, tipAcknowledgments, rescheduledFromPastDue*. But I missed three per-user object fields introduced with Multi-Lead (v24) and Best Practice tracking: task.leadAck ({[leadNameLower]: {ackedBy, ackedAt}}), task.leadCompletion ({[leadNameLower]: {completedBy, completedAt}}), task.bestPracticeAck ({[nameLower]: {ackedBy, ackedAt}}). These are objects keyed by lead name so they don't get caught by any 'reset all completion fields' rule that looks for known flat properties. Because structuredClone deep-copies objects and my reset code didn't touch these, every pre-generated instance appeared already-acknowledged and already-completed by whichever lead had ack'd/completed the source template. Three-part fix. (1) _createRecurrenceInstanceFromTemplate: added newTask.leadAck = {}, newTask.leadCompletion = {}, newTask.bestPracticeAck = {}. Also cleared the internal _recurrenceSpawned flag (which prevents double-spawn on status re-renders) — no need to carry that forward either. (2) Legacy generateNextRecurrenceInstance: applied the exact same three-field reset for on-complete generation, since that path predates v100 and inherited the same bug. (3) One-time cleanup pass: state.v103CompletionCleanupDone gates a boot-time sweep. For every incomplete series member EXCEPT the earliest-remaining-incomplete of each series (which the user may have legitimately started acking), clears leadAck/leadCompletion/bestPracticeAck plus stray completedAt/completedBy. Skips completed instances entirely — history stays honest. Console logs the count when it runs. Backward-compatible: after the flag flips true it never runs again. JS syntax clean."),
+    advImplemented('quality-of-life', 'Series scope dialog: fixed giant-radio-button CSS bug', "Radio buttons in the series scope dialog were rendering as huge filled circles (300px+ diameter) taking up almost the entire modal, with text spilling out to the right and clipping off. Fixed by adding explicit width/padding/border resets on the input[type=radio] rule inside the dialog so the app-wide input styling (which sets width:100% and 8-10px padding for form fields) stops applying to these particular inputs.", "Shipped Jul 6, 2026 in response to a screenshot showing the dialog with three massive circles instead of small radio buttons. Root cause: line ~15073 has a global 'input, select, textarea { width: 100%; background; border: 1px solid; padding: 8px 10px }' rule that applies to ALL inputs in the app. My v100 rule '.series-scope-option input[type=radio] { margin-top: 2px; accent-color; flex-shrink: 0 }' didn't reset width, padding, or border, so the radios inherited the full form-field treatment — full container width, 8px padding, and a visible border-1px around each one. Combined with the browser's default filled-circle rendering for selected radios and the border, the result was giant navy-dot-inside-outlined-circle graphics stacked vertically. Fix: added explicit resets with !important to defeat the global rule — width:16px, height:16px, padding:0, border:none, background:none, box-shadow:none. Also declared appearance:auto and -webkit-appearance:radio to guarantee the browser paints them as radio buttons (belt-and-suspenders in case a reset stylesheet somewhere kills native appearance). Result: tiny 16x16 radios that fit properly next to the option text, exactly as intended in v100."),
+    advImplemented('quality-of-life', 'Series scope dialog: visible ordering, tighter layout, cleaner sequence', "Three fixes to the v100 series edit dialog. (1) Task modal now closes BEFORE the series dialog opens — the two no longer stack, so the dialog shows immediately when you click Save instead of appearing hidden behind the task modal. Users no longer see 'nothing happen' after clicking Save. (2) Series dialog now sits at z-index 1100 (above the standard modal z-index 1000) as a defensive belt-and-suspenders in case any other modal is open. (3) Radio option cards trimmed down: 33% less padding, tighter typography, shorter descriptive text, compact summary line. Modal max-width reduced from 500px to 440px so it fits comfortably even on narrower screens.", "Shipped Jul 6, 2026 in response to: 'the pop up for edit series only appears when i close task, so its not clearly visible and users will think nothing is happening, also the size of the pop up selection buttons is too big, the pop up window cant be clearly seen and not fitting page accordingly. looks awful'. Three coordinated fixes. (1) Sequencing: saveTask now calls closeModal('taskModal') immediately before _openSeriesScopeDialog. This means the task modal disappears and the series dialog takes over the screen in a clean single-modal flow (matches Outlook Web behavior). Previously the task modal was still visible AND the series dialog was rendered at the same z-index, so DOM order determined stacking — the task modal (later in DOM) sat on top and hid the series dialog. Users perceived this as 'nothing happening' after Save; only when they manually dismissed the task modal did the series dialog become visible. (2) z-index defense: added #seriesScopeModal { z-index: 1100 !important } so even if some other modal is open, the series dialog wins the stacking contest. (3) Dimensions trimmed throughout: modal max-width 500→440px; internal padding 24→18px; H2 font-size reduced; option card padding 12→8px, gap 10→8px; option card border-radius 6→5px; option title font 13.5→12.5px; option description font 12→11px; count chip font 10.5→10px with tighter padding. Summary line uses shorter phrasing: 'Series of N occurrences · Changed: X' instead of 'This task is part of a series of N occurrences. Changed fields: X.' Description text on each radio option shortened: e.g. 'Only this instance is updated.' instead of 'Only this instance is updated. Future occurrences stay unchanged.' Cancel button label 'Cancel Propagation'→'Cancel' since with the task modal already closed there's less risk of confusion about what cancel means. Actions gap 8→6px, actions margin-top explicit at 12px. JS syntax clean."),
+    advImplemented('high-impact', '🎉 v100 MILESTONE — Recurring series overhaul: forward workload visibility + Outlook-style series edits', "Two long-standing gaps in recurring task handling closed at once. (1) FORWARD VISIBILITY: Recurring tasks now pre-generate a rolling 60-day window of future instances at creation and on every page load. Result: workload chart, calendar, board, table, and Today page all show upcoming recurring work as real bars/cards/rows with real hours, so you can plan capacity against known-forthcoming load instead of being blindsided when the next instance materializes. (2) OUTLOOK-STYLE SERIES EDITS: Editing any occurrence in a series pops a familiar dialog asking whether the change should apply to just this occurrence, this + all future occurrences, or the entire incomplete series. Fields like title, assignee, leads, support members, projected hours, checklist, and deliverables propagate at whatever scope you pick. Completed instances are always left alone — history stays honest. Task modal shows a 'Occurrence 3 of 8 (weekly)' banner so you know before you save that you're editing part of a chain.", "Shipped Jul 6, 2026 in response to: 'for recurring task I would like the following: Upcoming recurring task dates and hours to be shown on workload, not just the current. Recurring task edit series options, similar to outlook options, in other words when I create a task and have it recurring i want it to be able to carry over assignees, hours, name etc. for future dates, then be able to adjust each individual task and option to make update to all in series or not etc.? Thoughts?' User chose: 60-day rolling horizon; real tasks with 🔁 badge on board/table/calendar; post-save Outlook-style dialog. Ten pieces. (1) Schema: task.seriesId is a new field linking every instance of a recurring series (uuid, shared by all members). Backfilled on state load from the legacy task.recurrence.parentId (which was already tracking series membership loosely) or set to task.id for tasks with a recurrence pattern but no parentId. Backward-compatible: pre-v100 recurring tasks get seriesId auto-assigned on load. (2) Pre-generation core: ensureSeriesInstancesGenerated(project, sourceTask, options) iteratively calls computeNextRecurrenceDate to walk forward from the latest existing member until it hits the horizon (default 60 days). Deduplicates by dueDate within the series so calling it repeatedly is idempotent. Respects the recurrence.count limit if set. Uses _createRecurrenceInstanceFromTemplate as a shared helper — same reset logic as the legacy on-complete path so consistency is guaranteed. (3) Boot-time rolling refresh: refreshAllSeriesInstances walks every project, finds each series (via seriesId, deduped), tops it up to the 60-day horizon. Runs once immediately after loadState. Any newly added instances trigger a state save. Console logs the count for visibility. (4) On-create trigger: saveTask new-task branch detects if the newly created task is recurring, assigns it seriesId = its own id (making it the series root), then calls ensureSeriesInstancesGenerated to seed the future 60 days. So the moment you create a weekly task, ~8 instances immediately populate the workload chart. (5) On-complete legacy generator (generateNextRecurrenceInstance) kept as safety net for edge cases (task completed after horizon shifted past its next instance). Now includes a dedup guard — if the pre-gen already put an instance on the computed next date, generateNextRecurrenceInstance returns null instead of creating a duplicate. Also stamps seriesId on any tasks it creates. (6) Series edit dialog HTML + CSS: new #seriesScopeModal with three radio-button options (Just this occurrence / This and all future / The entire series). Each option shows a live count chip of how many other occurrences would be affected. Uses :has() selector for CSS to highlight selected option with navy border tint. Cancel button labeled 'Cancel Propagation' to make it clear cancel skips propagation but leaves THIS task's changes intact. (7) saveTask refactor: extracted the edit-branch tail (notifications, activity log, recurrence-on-complete spawn, saveState, closeModal, render) into _finishSaveTaskEdit so the dialog callback can invoke it after the user picks scope. The intercept in the edit branch checks _seriesScopeShouldPrompt (returns true when the task has other incomplete siblings in the series) and, if true, calls _openSeriesScopeDialog with a computed delta and _finishSaveTaskEdit as the callback. Non-series tasks skip the dialog entirely. (8) Delta computation: _computeSeriesPropagateDelta walks a whitelist of 18 fields (title, category, priority, notes, source, scopePackage, assignee, leads, supportMembers, support, estimatedHours, supportHoursPct, critical, checklist, deliverables, tips, bestPractice, requiresSenior/Lead1/Lead2), compares oldSnapshot vs data using JSON.stringify for arrays/objects, and only includes fields the user actually changed. So if you only touched the title, only the title propagates — sibling assignments and checklists survive. (9) Propagation apply: _applySeriesPropagate filters series members by scope (this-only = no-op, this-and-future = incomplete siblings with dueDate >= this instance, entire-series = ALL incomplete siblings), then deep-clones each delta field into each target so no shared object references leak between siblings. Completed instances are never touched — status='done' is always excluded. Confirmation toast shows how many were updated. (10) Series banner + 🔁 badges: task modal now shows a navy 'Occurrence N of M (weekly)' banner at the top when editing a series instance, with Previous/Next date breadcrumb. Also warns 'you'll be asked whether to apply to just this / future / all when you save.' The existing 🔁 recurrence-badge on board cards was already correct (fires for anything with recurrence.pattern); added to table row task title cell too since it was missing there. _formatRecurrenceCadence helper builds 'daily', 'weekly', 'every 2 weeks', 'monthly', etc. from the rule for the banner. JS syntax clean throughout. Deferred (v101+): dedicated delete-series dialog (currently deletes just this instance; user can bulk-delete future manually if needed), rule editing UX (changing weekly→biweekly should ask about propagating the schedule change), custom horizon per user in Settings."),
     advImplemented('quality-of-life', 'Workspace collapse: Group By tabs stay open, only filters collapse', "Refined the v98 collapsible: the Group By tab row (Stage / Assignee / Source / Status / Alert / My Alerts) is now always visible so you can switch grouping mode without expanding anything, and only the filter pill row (plus the optional secondary/alert/my-alert filter rows) collapses. Collapse-header label changed from 'Grouping & Filters' to just 'Filters'. Summary chip when collapsed now shows just the selected filter (e.g. 'All Stages' or 'Project Setup' or 'In Progress · assignee: Trent Hirth') since the grouping mode is now always readable from the tabs above.", "Shipped Jul 6, 2026 in response to: 'leave grouping open and I just want the filters to be collapsable'. Three pieces. (1) HTML: moved the .group-tabs row out of the collapsible body and back to always-visible position at the top of #groupingSection. The .pv-wc-grouping-header (with chevron + Filters label + summary chip) now sits BETWEEN the Group By tabs and the collapsible body. The body contains only .tab-nav (pill row) plus the optional secondary/alert/my-alert filter rows — everything filter-related, nothing grouping-related. (2) CSS: added margin-top:8px to .pv-wc-grouping-header so it sits with breathing room below the Group By tabs. All other collapse animation styles unchanged so the collapse feel matches v98. (3) _buildWorkspaceGroupingSummary rewrite: removed the grouping mode prefix (Group by Stage etc.) since it's always visible above. Chip now shows just the selected tab like 'All Stages', 'Project Setup', 'Trent Hirth', 'In Progress', 'Overdue', etc. When the secondary assignee filter is active, appends ' · assignee: {name}' to show the additional narrowing. Keeps the chip concise and non-redundant. Backward-compatible: state.workspaceGroupingCollapsed still governs collapse; existing saves that had it toggled on stay toggled. JS syntax clean."),
     advImplemented('quality-of-life', 'Workspace Grouping & Filters — collapsible to reclaim vertical space', "The Group By tabs + stage/assignee/status/source pill row + optional alert filter rows on the project workspace are now wrapped in one collapsible section. Click the header (Grouping & Filters) to hide everything. When collapsed, the header stays visible with a small chip showing your current selection like 'Group by Stage · All Stages' or 'Group by Assignee · Trent Hirth' so you always know what filter is active. State persists across page reloads. Reclaims 40–100+ vertical pixels depending on how many stages/pills your project has — the board or table view now sits much closer to the top of the workspace.", "Shipped Jul 6, 2026 in response to: 'Workspace: Under each Group By it shows all the stages and our potential grouping methods. This needs to be collapsable as it clutters page and user has to scroll to far down to see list or board etc.' Six pieces. (1) Schema: state.workspaceGroupingCollapsed is a boolean, default false. Backfilled on state load. (2) HTML restructure: the existing #groupingSection now contains a new .pv-wc-grouping-header (chevron + label + summary chip) followed by .pv-wc-grouping-body wrapping the .group-tabs row, the .tab-nav row, and the three optional filter rows (secondaryFilterRow, alertFilterRow, myAlertFilterRow). Everything filter-related lives inside the body so a single collapse hides all of it consistently — including the alert filter row which appears in Group by Alert mode. (3) CSS: .pv-wc-grouping-header uses navy-tinted background + subtle hover, with the chevron ▾ rotating -90deg when collapsed. .pv-wc-grouping-body uses max-height + opacity transition with 0.35s ease timing (matches the Today page collapse feel). .grouping-collapsed class on the parent collapses the body to max-height:0 + opacity:0 + pointer-events:none. When collapsed, the summary chip gets a subtle navy pill background so it visually stands out as the 'active state indicator'. (4) toggleWorkspaceGrouping(): flips state.workspaceGroupingCollapsed, saves state, calls _applyWorkspaceGroupingCollapseState. (5) _applyWorkspaceGroupingCollapseState(): applies the collapsed class to the section and updates the summary chip text. Called from toggleWorkspaceGrouping and from the main render flow so the chip stays fresh when the user changes grouping/tab without collapsing. (6) _buildWorkspaceGroupingSummary(): resolves the current grouping mode label (Group by Stage / Group by Assignee / etc.) plus the active tab per mode — for stage it looks up stage.name; for assignee/source it uses the raw name; for status it maps to friendly labels (Not Started / In Progress / Blocked / Pending / Done); for alert/my-alert it uses the tier name. Also appends ' · filtered to X' when the secondary assignee filter is active so the collapsed state honestly reflects EVERY layer of filtering, not just the primary. Hooked into render() in the board/table branch (after renderTabNav + renderSecondaryAssigneeFilter + renderAlertMultiFilter + renderMyAlertMultiFilter) so all state that could affect the summary is settled before we read it. Calendar/schedule/lookahead views already hide #groupingSection entirely via the hideTopControls flag, so no hook needed there. JS syntax clean. Backward-compatible: default is expanded so existing users see no immediate change until they choose to collapse."),
     advImplemented('high-impact', 'My Workload: full Team Workload replica, filtered to signed-in user', "Upgraded the v96 My Workload section on the Today page to be a full functional replica of the Team Workload page — same toolbar (Date Window, Chart grain, Current/Planned mode), same estimator card renderer, same capacity bar, same per-day strip chart with today marker + PTO/holiday indicators, same top-projects list, same open slots badge — but stretched to full width and showing only the signed-in user's card. Skipped intentionally per user request: Detail Table, 14-Day Look-Ahead chart, and Unassigned Pile (not useful for a single-user view). Toolbar controls share state with the Team Workload page: change scope in either view and both reflect the new setting on next visit.", "Shipped Jul 6, 2026 in response to: 'I would like the MY workload to duplicate the Team Workload page but stretched across so shows up. however I dont need Detail Table, 14 Day Look Ahead Table or Unassigned Table. I just want it to function same way as Team Workload but only loads who is signed in, hence MY Workload.' Replaces the v96 lightweight 8-stat-grid + custom capacity bar + top-3-projects rollup with the actual _buildEstimatorCardHtml renderer, so behavior parity is exact. Six pieces. (1) HTML rebuild: My Workload section body now has a .hmw-toolbar (reusing .twv-toolbar class + .twv-toolbar-group + .twv-segmented so all existing CSS applies) with three segmented control groups (Date Window with 7 buttons, Chart grain with Day/Week, Workload mode with Current/Planned) plus a right-aligned 'Open full Team Workload →' quick jump link. Body content lives in .hmw-card-wrap which is a single-column container that stretches the card to full section width. (2) CSS additions: .hmw-toolbar tightens the top/bottom margins slightly. .hmw-card-wrap sets display:block. .hmw-card-wrap .twv-card { width:100%; box-sizing:border-box } overrides the natural grid-cell sizing so a single card fills the whole width. .hmw-empty styles the friendly no-tasks empty state. (3) renderHomeMyWorkload rewrite: sync toolbar buttons to state (three querySelector.forEach loops on .twv-seg-btn[data-scope], .twv-grain-btn, .twv-mode-btn scoped to the section), then run _aggregateWorkloadByAssignee, filter to current user, and if stats exist, call _buildEstimatorCardHtml(stats) directly — giving perfect visual parity with the Team Workload page. If no stats (user has no assignments), show a friendly 'Nothing on your plate right now 🎉' empty state. Sub-headline in the section header shows compact summary: '{open} open · {hrs}h total · {N} projects'. (4) Toolbar class strategy: reuse the exact .twv-seg-btn / .twv-grain-btn / .twv-mode-btn class names from the Team Workload page. Result: existing setter functions (setWorkloadDateScope, setWorkloadGrain, setWorkloadMode) already do document.querySelectorAll on those classes to update active pills — so when My Workload toolbar buttons are clicked, both toolbars visually sync in one shot without any duplicated code. (5) Setter routing: each of the three setters (setWorkloadDateScope, setWorkloadGrain, setWorkloadMode) now checks state.homeView. If true, calls renderHomeMyWorkload(getCurrentUser()) before calling renderTeamWorkloadView. So changing the toolbar on My Workload re-renders the visible view immediately (Team Workload re-render is a no-op cost since that view is hidden). Because state is shared, when you later open Team Workload it reflects your last My Workload selection. Sort and Show-Inactive setters intentionally NOT routed — those controls aren't in the My Workload toolbar since they don't apply to a single-user view. (6) Wired to existing card features: Reassign button, click-to-open task modal via the strip, capacity & PTO modal opener via the untracked-capacity link, open slots badge behavior — all inherited from _buildEstimatorCardHtml since we're calling the same renderer. Numbers correctly reflect v94 support-hours pro-rating and v95 primary-support-fix. JS syntax clean. Deferred: no 'sort' or 'show-inactive' controls since single-user; no separate My Workload state (state is shared with Team Workload) — if user later wants independent state per view, add state.myWorkloadDateScope etc. and modify the setters to branch."),
@@ -18740,6 +20628,7 @@ function render() {
   const projectTimelineViewEl = document.getElementById('projectTimelineView');
   const openSlotsViewEl = document.getElementById('openSlotsView');
   const teamInsightsViewEl = document.getElementById('teamInsightsView');
+  const trainingLogViewEl = document.getElementById('trainingLogView');
   // v82: Team Insights view takes precedence over all others
   if (state.tiView) {
     if (emptyEl) emptyEl.classList.add('hidden');
@@ -18810,6 +20699,22 @@ function render() {
     return;
   }
   if (workloadViewEl) workloadViewEl.classList.add('hidden');
+  // v119: Training Log view — cross-project training hours per person
+  if (state.trainingLogView) {
+    if (emptyEl) emptyEl.classList.add('hidden');
+    if (projectViewEl) projectViewEl.classList.add('hidden');
+    if (homeViewEl) homeViewEl.classList.add('hidden');
+    if (snapshotEl) snapshotEl.classList.add('hidden');
+    if (trainingLogViewEl) trainingLogViewEl.classList.remove('hidden');
+    const _scbBar3 = document.getElementById('stickyCountdownBar');
+    const _scbMain3 = document.querySelector('.main');
+    if (_scbBar3) _scbBar3.style.display = 'none';
+    if (_scbMain3) _scbMain3.classList.remove('has-sticky-countdown');
+    renderTrainingLogView();
+    applySidebarState();
+    return;
+  }
+  if (trainingLogViewEl) trainingLogViewEl.classList.add('hidden');
   if (state.statusSnapshotView) {
     if (emptyEl) emptyEl.classList.add('hidden');
     if (projectViewEl) projectViewEl.classList.add('hidden');
@@ -19074,20 +20979,24 @@ function renderSidebar() {
 
   const sections = [];
 
-  // --- Currently Bidding section ---
+  // --- Currently Bidding section (collapsible, collapsed by default v115) ---
+  const cbExpanded = state.currentlyBiddingExpanded === true;
   sections.push(`
-    <div class="project-section">
-      <div class="project-section-header">
+    <div class="project-section ${cbExpanded ? 'expanded' : 'collapsed'}">
+      <div class="project-section-header clickable" onclick="toggleCurrentlyBidding()">
         <span class="ps-dot ps-dot-active"></span>
         <span class="ps-title">Currently Bidding</span>
         <span class="ps-count">${currentlyBidding.length}</span>
+        <span class="ps-chevron">${cbExpanded ? '▾' : '▸'}</span>
       </div>
-      <div class="project-section-body">
-        ${currentlyBidding.length > 0
-          ? currentlyBidding.map(p => renderProjectItem(p)).join('')
-          : '<div class="project-section-empty">No active bids. Click + New Project to start one.</div>'
-        }
-      </div>
+      ${cbExpanded ? `
+        <div class="project-section-body">
+          ${currentlyBidding.length > 0
+            ? currentlyBidding.map(p => renderProjectItem(p)).join('')
+            : '<div class="project-section-empty">No active bids. Click + New Project to start one.</div>'
+          }
+        </div>
+      ` : ''}
     </div>
   `);
 
@@ -19169,6 +21078,14 @@ function togglePIMenu(projectId) {
 
 function togglePastPursuits() {
   state.pastPursuitsExpanded = !state.pastPursuitsExpanded;
+  saveState();
+  renderSidebar();
+}
+
+// v115: Currently Bidding collapse toggle. Matches Past Pursuits pattern.
+// Default is collapsed (state.currentlyBiddingExpanded undefined/false).
+function toggleCurrentlyBidding() {
+  state.currentlyBiddingExpanded = !(state.currentlyBiddingExpanded === true);
   saveState();
   renderSidebar();
 }
@@ -22058,6 +23975,27 @@ function renderScopedAlertStrip(project, scope, stripElementId) {
     const tierTasks = tier === 'rejected'
       ? rejected
       : getTasksByAlertTier(project, tier, scope);
+    // v115: dedup unacknowledged tier by seriesId — one row per recurring
+    // series (v113 style). Preserves individual rows for non-series tasks
+    // and for tiers where per-instance state matters (overdue, imminent, etc.)
+    let displayTasks = tierTasks;
+    if (tier === 'unacknowledged') {
+      const seen = new Set();
+      displayTasks = [];
+      // Sort by dueDate ascending so the earliest instance represents the series
+      const sortedForDedup = tierTasks.slice().sort((a, b) => {
+        const da = a.dueDate || '9999';
+        const db = b.dueDate || '9999';
+        return da.localeCompare(db);
+      });
+      sortedForDedup.forEach(t => {
+        if (t.seriesId) {
+          if (seen.has(t.seriesId)) return;
+          seen.add(t.seriesId);
+        }
+        displayTasks.push(t);
+      });
+    }
     if (tierTasks.length === 0) {
       state[activeStateKey] = null;
     } else {
@@ -22128,13 +24066,13 @@ function renderScopedAlertStrip(project, scope, stripElementId) {
       panelHtml = `
         <div class="alert-panel panel-${tier}">
           <div class="alert-panel-header">
-            <div class="alert-panel-title">${titles[tier]} · ${tierTasks.length} task${tierTasks.length===1?'':'s'}${scopeLabel}</div>
+            <div class="alert-panel-title">${titles[tier]} · ${tier === 'unacknowledged' && displayTasks.length !== tierTasks.length ? `${displayTasks.length} item${displayTasks.length===1?'':'s'} (covers ${tierTasks.length} instances)` : `${tierTasks.length} task${tierTasks.length===1?'':'s'}`}${scopeLabel}</div>
             <button class="alert-panel-close" onclick="closeAlertPanelScoped('${scope}')" title="Close">✕</button>
           </div>
           ${completionHeader}
           ${unackHeader}
           <div class="alert-list">
-            ${tierTasks.slice().sort((a,b) => {
+            ${displayTasks.slice().sort((a,b) => {
               const nonDateTiers = ['unassigned', 'unacknowledged', 'completed', 'not-started', 'pending'];
               if (nonDateTiers.includes(tier)) {
                 const stageOrder = {};
@@ -22281,7 +24219,11 @@ function renderAlertItem(t, tier) {
     const currentUser = getCurrentUser();
     const isCurrentUserAssignee = currentUser && t.assignee && currentUser.toLowerCase() === t.assignee.toLowerCase();
     const isCurrentUserLead = currentUser && lead && currentUser.toLowerCase() === lead.toLowerCase();
-    ackInlineBtn = `<button class="ai-ack-btn" onclick="acknowledgeTask('${t.id}', event)" title="Mark this task as acknowledged by ${escapeHtml(t.assignee || 'assignee')}">✓ Acknowledge</button>`;
+    // v115: series row → button says "Acknowledge Series" so users know one click covers all
+    const isSeriesRow = t.seriesId && project &&
+      (project.tasks || []).filter(x => x.seriesId === t.seriesId && x.status !== 'done' && !x.acknowledged).length > 1;
+    const ackLabel = isSeriesRow ? '✓ Acknowledge Series' : '✓ Acknowledge';
+    ackInlineBtn = `<button class="ai-ack-btn" onclick="acknowledgeTask('${t.id}', event)" title="Mark this task as acknowledged by ${escapeHtml(t.assignee || 'assignee')}${isSeriesRow ? ' — one click acknowledges the entire recurring series' : ''}">${ackLabel}</button>`;
     // Lead override button — only shown to the Lead Estimator, and only when the current user isn't the assignee
     if (isCurrentUserLead && !isCurrentUserAssignee && lead) {
       ackInlineBtn += `<button class="ai-override-btn" onclick="overrideAcknowledge('${t.id}', event)" title="Lead override — acknowledge on behalf of ${escapeHtml(t.assignee || 'assignee')}">⚡ Override</button>`;
@@ -22444,11 +24386,27 @@ function renderAlertItem(t, tier) {
     aiHoursPill = `<span class="ai-hours" title="Projected effort: ${escapeAttr(fH)}">⏱ ${escapeHtml(fH)}</span>`;
   }
 
+  // v115: When shown in the unacknowledged tier for a recurring series,
+  // add a gold "🔁 N occurrences" badge next to the title so users know
+  // one Acknowledge covers many. Uses v112 sibling propagation under the hood.
+  let seriesBadge = '';
+  if (tier === 'unacknowledged' && t.seriesId) {
+    const projectForSeries = state.projects.find(p => p.id === state.activeProjectId);
+    if (projectForSeries) {
+      const siblings = (projectForSeries.tasks || []).filter(x =>
+        x.seriesId === t.seriesId && x.status !== 'done' && !x.acknowledged
+      );
+      if (siblings.length > 1) {
+        seriesBadge = ` <span class="ai-series-badge" title="Recurring series — one acknowledgement covers all ${siblings.length} occurrences">🔁 ${siblings.length} occurrences</span>`;
+      }
+    }
+  }
+
   return `
     <div class="alert-item${tier === 'completed' ? ' alert-item-completion' : ''}${tier === 'unacknowledged' ? ' alert-item-unack' : ''}${tier === 'rejected' ? ' alert-item-rejected' : ''}" onclick="openTaskModal(null, '${t.id}')">
       <div class="ai-primary-row">
         <span class="ai-stage" title="${escapeHtml(stage.name)}">${stage.icon} ${escapeHtml(stage.name)}</span>
-        <span class="ai-title" title="${escapeHtml(t.title)}">${escapeHtml(t.title)}</span>
+        <span class="ai-title" title="${escapeHtml(t.title)}">${escapeHtml(t.title)}${seriesBadge}</span>
         <span class="ai-assignee">${avatar}${escapeHtml(assigneeLabel)}</span>
         <span class="ai-due">${dueText}</span>
         ${aiHoursPill}
@@ -22839,6 +24797,7 @@ function jumpToSearchResult(idx) {
   if (result.type === 'project') {
     state.homeView = false;
     state.teamWorkloadView = false;
+    state.trainingLogView = false;
     state.projectTimelineView = false;
     state.openSlotsView = false;
     state.tiView = false;
@@ -22847,6 +24806,7 @@ function jumpToSearchResult(idx) {
   } else if (result.type === 'task' || result.type === 'task-message') {
     state.homeView = false;
     state.teamWorkloadView = false;
+    state.trainingLogView = false;
     state.projectTimelineView = false;
     state.openSlotsView = false;
     state.tiView = false;
@@ -22857,6 +24817,7 @@ function jumpToSearchResult(idx) {
   } else if (result.type === 'message') {
     state.homeView = false;
     state.teamWorkloadView = false;
+    state.trainingLogView = false;
     state.projectTimelineView = false;
     state.openSlotsView = false;
     state.tiView = false;
@@ -22869,6 +24830,7 @@ function jumpToSearchResult(idx) {
   } else if (result.type === 'addendum') {
     state.homeView = false;
     state.teamWorkloadView = false;
+    state.trainingLogView = false;
     state.projectTimelineView = false;
     state.openSlotsView = false;
     state.tiView = false;
@@ -22882,6 +24844,7 @@ function jumpToSearchResult(idx) {
   } else if (result.type === 'scope') {
     state.homeView = false;
     state.teamWorkloadView = false;
+    state.trainingLogView = false;
     state.projectTimelineView = false;
     state.openSlotsView = false;
     state.tiView = false;
@@ -22895,6 +24858,7 @@ function jumpToSearchResult(idx) {
       state.activeAssignee = result.memberName;
       state.homeView = false;
       state.teamWorkloadView = false;
+      state.trainingLogView = false;
       state.projectTimelineView = false;
       state.openSlotsView = false;
       state.tiView = false;
@@ -24376,6 +26340,7 @@ function renderTaskCard(t) {
         ${recurrenceBadge}
         ${rescheduledBadge}
         ${t.critical ? '<span class="critical-chip" title="Marked as Critical">🔥 CRITICAL</span>' : ''}
+        ${t.isTraining ? '<span class="training-chip" title="Counts toward training — appears in the Training Log">🎓 TRAINING</span>' : ''}
         ${checklistChip}
         ${deliverableChip}
         ${bestPracticeChip}
@@ -24601,7 +26566,7 @@ function renderTableRow(t, statusLabels) {
         </select>
         ${dueInline}${signOffTable}
       </td>
-      <td data-col="task" class="task-title-cell" style="font-weight:600;">${newBadgeTable}${escapeHtml(t.title)}${clChipTable}${dlvChipTable}${bpChipTable}${buildRescheduledPastDueBadgeHtml(t)}${ackBtnTable}${overrideBtnTable}${overrideBadgeTable}</td>
+      <td data-col="task" class="task-title-cell" style="font-weight:600;">${newBadgeTable}${escapeHtml(t.title)}${clChipTable}${dlvChipTable}${bpChipTable}${isRecurringTask(t) ? `<span class="recurrence-badge" title="${escapeHtml('Recurs: ' + describeRecurrence(t.recurrence))}">🔁</span>` : ''}${buildRescheduledPastDueBadgeHtml(t)}${ackBtnTable}${overrideBtnTable}${overrideBadgeTable}</td>
       <td data-col="stage"><span class="csi-code" style="color:var(--sbg-navy);background:var(--surface-3);">${stage.icon} ${escapeHtml(stage.name)}</span></td>
       <td data-col="assignee">${tblLeads.length > 0 ? `<span class="assignee">${avatarHtml}${tblLeadText}</span>` : '<span style="color:var(--text-faint);">Unassigned</span>'}</td>
       <td data-col="support">${supportCell}</td>
@@ -30605,7 +32570,42 @@ function openSettingsModal() {
   if (el) {
     el.value = (typeof state.supportHoursDefaultPct === 'number') ? state.supportHoursDefaultPct : 25;
   }
+  // v105: populate the Manager Mode checkbox from state.notificationScope
+  const mgrEl = document.getElementById('settingsManagerMode');
+  if (mgrEl) mgrEl.checked = (state.notificationScope === 'team');
   document.getElementById('settingsModal').classList.add('active');
+}
+
+// v105: Toggle Lead Manager Mode. This is a friendlier wrapper around the
+// existing state.notificationScope 'mine'/'team' toggle — checked means
+// team-wide (see all notifications), unchecked means just mine. Fires the
+// same setNotificationScope function used by the bell dropdown so both
+// controls stay in sync.
+// v107: Handle the Manager Mode toggle switch inside the bell dropdown.
+// Wires to the same setNotificationScope function so all three UI
+// entry points (bell segmented pill, bell toggle switch, Settings
+// checkbox) stay perfectly in sync.
+function toggleManagerModeFromBell(checkbox) {
+  if (!checkbox) return;
+  const wantsTeam = !!checkbox.checked;
+  setNotificationScope(wantsTeam ? 'team' : 'mine');
+  // Also sync the Settings checkbox if that modal happens to be open
+  const settingsMgr = document.getElementById('settingsManagerMode');
+  if (settingsMgr) settingsMgr.checked = wantsTeam;
+}
+
+function toggleManagerMode() {
+  const el = document.getElementById('settingsManagerMode');
+  if (!el) return;
+  const wantsTeam = !!el.checked;
+  if (typeof setNotificationScope === 'function') {
+    setNotificationScope(wantsTeam ? 'team' : 'mine');
+  } else {
+    state.notificationScope = wantsTeam ? 'team' : 'mine';
+    saveState();
+  }
+  // Update the bell to reflect the manager-mode indicator immediately
+  if (typeof _refreshNotificationBell === 'function') _refreshNotificationBell();
 }
 
 // v94: Live-preview handler for the settings default input (no-op stub kept
@@ -31197,6 +33197,64 @@ document.addEventListener('keydown', e => {
 loadState();
 // Body-level attr drives CSS for the hours table column visibility on first paint
 document.body.setAttribute('data-hours-enabled', state.hoursEnabled ? 'true' : 'false');
+// v103: One-time cleanup for pre-v103 instances whose leadAck /
+// leadCompletion / bestPracticeAck fields were copied from a completed
+// template. For every incomplete series member (status !== 'done'),
+// clear those three per-user objects so the instance actually starts
+// fresh. Runs once, gated by state.v103CompletionCleanupDone so it
+// doesn't re-run on subsequent loads. Skips completed instances
+// because history stays honest.
+try {
+  if (!state.v103CompletionCleanupDone) {
+    let cleaned = 0;
+    (state.projects || []).forEach(p => {
+      (p.tasks || []).forEach(t => {
+        if (!t.seriesId) return;             // only touch series instances
+        if (t.status === 'done') return;      // preserve completed history
+        // Skip the "current" instance (earliest incomplete) if a user
+        // legitimately started acking it — leave that one alone. Cleanup
+        // targets pre-generated FUTURE ghosts.
+        const members = (p.tasks || []).filter(m => m.seriesId === t.seriesId);
+        const earliestIncomplete = members
+          .filter(m => m.status !== 'done' && m.dueDate)
+          .sort((a, b) => a.dueDate.localeCompare(b.dueDate))[0];
+        if (earliestIncomplete && earliestIncomplete.id === t.id) return; // keep as-is
+        const hadState = (t.leadAck && Object.keys(t.leadAck).length > 0)
+          || (t.leadCompletion && Object.keys(t.leadCompletion).length > 0)
+          || (t.bestPracticeAck && Object.keys(t.bestPracticeAck).length > 0)
+          || t.completedAt || t.completedBy;
+        if (hadState) {
+          t.leadAck = {};
+          t.leadCompletion = {};
+          t.bestPracticeAck = {};
+          t.completedAt = null;
+          t.completedBy = '';
+          cleaned++;
+        }
+      });
+    });
+    state.v103CompletionCleanupDone = true;
+    if (cleaned > 0) {
+      console.log(`[v103] Cleaned stale per-lead completion state on ${cleaned} pre-generated instance${cleaned === 1 ? '' : 's'}`);
+      saveState();
+    }
+  }
+} catch (err) {
+  console.warn('[v103] Cleanup pass failed:', err);
+}
+
+// v100: Rolling refresh — top up every recurring series to its 60-day
+// horizon on load so workload and calendar always have forward visibility.
+// Runs after loadState so seriesId backfill has happened.
+try {
+  const added = refreshAllSeriesInstances();
+  if (added > 0) {
+    console.log(`[v100] Rolling refresh added ${added} recurring instance${added === 1 ? '' : 's'} across all projects`);
+    saveState();
+  }
+} catch (err) {
+  console.warn('[v100] Series refresh failed:', err);
+}
 // Always start with sidebar collapsed on every fresh load. The user can
 // expand it via the sidebar toggle once they're working; saving state would
 // just bring them back to expanded which they didn't want.
