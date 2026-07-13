@@ -62,7 +62,10 @@
         text-transform: uppercase; cursor: default;
       }
       #rt-toast {
-        position: fixed; bottom: 24px; right: 24px; z-index: 95;
+        /* bottom: 92px clears V132's floating "+ Add Task" FAB (fixed at
+         * bottom-right, ~52px tall at bottom: 24px) -- at 24px the toast
+         * painted ON TOP of the button and both looked broken. */
+        position: fixed; bottom: 92px; right: 24px; z-index: 95;
         background: #0a2540; color: #fff; padding: 10px 14px; border-radius: 4px;
         font-family: 'Inter', system-ui, sans-serif; font-size: 13px;
         box-shadow: 0 4px 14px rgba(0,0,0,0.25);
