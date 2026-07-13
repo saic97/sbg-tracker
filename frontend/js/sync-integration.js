@@ -33,6 +33,12 @@
     // Who the team lead is (drives realtime.js edit-popup routing: only the lead
     // sees everyone's edits; everyone else sees only the lead's). Shared, synced.
     team: ['teamLead'],
+    // The shared activity feed (bell dropdown). Each entry is authored on the
+    // ACTOR's tab by _emitNotification; syncing the array (capped at 200 by the
+    // app) is what lets OTHER computers see it -- and toast it (see
+    // installNotificationRelay). notificationsLastSeenAt deliberately NOT here:
+    // it's each user's own unread pointer.
+    notifications: ['notifications'],
   };
 
   // If more than this many tasks changed in one project in one pass, it's
@@ -323,6 +329,74 @@
     window.applyImport = wrapped;
   }
 
+  // ---- cross-computer notification toasts -----------------------------------
+  // The app's _emitNotification runs on the ACTOR's tab only: it appends to
+  // state.notifications and toasts locally. Syncing the array (settings group
+  // 'notifications' above) delivers the entries to everyone else's state via
+  // the realtime merge -- but nothing would POP for them. This relay watches
+  // for entries this tab didn't author and runs them through the app's own
+  // _spawnToast, so the app's rules (Just Mine / Team-wide scope, silence
+  // toggle, Manager Mode) decide what actually pops.
+  var _notifSeen = null;   // Set of notification ids this tab has processed
+  function _seedNotifSeen() {
+    _notifSeen = new Set();
+    ((window.state && window.state.notifications) || []).forEach(function (n) {
+      if (n && n.id) _notifSeen.add(n.id);
+    });
+  }
+  function relayFreshNotifications() {
+    if (!window.state || !Array.isArray(window.state.notifications)) return;
+    if (_notifSeen === null) { _seedNotifSeen(); return; }   // first pass: history, don't toast
+    var fresh = [];
+    for (var i = 0; i < window.state.notifications.length; i++) {
+      var n = window.state.notifications[i];
+      if (!n || !n.id || _notifSeen.has(n.id)) continue;
+      _notifSeen.add(n.id);
+      fresh.push(n);
+    }
+    if (!fresh.length) return;
+    // Keep the seen-set bounded (the feed itself is capped at 200 by the app).
+    if (_notifSeen.size > 600) _seedNotifSeen();
+    if (typeof window._spawnToast !== 'function') return;
+    // Newest-first array; toast oldest-first so stacking reads naturally.
+    for (var k = fresh.length - 1; k >= 0; k--) {
+      try { window._spawnToast(fresh[k]); } catch (e) {}
+    }
+    if (typeof window._refreshNotificationBell === 'function') {
+      try { window._refreshNotificationBell(); } catch (e) {}
+    }
+  }
+  function installNotificationRelay() {
+    // (a) register self-authored entries as seen BEFORE any render pass, so
+    // this tab never re-toasts what the app already toasted locally.
+    var origEmit = window._emitNotification;
+    if (typeof origEmit === 'function' && !origEmit.__sbgNotifHooked) {
+      var wrappedEmit = function () {
+        var r = origEmit.apply(this, arguments);
+        if (_notifSeen === null) _seedNotifSeen();
+        else {
+          var head = (window.state.notifications || [])[0];
+          if (head && head.id) _notifSeen.add(head.id);
+        }
+        return r;
+      };
+      wrappedEmit.__sbgNotifHooked = true;
+      window._emitNotification = wrappedEmit;
+    }
+    // (b) after every render (realtime merges always end in one), toast any
+    // entry that arrived from another computer.
+    var origRender = window.render;
+    if (typeof origRender === 'function' && !origRender.__sbgNotifHooked) {
+      var wrappedRender = function () {
+        var r = origRender.apply(this, arguments);
+        try { relayFreshNotifications(); } catch (e) {}
+        return r;
+      };
+      wrappedRender.__sbgNotifHooked = true;
+      window.render = wrappedRender;
+    }
+  }
+
   // ---- hook saveState ------------------------------------------------------
   // The app's saveState() only writes localStorage. Wrap it so every save also
   // schedules a backend sync. Because saveState is a function-declaration
@@ -347,6 +421,7 @@
   function boot() {
     installSaveHook();
     installImportOverride();
+    installNotificationRelay();
     if (typeof window.state === 'undefined') return;
     if (!window.api || !window.api.enabled) {
       if (window.router && typeof window.router.afterStateLoad === 'function') window.router.afterStateLoad();
