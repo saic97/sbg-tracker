@@ -3,10 +3,20 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <meta name="application-name" content="SBG Preconstruction Bid Tracker">
-<meta name="version" content="V119">
+<meta name="version" content="V132">
+<!--
+  =============================================================================
+  BUILD DATE — SINGLE SOURCE OF TRUTH
+  =============================================================================
+  Update this ONE line on every ship. JS reads it at page load and writes
+  the date into BOTH the top header (.version-built) and the sidebar footer
+  (.sf-built) so they never drift apart again. Format: "MMM D, YYYY".
+  =============================================================================
+-->
+<meta name="build-date" content="Jul 11, 2026">
 <meta name="created" content="2026-04-18">
 <meta name="built" content="2026-04-19T23:56:18Z">
-<title>SBG Preconstruction Bid Tracker · V119</title>
+<title>SBG Preconstruction Bid Tracker · V132</title>
 <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;600;700&amp;family=Barlow+Condensed:wght@500;600;700;800&amp;family=Inter:wght@300;400;500;600;700;800&amp;display=swap" rel="stylesheet">
 
 <meta name="api-base" content="">
@@ -20,7 +30,7 @@
     <div class="brand-logo" id="brandLogo" onclick="openSettingsModal()" title="Click to edit company logo"><img src="data:image/gif;base64,R0lGODlhAQABAAAAACH5BAEKAAEALAAAAAABAAEAAAICTAEAOw==" alt="Company Logo" style="width:100%;height:100%;object-fit:contain;border-radius:4px;background:#fff;"></div>
     <div class="brand-text">
       <h1>SOURCE BUILDING GR<span class="accent">O</span>UP</h1>
-      <div class="subtitle">Preconstruction · Bid Pursuit Tracker <span class="version-stamp version-stamp-milestone" title="v119 · v100 milestone Recurring Series Overhaul + polish">🎉 V119</span><span class="version-built">Built Jul 10, 2026</span></div>
+      <div class="subtitle">Preconstruction · Bid Pursuit Tracker <span class="version-stamp version-stamp-milestone" title="v132 · v100 milestone Recurring Series Overhaul + polish">🎉 V132</span><span class="version-built" data-role="build-date"></span></div>
     </div>
   </div>
   <div class="header-stats">
@@ -122,14 +132,16 @@
       <span class="hsb-badge" id="hsbBadge" style="display: inline-flex;">21</span>
     </button>
 
-    <!-- Status Snapshot — In Progress / Due Soon / At Risk rollup -->
-    <button class="snapshot-sidebar-btn" id="snapshotSidebarBtn" onclick="openStatusSnapshot()" title="Status Snapshot — In Progress, Due Soon, At Risk">
-      <span class="ssb-icon">🎯</span>
+    <!-- v125: Projects — cross-workstream browsing page. Replaced the
+         Status Snapshot button here since users needed a quick jumping-off
+         point for finding any project by workstream. -->
+    <button class="snapshot-sidebar-btn" id="projectsListSidebarBtn" onclick="openProjectsListView()" title="Projects — all projects grouped by workstream, past pursuits, and archived">
+      <span class="ssb-icon">📁</span>
       <div class="ssb-body">
-        <span class="ssb-label">Status Snapshot</span>
-        <span class="ssb-sub" id="ssbSubCount">In Progress · Due Soon · At Risk</span>
+        <span class="ssb-label">Projects</span>
+        <span class="ssb-sub" id="projectsListSidebarSub">Browse by workstream</span>
       </div>
-      <span class="ssb-badge" id="ssbBadge" style="display: none;">0</span>
+      <span class="ssb-badge" id="projectsListSidebarBadge" style="display: none;">0</span>
     </button>
 
     <!-- Team Workload — cross-project capacity & load manager (v52) -->
@@ -307,9 +319,9 @@
     <!-- File creation/version footer — stays pinned to the bottom of the sidebar -->
     <div class="sidebar-footer" id="sidebarFooter">
       <div class="sf-brand">SBG Precon Tracker</div>
-      <div class="sf-version sf-version-milestone" title="v119 · v100 milestone Recurring Series Overhaul + polish">🎉 V119</div>
+      <div class="sf-version sf-version-milestone" title="v132 · v100 milestone Recurring Series Overhaul + polish">🎉 V132</div>
       <div class="sf-created">Created April 18, 2026</div>
-      <div class="sf-built" title="Exact timestamp when this HTML file was generated">Built Jul 10, 2026</div>
+      <div class="sf-built" data-role="build-date" title="Exact timestamp when this HTML file was generated"></div>
       <div class="sf-org">Source Building Group · Mansfield, TX</div>
     </div>
   </aside>
@@ -351,6 +363,32 @@
       </div>
 
       <!-- v96/v97: My Workload — full-page workload view scoped to signed-in user -->
+      <!-- v132: My Tasks + Awaiting Acknowledgment moved ABOVE My Workload.
+           User's action items come first; workload is context. -->
+      <section class="home-section" id="homeMyTasksSection">
+        <div class="home-section-header" onclick="toggleHomeSection('homeMyTasksSection')" title="Click to collapse or expand">
+          <span class="home-section-chevron">▾</span>
+          <span class="home-section-title">📋 My Tasks</span>
+          <span class="home-section-sub" id="homeMyTasksSub"></span>
+          <span class="home-section-alert-dot" id="homeMyTasksAlertDot" title="Attention needed"></span>
+        </div>
+        <div class="home-section-body">
+          <div class="home-tasks-buckets" id="homeMyTasksBuckets"></div>
+        </div>
+      </section>
+
+      <section class="home-section" id="homeUnackSection">
+        <div class="home-section-header" onclick="toggleHomeSection('homeUnackSection')" title="Click to collapse or expand">
+          <span class="home-section-chevron">▾</span>
+          <span class="home-section-title">🔔 Awaiting My Acknowledgment</span>
+          <span class="home-section-sub" id="homeUnackSub"></span>
+          <span class="home-section-alert-dot" id="homeUnackAlertDot" title="Tasks need acknowledgement"></span>
+        </div>
+        <div class="home-section-body">
+          <div class="home-items-list" id="homeUnackList"></div>
+        </div>
+      </section>
+
       <section class="home-section" id="homeMyWorkloadSection" style="display:none;">
         <div class="home-section-header" onclick="toggleHomeSection('homeMyWorkloadSection')" title="Click to collapse or expand">
           <span class="home-section-chevron">▾</span>
@@ -395,30 +433,6 @@
         </div>
       </section>
 
-      <!-- v96: My Tasks moved above Bid Countdowns — user's own work comes first -->
-      <section class="home-section" id="homeMyTasksSection">
-        <div class="home-section-header" onclick="toggleHomeSection('homeMyTasksSection')" title="Click to collapse or expand">
-          <span class="home-section-chevron">▾</span>
-          <span class="home-section-title">📋 My Tasks</span>
-          <span class="home-section-sub" id="homeMyTasksSub"></span>
-        </div>
-        <div class="home-section-body">
-          <div class="home-tasks-buckets" id="homeMyTasksBuckets"></div>
-        </div>
-      </section>
-
-      <!-- v96: Awaiting My Acknowledgment moved above Bid Countdowns -->
-      <section class="home-section" id="homeUnackSection">
-        <div class="home-section-header" onclick="toggleHomeSection('homeUnackSection')" title="Click to collapse or expand">
-          <span class="home-section-chevron">▾</span>
-          <span class="home-section-title">🔔 Awaiting My Acknowledgment</span>
-          <span class="home-section-sub" id="homeUnackSub"></span>
-        </div>
-        <div class="home-section-body">
-          <div class="home-items-list" id="homeUnackList"></div>
-        </div>
-      </section>
-
       <!-- Bid Countdowns across all active projects -->
       <section class="home-section" id="homeCountdownsSection">
         <div class="home-section-header" onclick="toggleHomeSection('homeCountdownsSection')" title="Click to collapse or expand">
@@ -440,6 +454,7 @@
           <span class="home-section-chevron">▾</span>
           <span class="home-section-title">📩 My Unread Messages</span>
           <span class="home-section-sub" id="homeMessagesSub"></span>
+          <span class="home-section-alert-dot" id="homeMessagesAlertDot" title="Unread messages"></span>
         </div>
         <div class="home-section-body">
           <div class="home-items-list" id="homeMessagesList"></div>
@@ -452,6 +467,7 @@
           <span class="home-section-chevron">▾</span>
           <span class="home-section-title">✓ Completions Awaiting My Sign-Off</span>
           <span class="home-section-sub" id="homeSignoffsSub"></span>
+          <span class="home-section-alert-dot" id="homeSignoffsAlertDot" title="Completions awaiting sign-off"></span>
         </div>
         <div class="home-section-body">
           <div class="home-items-list" id="homeSignoffsList"></div>
@@ -464,6 +480,7 @@
           <span class="home-section-chevron">▾</span>
           <span class="home-section-title">✗ Rejections Awaiting My Response</span>
           <span class="home-section-sub" id="homeRejectionsSub"></span>
+          <span class="home-section-alert-dot" id="homeRejectionsAlertDot" title="Rejections awaiting response"></span>
         </div>
         <div class="home-section-body">
           <div class="home-items-list" id="homeRejectionsList"></div>
@@ -597,6 +614,35 @@
          with status indicator (green=done, red=blocked, navy=in-progress,
          etc.) so the entire project timeline is visible at a glance.
          ============================================================ -->
+    <!-- v125: PROJECTS LIST VIEW ==========================================
+         Cross-workstream browsing page. Simple card grid grouped by
+         workstream (Bidding / Training / Events / Precon General / custom)
+         plus Past Pursuits and Archived sections. Search filter at top
+         for quick name-matching. Click any card to open that project.
+         Populated entirely by renderProjectsListView().
+         ================================================================ -->
+    <div id="projectsListView" class="hidden">
+      <div class="plv-header">
+        <div class="plv-title-row">
+          <div>
+            <h1 class="plv-title">📁 Projects</h1>
+            <div class="plv-subtitle" id="plvSubtitle">Every project grouped by workstream. Click any card to open.</div>
+          </div>
+          <div class="plv-actions">
+            <button class="btn btn-primary btn-sm" onclick="openProjectModal()" title="Create a new project">+ New Project</button>
+            <button class="btn btn-sm" onclick="exitProjectsListView()" title="Close">✕ Close</button>
+          </div>
+        </div>
+        <div class="plv-search-row">
+          <input type="text" id="plvSearchInput" class="plv-search" placeholder="Filter projects by name…" oninput="_onProjectsListSearch(this.value)">
+          <button class="btn btn-sm plv-search-clear" onclick="_clearProjectsListSearch()" title="Clear filter" id="plvSearchClearBtn" style="display:none;">✕</button>
+        </div>
+      </div>
+      <div class="plv-body" id="plvBody">
+        <!-- Populated by renderProjectsListView() -->
+      </div>
+    </div>
+
     <!-- v119: TRAINING LOG VIEW ============================================
          Cross-project view of every task tagged as Training. Header stats
          (team pending / completed / this month / YTD) sit above per-person
@@ -7321,6 +7367,7 @@
     <button class="btn btn-sm bab-action" onclick="openBulkAssigneeDialog()" title="Reassign Lead Owner on all selected">Assignee ▾</button>
     <button class="btn btn-sm bab-action" onclick="openBulkSupportDialog()" title="Add or remove support members across selected">Support ▾</button>
     <button class="btn btn-sm bab-action" onclick="openBulkPriorityDialog()" title="Change priority on all selected">Priority ▾</button>
+    <button class="btn btn-sm bab-action" onclick="openBulkTrainingDialog()" title="Tag or untag Training on all selected — appears in the Training Log">🎓 Training ▾</button>
     <button class="btn btn-sm bab-action" onclick="openBulkDueDateDialog()" title="Shift or set due dates on all selected">Due Date ▾</button>
     <button class="btn btn-sm bab-action" onclick="openBulkStageDialog()" title="Move all selected to a different stage">Stage ▾</button>
     <button class="btn btn-sm bab-action" onclick="openBulkBicDialog()" title="Change Ball in Court on all selected">BIC ▾</button>
