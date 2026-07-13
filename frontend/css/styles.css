@@ -1256,6 +1256,249 @@
      visually distinct from Team Workload (blue accent) and Home
      (navy accent).
      ============================================================ */
+  /* ============================================================
+     PROJECTS LIST VIEW (v125)
+     Cross-workstream browsing page. Simple card grid grouped by
+     workstream + Past Pursuits + Archived. Designed to be a clean,
+     visually pleasing "find any project" surface.
+     ============================================================ */
+  .plv-header { margin: 0 0 24px 0; }
+  .plv-title-row {
+    display: flex;
+    align-items: flex-start;
+    justify-content: space-between;
+    gap: 20px;
+    margin-bottom: 16px;
+  }
+  .plv-title {
+    font-family: 'Barlow Condensed', sans-serif;
+    font-size: 30px;
+    font-weight: 700;
+    color: var(--sbg-navy, #0a2540);
+    margin: 0;
+    letter-spacing: 0.02em;
+  }
+  .plv-subtitle {
+    font-size: 13px;
+    color: var(--text-dim, #6b7687);
+    margin-top: 4px;
+    max-width: 640px;
+    line-height: 1.5;
+  }
+  .plv-actions {
+    display: flex;
+    gap: 6px;
+    flex-shrink: 0;
+  }
+  .plv-search-row {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    max-width: 480px;
+  }
+  .plv-search {
+    flex: 1;
+    padding: 8px 12px;
+    font-family: 'Inter', sans-serif;
+    font-size: 13px;
+    border: 1px solid rgba(0, 0, 0, 0.15);
+    border-radius: 5px;
+    background: #fff;
+    color: var(--text, #1a1a1a);
+    transition: border-color 0.15s, box-shadow 0.15s;
+  }
+  .plv-search:focus {
+    outline: none;
+    border-color: var(--sbg-navy, #0a2540);
+    box-shadow: 0 0 0 3px rgba(10, 37, 64, 0.1);
+  }
+  .plv-body { display: flex; flex-direction: column; gap: 28px; }
+  .plv-section-header {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    margin-bottom: 12px;
+    padding-bottom: 8px;
+    border-bottom: 2px solid rgba(0, 0, 0, 0.06);
+  }
+  .plv-section-icon { font-size: 20px; line-height: 1; }
+  .plv-section-title {
+    font-family: 'Barlow Condensed', sans-serif;
+    font-size: 20px;
+    font-weight: 700;
+    color: var(--sbg-navy, #0a2540);
+    margin: 0;
+    letter-spacing: 0.02em;
+  }
+  .plv-section-count {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    min-width: 24px;
+    padding: 2px 8px;
+    background: rgba(10, 37, 64, 0.08);
+    color: var(--sbg-navy, #0a2540);
+    border-radius: 12px;
+    font-family: 'JetBrains Mono', monospace;
+    font-size: 11px;
+    font-weight: 700;
+  }
+  .plv-section-ws-bidding .plv-section-header        { border-bottom-color: rgba(200, 50, 43, 0.35); }
+  .plv-section-ws-training .plv-section-header       { border-bottom-color: rgba(192, 127, 0, 0.40); }
+  .plv-section-ws-events .plv-section-header         { border-bottom-color: rgba(124, 58, 237, 0.35); }
+  .plv-section-ws-precon-general .plv-section-header { border-bottom-color: rgba(74, 85, 96, 0.35); }
+  .plv-section-past .plv-section-header,
+  .plv-section-archived .plv-section-header  { border-bottom-color: rgba(107, 118, 135, 0.30); }
+  .plv-section-past .plv-section-title,
+  .plv-section-archived .plv-section-title { color: var(--text-dim, #6b7687); }
+  .plv-card-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(280px, 1fr));
+    gap: 14px;
+  }
+  .plv-card {
+    background: #fff;
+    border: 1px solid rgba(0, 0, 0, 0.08);
+    border-radius: 8px;
+    padding: 14px 16px 14px 20px;
+    cursor: pointer;
+    position: relative;
+    overflow: hidden;
+    transition: transform 0.12s, box-shadow 0.15s, border-color 0.15s;
+  }
+  .plv-card:hover {
+    transform: translateY(-2px);
+    box-shadow: 0 8px 20px rgba(10, 37, 64, 0.10);
+    border-color: rgba(10, 37, 64, 0.20);
+  }
+  .plv-card-accent {
+    position: absolute;
+    top: 0; left: 0; bottom: 0;
+    width: 4px;
+    background: rgba(10, 37, 64, 0.15);
+  }
+  .plv-card-ws-bidding .plv-card-accent        { background: var(--sbg-red, #c8322b); }
+  .plv-card-ws-training .plv-card-accent       { background: var(--sbg-gold, #c07f00); }
+  .plv-card-ws-events .plv-card-accent         { background: #7c3aed; }
+  .plv-card-ws-precon-general .plv-card-accent { background: #4a5560; }
+  .plv-card-archived { opacity: 0.65; }
+  .plv-card-archived:hover { opacity: 0.85; }
+  .plv-card-header {
+    display: flex;
+    align-items: flex-start;
+    gap: 10px;
+    margin-bottom: 10px;
+  }
+  .plv-card-thumb {
+    width: 36px;
+    height: 36px;
+    border-radius: 6px;
+    overflow: hidden;
+    flex-shrink: 0;
+    background: var(--sbg-navy, #0a2540);
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    color: #fff;
+    font-family: 'Barlow Condensed', sans-serif;
+    font-size: 13px;
+    font-weight: 700;
+    letter-spacing: 0.04em;
+  }
+  .plv-card-thumb img { width: 100%; height: 100%; object-fit: cover; }
+  .plv-card-header-body { flex: 1; min-width: 0; }
+  .plv-card-name {
+    font-family: 'Inter', sans-serif;
+    font-size: 14px;
+    font-weight: 600;
+    color: var(--text, #1a1a1a);
+    line-height: 1.3;
+    overflow: hidden;
+    display: -webkit-box;
+    -webkit-line-clamp: 2;
+    -webkit-box-orient: vertical;
+  }
+  .plv-card-ws-badge {
+    display: inline-block;
+    margin-top: 4px;
+    padding: 1px 6px;
+    border-radius: 8px;
+    font-size: 9px;
+    font-weight: 700;
+    letter-spacing: 0.3px;
+  }
+  .plv-card-meta {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    margin-bottom: 8px;
+  }
+  .plv-card-tasks {
+    font-family: 'Barlow Condensed', sans-serif;
+    font-size: 12px;
+    color: var(--text-dim, #6b7687);
+    letter-spacing: 0.05em;
+    text-transform: uppercase;
+  }
+  .plv-card-tasks strong {
+    color: var(--sbg-navy, #0a2540);
+    font-weight: 700;
+    font-size: 13px;
+  }
+  .plv-card-days {
+    display: inline-flex;
+    align-items: center;
+    padding: 2px 8px;
+    border-radius: 10px;
+    font-family: 'JetBrains Mono', monospace;
+    font-size: 10px;
+    font-weight: 700;
+    letter-spacing: 0.02em;
+  }
+  .plv-card-days-late,
+  .plv-card-days-today,
+  .plv-card-days-urgent   { background: #fef2f2; color: #991b1b; }
+  .plv-card-days-warning  { background: #fef3c7; color: #92400e; }
+  .plv-card-days-ok       { background: #f0fdf4; color: #166534; }
+  .plv-card-days-none,
+  .plv-card-days-archived { background: #f1f5f9; color: #64748b; }
+  .plv-card-progress {
+    height: 4px;
+    background: rgba(0, 0, 0, 0.06);
+    border-radius: 2px;
+    overflow: hidden;
+  }
+  .plv-card-progress-fill {
+    height: 100%;
+    background: linear-gradient(90deg, var(--sbg-red, #c8322b) 0%, var(--sbg-gold, #c07f00) 100%);
+    border-radius: 2px;
+    transition: width 0.3s ease;
+  }
+  .plv-empty {
+    text-align: center;
+    padding: 60px 20px;
+  }
+  .plv-empty-icon { font-size: 56px; margin-bottom: 14px; opacity: 0.4; }
+  .plv-empty-title {
+    font-family: 'Barlow Condensed', sans-serif;
+    font-size: 22px;
+    font-weight: 700;
+    color: var(--sbg-navy, #0a2540);
+    margin-bottom: 8px;
+  }
+  .plv-empty-sub {
+    font-size: 14px;
+    color: var(--text-dim, #6b7687);
+    max-width: 480px;
+    margin: 0 auto;
+    line-height: 1.5;
+  }
+  .plv-empty-sub a { color: var(--sbg-navy, #0a2540); text-decoration: underline; }
+  @media (max-width: 720px) {
+    .plv-card-grid { grid-template-columns: 1fr; }
+    .plv-title { font-size: 24px; }
+  }
+
   .tlv-header { margin: 0 0 20px 0; }
   .tlv-title-row {
     display: flex;
@@ -3156,6 +3399,48 @@
   }
   .home-section-lead {
     border-left: 4px solid var(--sbg-red);
+  }
+  /* v132: Alert dot on Today-page section headers. Shows a pulsing red dot
+     when the section has pending items (unack tasks, unread messages,
+     completions awaiting sign-off, rejections needing response). Also
+     tints the whole header background subtly and adds a red border to
+     make the whole section flash for attention. */
+  .home-section-alert-dot {
+    display: none;
+    width: 10px;
+    height: 10px;
+    border-radius: 50%;
+    background: var(--sbg-red, #c8322b);
+    box-shadow: 0 0 0 0 rgba(200, 50, 43, 0.7);
+    animation: alert-dot-pulse 1.6s ease-out infinite;
+    flex-shrink: 0;
+    margin-left: 4px;
+    vertical-align: middle;
+  }
+  .home-section-has-alerts .home-section-alert-dot {
+    display: inline-block;
+  }
+  @keyframes alert-dot-pulse {
+    0%   { box-shadow: 0 0 0 0 rgba(200, 50, 43, 0.55); transform: scale(1); }
+    70%  { box-shadow: 0 0 0 8px rgba(200, 50, 43, 0);   transform: scale(1.08); }
+    100% { box-shadow: 0 0 0 0 rgba(200, 50, 43, 0);     transform: scale(1); }
+  }
+  /* Give the whole section a subtle red accent when it has alerts —
+     visible even when the section is collapsed. */
+  .home-section-has-alerts > .home-section-header {
+    background: linear-gradient(90deg, rgba(200, 50, 43, 0.06) 0%, transparent 80%);
+    border-left: 3px solid var(--sbg-red, #c8322b);
+    padding-left: 9px;
+    animation: alert-border-pulse 2.5s ease-in-out infinite;
+  }
+  @keyframes alert-border-pulse {
+    0%, 100% { border-left-color: var(--sbg-red, #c8322b); }
+    50%      { border-left-color: rgba(200, 50, 43, 0.4); }
+  }
+  /* Sub-label text in alert sections gets a red tint for extra emphasis */
+  .home-section-has-alerts .home-section-sub {
+    color: var(--sbg-red, #c8322b);
+    font-weight: 700;
   }
   .home-section-header {
     display: flex;
@@ -8525,6 +8810,29 @@
     background: rgba(255,255,255,0.95);
     color: var(--sbg-gold, #c07f00);
     border-color: rgba(255,255,255,0.9);
+  }
+
+  /* v119.1: Compact training chip — a smaller inline variant used in
+     dense list views (Home Today, Look Ahead, Alerts, Workload drill,
+     Timeline, Board table). Same gold treatment; just short "🎓"
+     glyph with a tight border so it fits alongside other title chips. */
+  .training-chip-mini {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 18px;
+    height: 18px;
+    background: var(--sbg-gold, #c07f00);
+    color: #fff;
+    border: 1px solid var(--sbg-gold, #c07f00);
+    border-radius: 3px;
+    font-size: 10px;
+    line-height: 1;
+    margin: 0 4px;
+    vertical-align: middle;
+    box-shadow: 0 1px 2px rgba(192, 127, 0, 0.25);
+    flex-shrink: 0;
+    cursor: help;
   }
 
   /* ========== CRITICAL CHIP on cards ========== */
@@ -16846,6 +17154,260 @@
     background: var(--text-faint);
     opacity: 0.6;
   }
+  /* v124: Duplicate Project modal — pick target workstream when duplicating */
+  .dpm-source {
+    background: rgba(10, 37, 64, 0.05);
+    border-left: 3px solid var(--sbg-navy, #0a2540);
+    padding: 8px 12px;
+    border-radius: 3px;
+    margin-bottom: 4px;
+  }
+  .dpm-source-label {
+    font-family: 'Barlow Condensed', sans-serif;
+    font-size: 10px;
+    font-weight: 700;
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+    color: var(--text-dim, #6b7687);
+  }
+  .dpm-source-title {
+    font-family: 'Inter', sans-serif;
+    font-size: 13.5px;
+    font-weight: 600;
+    color: var(--text, #1a1a1a);
+    margin-top: 1px;
+  }
+  .dpm-source-meta {
+    font-family: 'Barlow Condensed', sans-serif;
+    font-size: 10.5px;
+    font-weight: 600;
+    letter-spacing: 0.05em;
+    text-transform: uppercase;
+    color: var(--text-dim, #6b7687);
+    margin-top: 2px;
+  }
+  /* v130: Duplicate Project modal — user asked to just make it BIGGER.
+     Simple override: 1100px max-width so there's plenty of room for the
+     preset cards, options grid, and everything else. */
+  .modal.dpm-modal {
+    max-width: 1100px;
+  }
+  .dpm-ws-buttons {
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(150px, 1fr));
+    gap: 8px;
+  }
+  .dpm-ws-btn {
+    display: inline-flex;
+    align-items: center;
+    gap: 8px;
+    padding: 10px 12px;
+    background: #fff;
+    border: 2px solid rgba(0, 0, 0, 0.1);
+    border-radius: 5px;
+    font-family: 'Inter', sans-serif;
+    font-size: 13px;
+    font-weight: 600;
+    color: var(--text, #1a1a1a);
+    cursor: pointer;
+    transition: border-color 0.12s, background 0.12s, transform 0.08s;
+  }
+  .dpm-ws-btn:hover {
+    border-color: var(--sbg-navy, #0a2540);
+    background: rgba(10, 37, 64, 0.03);
+  }
+  .dpm-ws-btn.active {
+    border-color: var(--sbg-navy, #0a2540);
+    background: var(--sbg-navy, #0a2540);
+    color: #fff;
+    box-shadow: 0 2px 6px rgba(10, 37, 64, 0.25);
+  }
+  .dpm-ws-btn.active:hover {
+    background: #133860;
+  }
+  .dpm-ws-icon { font-size: 18px; line-height: 1; }
+  .dpm-warn {
+    background: rgba(200, 50, 43, 0.08);
+    border-left: 3px solid var(--sbg-red, #c8322b);
+    padding: 10px 12px;
+    border-radius: 3px;
+    margin-top: 10px;
+  }
+  .dpm-warn-title {
+    font-weight: 700;
+    color: var(--sbg-red, #c8322b);
+    font-size: 13px;
+    margin-bottom: 4px;
+  }
+  .dpm-warn-body {
+    font-size: 12px;
+    color: var(--text, #1a1a1a);
+    line-height: 1.45;
+  }
+  .dpm-info {
+    background: rgba(76, 175, 80, 0.10);
+    border-left: 3px solid #4caf50;
+    padding: 8px 12px;
+    border-radius: 3px;
+    margin-top: 10px;
+  }
+  .dpm-info-body {
+    font-size: 12px;
+    color: #2e7d32;
+    font-weight: 600;
+  }
+  .dpm-carry-info {
+    margin-top: 10px;
+    padding: 10px 12px;
+    background: rgba(0, 0, 0, 0.03);
+    border-radius: 4px;
+    border: 1px solid rgba(0, 0, 0, 0.05);
+  }
+  .dpm-carry-title {
+    font-family: 'Barlow Condensed', sans-serif;
+    font-size: 10.5px;
+    font-weight: 700;
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+    color: var(--text-dim, #6b7687);
+    margin-bottom: 2px;
+  }
+  .dpm-carry-body {
+    font-size: 11.5px;
+    color: var(--text, #1a1a1a);
+    line-height: 1.45;
+  }
+  /* v130: Copy Mode preset picker + granular options panel — rebuilt
+     as plain <button> elements after the label+radio pattern rendered
+     with content escaping outside the modal in some browsers. */
+  .dpm-preset-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+    gap: 8px;
+  }
+  .dpm-preset {
+    display: block;
+    text-align: left;
+    padding: 12px 14px;
+    background: #fff;
+    border: 2px solid rgba(0, 0, 0, 0.1);
+    border-radius: 6px;
+    cursor: pointer;
+    font-family: inherit;
+    color: inherit;
+    width: 100%;
+    transition: border-color 0.12s, background 0.12s;
+  }
+  .dpm-preset:hover {
+    border-color: var(--sbg-navy, #0a2540);
+    background: rgba(10, 37, 64, 0.02);
+  }
+  .dpm-preset.active {
+    border-color: var(--sbg-navy, #0a2540);
+    background: rgba(10, 37, 64, 0.06);
+    box-shadow: 0 2px 6px rgba(10, 37, 64, 0.10);
+  }
+  .dpm-preset-title {
+    font-family: 'Inter', sans-serif;
+    font-size: 14px;
+    font-weight: 700;
+    color: var(--text, #1a1a1a);
+    margin-bottom: 4px;
+  }
+  .dpm-preset-desc {
+    font-size: 12px;
+    color: var(--text-dim, #6b7687);
+    line-height: 1.4;
+  }
+  .dpm-options-panel {
+    margin-top: 6px;
+    padding: 12px 14px;
+    background: rgba(10, 37, 64, 0.03);
+    border: 1px solid rgba(10, 37, 64, 0.10);
+    border-radius: 6px;
+  }
+  .dpm-options-header {
+    font-family: 'Barlow Condensed', sans-serif;
+    font-size: 11px;
+    font-weight: 700;
+    letter-spacing: 0.1em;
+    text-transform: uppercase;
+    color: var(--text-dim, #6b7687);
+    margin-bottom: 8px;
+    padding-bottom: 5px;
+    border-bottom: 1px solid rgba(0, 0, 0, 0.06);
+  }
+  .dpm-options-groups {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));
+    gap: 12px 18px;
+  }
+  .dpm-opts-group-title {
+    font-family: 'Barlow Condensed', sans-serif;
+    font-size: 11px;
+    font-weight: 700;
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+    color: var(--sbg-navy, #0a2540);
+    margin-bottom: 4px;
+  }
+  .dpm-opts-items {
+    display: flex;
+    flex-direction: column;
+    gap: 3px;
+  }
+  .dpm-opt {
+    display: flex;
+    align-items: flex-start;
+    gap: 6px;
+    padding: 4px 6px;
+    border-radius: 4px;
+    cursor: pointer;
+    transition: background 0.1s;
+  }
+  .dpm-opt:hover { background: rgba(10, 37, 64, 0.04); }
+  .dpm-opt input[type="checkbox"] {
+    margin-top: 2px;
+    accent-color: var(--sbg-navy, #0a2540);
+    flex-shrink: 0;
+  }
+  .dpm-opt-body { flex: 1; min-width: 0; }
+  .dpm-opt-label {
+    font-size: 12.5px;
+    font-weight: 600;
+    color: var(--text, #1a1a1a);
+    line-height: 1.3;
+  }
+  .dpm-opt-hint {
+    font-size: 10.5px;
+    color: var(--text-dim, #6b7687);
+    line-height: 1.3;
+    margin-top: 1px;
+  }
+  @media (max-width: 600px) {
+    .modal.dpm-modal { padding: 16px; }
+    .dpm-preset { padding: 8px 10px; }
+  }
+  /* v123: Workstream-based sidebar sections. Each project workstream
+     (Bidding, Training, Events, Precon General, custom) gets its own
+     collapsible section with a color-coded left border reflecting its
+     theme so the user can distinguish sections at a glance. */
+  .project-section-ws .project-section-header {
+    border-left: 3px solid rgba(10, 37, 64, 0.15);
+    padding-left: 9px;
+  }
+  .project-section-ws-bidding .project-section-header        { border-left-color: var(--sbg-red, #c8322b); }
+  .project-section-ws-training .project-section-header       { border-left-color: var(--sbg-gold, #c07f00); }
+  .project-section-ws-events .project-section-header         { border-left-color: #7c3aed; }
+  .project-section-ws-precon-general .project-section-header { border-left-color: #4a5560; }
+  .ps-ws-icon {
+    font-size: 14px;
+    margin-right: 6px;
+    line-height: 1;
+    display: inline-flex;
+    align-items: center;
+  }
+  .layout.sidebar-collapsed .ps-ws-icon { display: none; }
   .ps-title {
     flex: 1;
     font-family: 'Barlow Condensed', sans-serif;

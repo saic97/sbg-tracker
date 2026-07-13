@@ -138,6 +138,7 @@ var state = {
   activeAlertTier: null,            // 'overdue' | 'imminent' | 'soon' | null
   pastPursuitsExpanded: false,      // whether "Past Pursuits" section is open
   currentlyBiddingExpanded: false,  // v115: whether "Currently Bidding" section is open (default collapsed)
+  workstreamExpanded: {},           // v123: per-workstream collapse map, keyed by workstream id. All collapsed by default.
   archivedExpanded: false,          // whether "Archived" section is open
   // ===== STATUS SNAPSHOT VIEW =====
   // Cross-project rollup showing what's actively being worked on, what's
@@ -212,6 +213,9 @@ function loadState() {
     if (typeof state.teamWorkloadView !== 'boolean') state.teamWorkloadView = false;
     // v119: Training Log page — cross-project view of all tasks tagged as isTraining
     if (typeof state.trainingLogView !== 'boolean') state.trainingLogView = false;
+    // v125: Projects list view — cross-workstream browsing page
+    if (typeof state.projectsListView !== 'boolean') state.projectsListView = false;
+    if (typeof state.projectsListSearch !== 'string') state.projectsListSearch = '';
     if (typeof state.trainingLogFilter !== 'string') state.trainingLogFilter = 'all'; // all | pending | completed
     if (typeof state.trainingLogPersonFilter !== 'string') state.trainingLogPersonFilter = 'all';
     if (!['this-week','next-week','two-week','four-week','this-month','next-month','all-open'].includes(state.workloadDateScope)) {
@@ -342,6 +346,24 @@ function loadState() {
     // v96: per-section collapse state on the Today page. Keys are section
     // element IDs; values are true when collapsed. Persists across reloads.
     if (!state.homeCollapse || typeof state.homeCollapse !== 'object') state.homeCollapse = {};
+    // v132: On very first load (or after user reset), pre-populate homeCollapse
+    // so all Today-page sections start collapsed. Gate with a flag so we
+    // don't clobber user preferences on subsequent loads.
+    if (!state.homeCollapseInitialized) {
+      const defaultCollapsed = [
+        'homeMyTasksSection',
+        'homeUnackSection',
+        'homeMyWorkloadSection',
+        'homeCountdownsSection',
+        'homeMessagesSection',
+        'homeSignoffsSection',
+        'homeRejectionsSection'
+      ];
+      defaultCollapsed.forEach(id => {
+        if (state.homeCollapse[id] === undefined) state.homeCollapse[id] = true;
+      });
+      state.homeCollapseInitialized = true;
+    }
     // v98: workspace grouping section collapsed state — user can collapse
     // the Group By tabs + stage pill row to make more room for the board/table.
     if (typeof state.workspaceGroupingCollapsed !== 'boolean') state.workspaceGroupingCollapsed = false;
@@ -778,6 +800,10 @@ function loadState() {
     state.projects.forEach(p => {
       if (!p.workstream || typeof p.workstream !== 'string') p.workstream = 'bidding';
     });
+    // v123: sidebar per-workstream collapse map. All collapsed by default.
+    if (!state.workstreamExpanded || typeof state.workstreamExpanded !== 'object') {
+      state.workstreamExpanded = {};
+    }
     state.projects.forEach(p => {
       // Bid extension fields — initialize on existing projects
       if (typeof p.originalStartDate === 'undefined') p.originalStartDate = p.startDate || '';
@@ -2466,19 +2492,156 @@ function saveAsTemplate() {
   alert(`Template "${name}" saved. It will appear as an option when creating new projects.`);
 }
 
+// v124: Rewritten to open a proper modal instead of a bare prompt() so the
+// user can pick the workstream for the copy (e.g. duplicate a Bidding
+// project into Training). Stages carry over from the source; if the target
+// workstream doesn't have matching stages defined, tasks will still copy
+// but the stage grouping may be sparse until stages are added in Settings.
 function duplicateProject() {
   const p = state.projects.find(x => x.id === state.activeProjectId);
   if (!p) return;
-  const newName = prompt('Duplicate project. Enter name for the new project:', p.name + ' (Copy)');
-  if (!newName || !newName.trim()) return;
-  const copy = JSON.parse(JSON.stringify(p));
+  _openDuplicateProjectModal(p);
+}
+
+// v126: The set of granular per-item flags controlling what gets copied.
+// Each preset ('fresh' / 'clone' / 'custom') resolves to a flag map that
+// the copy function reads. Kept as a top-level definition so it can be
+// referenced by both the modal renderer and the copy function without
+// duplicating field lists.
+const _COPY_OPTION_DEFS = [
+  {
+    group: 'task-people',
+    label: 'Assignees & team',
+    items: [
+      { id: 'copyAssignees',       label: 'Assignees & Leads',           hint: 'Copies each task\'s primary assignee + leads[] array' },
+      { id: 'copySupportMembers',  label: 'Support members',             hint: 'Copies supportMembers[] on every task' },
+      { id: 'copyBallInCourt',     label: 'Ball in Court values',        hint: 'Copies the BIC value on every task' }
+    ]
+  },
+  {
+    group: 'task-dates',
+    label: 'Dates & scheduling',
+    items: [
+      { id: 'copyDueDates',        label: 'Task due dates',              hint: 'Copies each task\'s dueDate (otherwise leaves blank so anchor+offset computes fresh)' },
+      { id: 'copyStatuses',        label: 'Task statuses',               hint: 'Copies In Progress / Done / Blocked / Pending as-is (otherwise all reset to Not Started)' }
+    ]
+  },
+  {
+    group: 'task-history',
+    label: 'Completion & history',
+    items: [
+      { id: 'copyCompletionStamps', label: 'Completion stamps',          hint: 'completedAt / completedBy / completion acknowledgement + rejection state' },
+      { id: 'copyAckState',        label: 'Assignee acknowledgements',   hint: 'acknowledged / acknowledgedBy / acknowledgedAt + per-lead leadAck object' },
+      { id: 'copyMessages',        label: 'Per-task messages',           hint: 'Message threads attached to each task' },
+      { id: 'copyTaskActivityLog', label: 'Per-task activity log',       hint: 'Change history on each task' }
+    ]
+  },
+  {
+    group: 'recurring',
+    label: 'Recurring tasks',
+    items: [
+      { id: 'copySeriesIds',       label: 'Share recurring series',      hint: 'Keeps seriesId from source so recurring instances remain linked to the original\'s series pool. Off = each recurring task starts its own fresh series.' }
+    ]
+  },
+  {
+    group: 'project-level',
+    label: 'Project-level data',
+    items: [
+      { id: 'copyMilestones',      label: 'Milestones',                  hint: 'Copies key-milestone dates (kickoff, mobilization, etc.)' },
+      { id: 'copyAddenda',         label: 'Addenda log',                 hint: 'Copies addenda records' },
+      { id: 'copyProjectActivity', label: 'Project activity log',        hint: 'Copies the project-level activityLog' }
+    ]
+  }
+];
+
+// Preset shortcuts. 'fresh' matches v124 behavior (structure only).
+// 'clone' copies everything as an exact clone.
+function _resolveCopyPreset(preset) {
+  const allFalse = {}; const allTrue = {};
+  _COPY_OPTION_DEFS.forEach(g => g.items.forEach(it => {
+    allFalse[it.id] = false;
+    allTrue[it.id] = true;
+  }));
+  if (preset === 'clone') return allTrue;
+  if (preset === 'fresh') return allFalse;
+  // 'custom' returns current pending state so we don't clobber
+  return null;
+}
+
+// v126: Options-driven project copy. Replaces v124's _legacyDuplicateProjectFast
+// with granular control. opts holds per-field booleans built from
+// _COPY_OPTION_DEFS + preset resolvers.
+function _copyProjectWithOptions(sourceProject, newName, targetWorkstream, opts) {
+  opts = opts || {};
+  const copy = JSON.parse(JSON.stringify(sourceProject));
   copy.id = uid();
-  copy.name = newName.trim();
+  copy.name = newName;
+  copy.workstream = targetWorkstream || sourceProject.workstream || 'bidding';
   copy.createdAt = Date.now();
-  copy.tasks.forEach(t => {
+  copy.archived = false;
+  copy.archivedAt = null;
+  copy.archivedBy = '';
+  // Project-level fields — clear or keep based on options
+  if (!opts.copyProjectActivity) copy.activityLog = [];
+  if (!opts.copyAddenda) copy.addenda = [];
+  if (!opts.copyMilestones) copy.milestones = [];
+  // Per-task processing
+  (copy.tasks || []).forEach(t => {
     t.id = uid();
-    t.status = 'not-started';   // reset progress
     t.createdAt = Date.now();
+    // People
+    if (!opts.copyAssignees) {
+      t.assignee = '';
+      t.leads = [];
+    }
+    if (!opts.copySupportMembers) {
+      t.support = '';
+      t.supportMembers = [];
+    }
+    if (!opts.copyBallInCourt) t.ballInCourt = 'Lead';
+    // Dates & status
+    if (!opts.copyDueDates) t.dueDate = '';
+    if (!opts.copyStatuses) t.status = 'not-started';
+    // Completion stamps
+    if (!opts.copyCompletionStamps) {
+      t.completedAt = null;
+      t.completedBy = '';
+      t.completionAcknowledged = false;
+      t.completionAcknowledgedBy = '';
+      t.completionAcknowledgedAt = null;
+      t.completionRejected = false;
+      t.completionRejectedBy = '';
+      t.completionRejectedAt = null;
+      t.completionRejectionReason = '';
+      t.completionRejectionNotes = '';
+      t.completionRejectionAcknowledged = false;
+      t.leadCompletion = {};
+    }
+    // Acknowledgements
+    if (!opts.copyAckState) {
+      t.acknowledged = false;
+      t.acknowledgedBy = '';
+      t.acknowledgedAt = null;
+      t.leadAck = {};
+      t.bestPracticeAck = {};
+    }
+    // Messages
+    if (!opts.copyMessages) t.messages = [];
+    // Task activity log
+    if (!opts.copyTaskActivityLog) t.activityLog = [];
+    // Recurring series pool
+    if (!opts.copySeriesIds) {
+      // Give each recurring task its own fresh series id so instance
+      // pool is independent from source. Non-recurring tasks stay null.
+      if (t.recurrence && t.recurrence.pattern && t.recurrence.pattern !== 'none') {
+        t.seriesId = t.id; // start fresh series rooted at this new task
+      } else {
+        t.seriesId = null;
+      }
+    }
+    // Reschedule bookkeeping always resets (it's status flag, not schedule data)
+    t.rescheduledFromPastDue = false;
+    t.rescheduledFromPastDueMeta = null;
   });
   state.projects.push(copy);
   state.activeProjectId = copy.id;
@@ -2486,7 +2649,299 @@ function duplicateProject() {
   state.activeAssignee = 'all';
   saveState();
   render();
+  return copy;
 }
+
+// Legacy fast-path retained for backward compat — internally routes to
+// _copyProjectWithOptions with the "fresh" preset (matches v124 behavior).
+function _legacyDuplicateProjectFast(sourceProject, newName, targetWorkstream) {
+  return _copyProjectWithOptions(sourceProject, newName, targetWorkstream, _resolveCopyPreset('fresh'));
+}
+
+// v124: Duplicate Project modal — pick name + target workstream. Lazy-built
+// on first open. Uses the same workstream button visuals as the New Project
+// flow so the choice feels consistent.
+function _openDuplicateProjectModal(sourceProject) {
+  if (!sourceProject) return;
+  let modal = document.getElementById('duplicateProjectModal');
+  if (!modal) {
+    const html = `
+      <div class="modal-backdrop" id="duplicateProjectModal" style="z-index:1100;">
+        <div class="modal dpm-modal">
+          <h3 style="margin:0 0 12px 0;">⎘ Duplicate Project</h3>
+          <div id="dpmSourceInfo"></div>
+          <div class="form-group" style="margin-top:12px;">
+            <label>New Project Name</label>
+            <input type="text" id="dpmName" placeholder="e.g. Community Center — Onboarding" autocomplete="off">
+          </div>
+          <div class="form-group">
+            <label>Workstream</label>
+            <div id="dpmWorkstreamButtons" class="dpm-ws-buttons"></div>
+            <div class="hint-inline">Filed under this workstream — task titles, hours, checklists, and structure always carry over. Pick per-item options below.</div>
+          </div>
+          <div id="dpmStageWarning" style="display:none;"></div>
+
+          <!-- v130: Copy Mode preset picker — rebuilt as buttons instead of
+               label+radio (the label+radio pattern was rendering broken
+               with content escaping in some browsers) -->
+          <div class="form-group">
+            <label>Copy Mode</label>
+            <div class="dpm-preset-grid">
+              <button type="button" class="dpm-preset dpm-preset-fresh" data-preset="fresh" onclick="_pickDuplicatePreset('fresh')">
+                <div class="dpm-preset-title">🔄 Fresh Copy</div>
+                <div class="dpm-preset-desc">Structure only — everything else resets. Best for starting a new bid using a proven layout.</div>
+              </button>
+              <button type="button" class="dpm-preset dpm-preset-clone" data-preset="clone" onclick="_pickDuplicatePreset('clone')">
+                <div class="dpm-preset-title">📋 Exact Clone</div>
+                <div class="dpm-preset-desc">Identical copy — assignees, due dates, statuses, and history all preserved.</div>
+              </button>
+              <button type="button" class="dpm-preset dpm-preset-custom" data-preset="custom" onclick="_pickDuplicatePreset('custom')">
+                <div class="dpm-preset-title">⚙️ Custom</div>
+                <div class="dpm-preset-desc">Pick exactly what to copy — check any combination of options below.</div>
+              </button>
+            </div>
+          </div>
+
+          <!-- v126: Granular options panel — visible only when Custom preset picked -->
+          <div class="dpm-options-panel" id="dpmOptionsPanel" style="display:none;">
+            <div class="dpm-options-header">Per-item options</div>
+            <div class="dpm-options-groups" id="dpmOptionsGroups"></div>
+          </div>
+
+          <div id="dpmCarryOverInfo" class="dpm-carry-info"></div>
+          <div class="modal-actions dpm-actions">
+            <button class="btn" onclick="closeModal('duplicateProjectModal');_pendingDuplicateSourceId=null;">Cancel</button>
+            <button class="btn btn-primary" onclick="_confirmDuplicateProject()">⎘ Create Duplicate</button>
+          </div>
+        </div>
+      </div>
+    `;
+    document.body.insertAdjacentHTML('beforeend', html);
+    modal = document.getElementById('duplicateProjectModal');
+  }
+  _pendingDuplicateSourceId = sourceProject.id;
+  _pendingDuplicateWorkstream = sourceProject.workstream || 'bidding';
+  // v126: default preset is 'fresh' (matches v124 behavior). User can flip.
+  _pendingDuplicatePreset = 'fresh';
+  _pendingDuplicateOpts = Object.assign({}, _resolveCopyPreset('fresh'));
+  const nameEl = document.getElementById('dpmName');
+  if (nameEl) nameEl.value = sourceProject.name + ' (Copy)';
+  const sourceWs = getWorkstream(sourceProject.workstream || 'bidding');
+  const taskCount = (sourceProject.tasks || []).length;
+  document.getElementById('dpmSourceInfo').innerHTML = `
+    <div class="dpm-source">
+      <div class="dpm-source-label">Duplicating:</div>
+      <div class="dpm-source-title">${escapeHtml(sourceProject.name)}</div>
+      <div class="dpm-source-meta">${escapeHtml(sourceWs.icon || '')} ${escapeHtml(sourceWs.label)} · ${taskCount} task${taskCount === 1 ? '' : 's'}</div>
+    </div>
+  `;
+  _renderDuplicateWorkstreamButtons();
+  _renderDuplicatePresetSelection();
+  _renderDuplicateOptions();
+  _renderDuplicateCarryOverInfo(sourceProject);
+  _updateDuplicateStageWarning(sourceProject);
+  modal.classList.add('active');
+  setTimeout(() => nameEl && nameEl.focus(), 60);
+}
+
+function _renderDuplicatePresetSelection() {
+  // v130: presets are buttons now, not radios. Just toggle active class.
+  const buttons = document.querySelectorAll('.dpm-preset[data-preset]');
+  buttons.forEach(b => {
+    b.classList.toggle('active', b.dataset.preset === _pendingDuplicatePreset);
+  });
+  const panel = document.getElementById('dpmOptionsPanel');
+  if (panel) panel.style.display = (_pendingDuplicatePreset === 'custom') ? 'block' : 'none';
+}
+
+function _pickDuplicatePreset(preset) {
+  _pendingDuplicatePreset = preset;
+  // For 'fresh' and 'clone', overwrite the pending options.
+  // For 'custom', preserve the current checkbox state.
+  const resolved = _resolveCopyPreset(preset);
+  if (resolved) _pendingDuplicateOpts = Object.assign({}, resolved);
+  _renderDuplicatePresetSelection();
+  _renderDuplicateOptions();
+  _renderDuplicateCarryOverInfo(state.projects.find(x => x.id === _pendingDuplicateSourceId));
+}
+
+function _renderDuplicateOptions() {
+  const container = document.getElementById('dpmOptionsGroups');
+  if (!container) return;
+  container.innerHTML = _COPY_OPTION_DEFS.map(g => `
+    <div class="dpm-opts-group">
+      <div class="dpm-opts-group-title">${escapeHtml(g.label)}</div>
+      <div class="dpm-opts-items">
+        ${g.items.map(it => `
+          <label class="dpm-opt">
+            <input type="checkbox" ${_pendingDuplicateOpts[it.id] ? 'checked' : ''} onchange="_toggleDuplicateOpt('${escapeAttr(it.id)}', this.checked)">
+            <div class="dpm-opt-body">
+              <div class="dpm-opt-label">${escapeHtml(it.label)}</div>
+              <div class="dpm-opt-hint">${escapeHtml(it.hint)}</div>
+            </div>
+          </label>
+        `).join('')}
+      </div>
+    </div>
+  `).join('');
+}
+
+function _toggleDuplicateOpt(id, checked) {
+  _pendingDuplicateOpts[id] = !!checked;
+  // Once user manually toggles a checkbox, they're clearly customizing —
+  // switch preset to 'custom' so the UI reflects reality.
+  if (_pendingDuplicatePreset !== 'custom') {
+    _pendingDuplicatePreset = 'custom';
+    _renderDuplicatePresetSelection();
+  }
+  _renderDuplicateCarryOverInfo(state.projects.find(x => x.id === _pendingDuplicateSourceId));
+}
+
+function _renderDuplicateWorkstreamButtons() {
+  const container = document.getElementById('dpmWorkstreamButtons');
+  if (!container) return;
+  const types = Array.isArray(state.projectTypes) ? state.projectTypes : [];
+  container.innerHTML = types.map(t => {
+    const active = t.id === _pendingDuplicateWorkstream;
+    return `
+      <button type="button" class="dpm-ws-btn ${active ? 'active' : ''}" onclick="_pickDuplicateWorkstream('${escapeAttr(t.id)}')" data-ws="${escapeAttr(t.id)}">
+        <span class="dpm-ws-icon">${escapeHtml(t.icon || '📁')}</span>
+        <span class="dpm-ws-label">${escapeHtml(t.label)}</span>
+      </button>
+    `;
+  }).join('');
+}
+
+function _pickDuplicateWorkstream(wsId) {
+  _pendingDuplicateWorkstream = wsId;
+  _renderDuplicateWorkstreamButtons();
+  const source = state.projects.find(x => x.id === _pendingDuplicateSourceId);
+  if (source) _updateDuplicateStageWarning(source);
+}
+
+function _renderDuplicateCarryOverInfo(sourceProject) {
+  const el = document.getElementById('dpmCarryOverInfo');
+  if (!el) return;
+  if (!sourceProject) { el.innerHTML = ''; return; }
+  const taskCount = (sourceProject.tasks || []).length;
+  const opts = _pendingDuplicateOpts || {};
+  // Always-carried structural fields
+  const alwaysCarry = [
+    `All ${taskCount} task${taskCount === 1 ? '' : 's'} (titles, stages, categories, sources)`,
+    'Hours, checklists, deliverables',
+    'Best-practice notes, critical flags, training flags',
+    'Role requirements (Senior / Lead 1 / Lead 2)',
+    'Recurrence rules',
+    'Project settings (owner, delivery, notes, bid dates)'
+  ];
+  // Conditional carry — built from option flags
+  const carry = [];
+  const reset = [];
+  const optCheck = (id, label) => {
+    if (opts[id]) carry.push(label);
+    else reset.push(label);
+  };
+  optCheck('copyAssignees', 'Assignees & Leads on each task');
+  optCheck('copySupportMembers', 'Support members');
+  optCheck('copyBallInCourt', 'Ball in Court values');
+  optCheck('copyDueDates', 'Task due dates');
+  optCheck('copyStatuses', 'Task statuses');
+  optCheck('copyCompletionStamps', 'Completion stamps + rejection state');
+  optCheck('copyAckState', 'Acknowledgement history');
+  optCheck('copyMessages', 'Per-task messages');
+  optCheck('copyTaskActivityLog', 'Per-task activity log');
+  optCheck('copySeriesIds', 'Shared recurring series pool');
+  optCheck('copyMilestones', 'Milestones');
+  optCheck('copyAddenda', 'Addenda log');
+  optCheck('copyProjectActivity', 'Project activity log');
+
+  el.innerHTML = `
+    <div class="dpm-carry-title">Always carried over:</div>
+    <div class="dpm-carry-body">${alwaysCarry.join(' · ')}</div>
+    ${carry.length > 0 ? `
+      <div class="dpm-carry-title" style="margin-top:10px; color:#166534;">Also carried (per your selection):</div>
+      <div class="dpm-carry-body">${carry.join(' · ')}</div>
+    ` : ''}
+    ${reset.length > 0 ? `
+      <div class="dpm-carry-title" style="margin-top:10px; color:#991b1b;">Starts fresh:</div>
+      <div class="dpm-carry-body">${reset.join(' · ')}</div>
+    ` : ''}
+  `;
+}
+
+function _updateDuplicateStageWarning(sourceProject) {
+  const el = document.getElementById('dpmStageWarning');
+  if (!el) return;
+  const targetWs = _pendingDuplicateWorkstream;
+  const sourceWs = sourceProject.workstream || 'bidding';
+  if (targetWs === sourceWs) {
+    el.style.display = 'none';
+    el.innerHTML = '';
+    return;
+  }
+  // Different workstream — check whether target has enough stages defined
+  const targetType = (state.projectTypes || []).find(t => t.id === targetWs);
+  const targetStages = targetWs === 'bidding'
+    ? (state.stages || [])
+    : (targetType && Array.isArray(targetType.stages) ? targetType.stages : []);
+  const targetStageIds = new Set(targetStages.map(s => s.id));
+  const sourceTaskStages = new Set((sourceProject.tasks || []).map(t => t.stage).filter(Boolean));
+  const orphanedCount = Array.from(sourceTaskStages).filter(s => !targetStageIds.has(s)).length;
+  const targetLabel = getWorkstream(targetWs).label;
+  if (targetStages.length === 0) {
+    el.style.display = 'block';
+    el.innerHTML = `
+      <div class="dpm-warn">
+        <div class="dpm-warn-title">⚠ ${escapeHtml(targetLabel)} has no stages defined yet</div>
+        <div class="dpm-warn-body">Tasks will copy over but will not group under any stage until stages are added via <strong>Settings → Project Types & Stages</strong>. You can also reassign each task's stage manually after duplication.</div>
+      </div>
+    `;
+  } else if (orphanedCount > 0) {
+    el.style.display = 'block';
+    el.innerHTML = `
+      <div class="dpm-warn">
+        <div class="dpm-warn-title">⚠ ${orphanedCount} stage${orphanedCount === 1 ? '' : 's'} in the source don't exist in ${escapeHtml(targetLabel)}</div>
+        <div class="dpm-warn-body">${orphanedCount} task${orphanedCount === 1 ? '' : 's'} may not group under a stage in the copy. You can add missing stages via <strong>Settings → Project Types & Stages</strong>, or reassign task stages after duplication.</div>
+      </div>
+    `;
+  } else {
+    el.style.display = 'block';
+    el.innerHTML = `
+      <div class="dpm-info">
+        <div class="dpm-info-body">✓ All source stages exist in ${escapeHtml(targetLabel)} — tasks will group cleanly in the copy.</div>
+      </div>
+    `;
+  }
+}
+
+function _confirmDuplicateProject() {
+  const sourceId = _pendingDuplicateSourceId;
+  if (!sourceId) return;
+  const source = state.projects.find(x => x.id === sourceId);
+  if (!source) return;
+  const newName = (document.getElementById('dpmName').value || '').trim();
+  if (!newName) {
+    alert('Please enter a name for the new project.');
+    return;
+  }
+  const targetWs = _pendingDuplicateWorkstream || source.workstream || 'bidding';
+  _copyProjectWithOptions(source, newName, targetWs, _pendingDuplicateOpts || {});
+  closeModal('duplicateProjectModal');
+  _pendingDuplicateSourceId = null;
+  _pendingDuplicateWorkstream = null;
+  _pendingDuplicatePreset = null;
+  _pendingDuplicateOpts = null;
+  if (typeof showToast === 'function') {
+    const ws = getWorkstream(targetWs);
+    const presetLabel = { 'clone': 'Exact Clone', 'fresh': 'Fresh Copy', 'custom': 'Custom' }[_pendingDuplicatePreset] || '';
+    showToast(`✓ Duplicated as "${newName}" — filed under ${ws.icon || ''} ${ws.label}`, 'success');
+  }
+}
+
+let _pendingDuplicateSourceId = null;
+let _pendingDuplicateWorkstream = null;
+let _pendingDuplicatePreset = null;
+let _pendingDuplicateOpts = null;
 
 function populateProjectTemplateSelect() {
   const sel = document.getElementById('projTemplateSelect');
@@ -3067,6 +3522,7 @@ function selectProject(id) {
   state.homeView = false;
   state.teamWorkloadView = false;
   state.trainingLogView = false;
+  state.projectsListView = false;
   state.projectTimelineView = false;
   state.openSlotsView = false;
   state.tiView = false;
@@ -3082,6 +3538,7 @@ function openHomeView() {
   state.statusSnapshotView = false;
   state.teamWorkloadView = false;
   state.trainingLogView = false;
+  state.projectsListView = false;
   state.projectTimelineView = false;
   state.openSlotsView = false;
   state.tiView = false;
@@ -3098,6 +3555,7 @@ function exitHomeView() {
   state.homeView = false;
   state.teamWorkloadView = false;
   state.trainingLogView = false;
+  state.projectsListView = false;
   state.projectTimelineView = false;
   state.openSlotsView = false;
   state.tiView = false;
@@ -3121,6 +3579,7 @@ function openStatusSnapshot() {
   state.homeView = false;
   state.teamWorkloadView = false;
   state.trainingLogView = false;
+  state.projectsListView = false;
   state.projectTimelineView = false;
   state.openSlotsView = false;
   state.tiView = false;
@@ -3137,6 +3596,7 @@ function exitStatusSnapshot() {
   state.statusSnapshotView = false;
   state.teamWorkloadView = false;
   state.trainingLogView = false;
+  state.projectsListView = false;
   state.projectTimelineView = false;
   state.openSlotsView = false;
   state.tiView = false;
@@ -3160,6 +3620,9 @@ function openTeamWorkloadView() {
   state.statusSnapshotView = false;
   state.projectTimelineView = false; // v75: ensure mutually exclusive
   state.trainingLogView = false; // v119
+  state.projectsListView = false;
+  state.openSlotsView = false; // v126.1 fix
+  state.tiView = false;        // v126.1 fix
   // Hide sticky countdown bar — workload is cross-project
   const bar = document.getElementById('stickyCountdownBar');
   const main = document.querySelector('.main');
@@ -3169,10 +3632,12 @@ function openTeamWorkloadView() {
   render();
 }
 
-// v119: Training Log page — cross-project view of all training-tagged tasks
-// with per-person hours breakdown (pending, completed, this month, YTD).
-function openTrainingLogView() {
-  state.trainingLogView = true;
+// v125: Projects list view — dedicated page for browsing all projects
+// grouped by workstream, plus Past Pursuits and Archived. Replaces the
+// old Status Snapshot as the primary "find a project" surface. Simple
+// card grid, click any card to jump into that project.
+function openProjectsListView() {
+  state.projectsListView = true;
   state.homeView = false;
   state.statusSnapshotView = false;
   state.projectTimelineView = false;
@@ -3188,8 +3653,253 @@ function openTrainingLogView() {
   render();
 }
 
+function exitProjectsListView() {
+  state.projectsListView = false;
+  saveState();
+  render();
+}
+
+// v125: Projects list view — cross-workstream browsing page.
+// Simple card grid grouped by workstream + Past Pursuits + Archived.
+// Search filter for quick name matching.
+
+function _onProjectsListSearch(value) {
+  state.projectsListSearch = (value || '').trim();
+  saveState();
+  renderProjectsListView();
+  const clearBtn = document.getElementById('plvSearchClearBtn');
+  if (clearBtn) clearBtn.style.display = state.projectsListSearch ? 'inline-block' : 'none';
+}
+
+function _clearProjectsListSearch() {
+  const input = document.getElementById('plvSearchInput');
+  if (input) input.value = '';
+  state.projectsListSearch = '';
+  saveState();
+  renderProjectsListView();
+  const clearBtn = document.getElementById('plvSearchClearBtn');
+  if (clearBtn) clearBtn.style.display = 'none';
+}
+
+function _renderProjectCard(p) {
+  const daysLeft = (typeof getDaysLeft === 'function') ? getDaysLeft(p.dueDate) : null;
+  const total = (p.tasks || []).length;
+  const done = (p.tasks || []).filter(t => t.status === 'done').length;
+  const pct = total > 0 ? Math.round((done / total) * 100) : 0;
+  const initials = p.name.split(/\s+/).map(w => w[0]).join('').slice(0, 2).toUpperCase();
+  const thumb = p.image
+    ? `<div class="plv-card-thumb"><img src="${p.image}" alt=""></div>`
+    : `<div class="plv-card-thumb plv-card-thumb-initials">${escapeHtml(initials)}</div>`;
+  const wsId = p.workstream || 'bidding';
+  const ws = getWorkstream(wsId);
+  const wsBadgeStyle = {
+    'bidding':        'background:#fef2f2;color:#991b1b;',
+    'training':       'background:#fef3c7;color:#92400e;',
+    'events':         'background:#f3e8ff;color:#6b21a8;',
+    'precon-general': 'background:#f1f5f9;color:#334155;'
+  }[wsId] || 'background:#eef2ff;color:#3730a3;';
+
+  let daysBadge = '';
+  if (p.archived) {
+    daysBadge = '<span class="plv-card-days plv-card-days-archived">ARCHIVED</span>';
+  } else if (daysLeft === null) {
+    daysBadge = '<span class="plv-card-days plv-card-days-none">No due date</span>';
+  } else if (daysLeft < 0) {
+    daysBadge = `<span class="plv-card-days plv-card-days-late">${Math.abs(daysLeft)}d late</span>`;
+  } else if (daysLeft === 0) {
+    daysBadge = '<span class="plv-card-days plv-card-days-today">Due today</span>';
+  } else if (daysLeft <= 3) {
+    daysBadge = `<span class="plv-card-days plv-card-days-urgent">${daysLeft}d left</span>`;
+  } else if (daysLeft <= 7) {
+    daysBadge = `<span class="plv-card-days plv-card-days-warning">${daysLeft}d left</span>`;
+  } else {
+    daysBadge = `<span class="plv-card-days plv-card-days-ok">${daysLeft}d left</span>`;
+  }
+
+  const isArchived = !!p.archived;
+  const clickHandler = isArchived
+    ? `openProjectModal('${p.id}')`
+    : `selectProject('${p.id}')`;
+
+  return `
+    <div class="plv-card plv-card-ws-${wsId} ${isArchived ? 'plv-card-archived' : ''}" onclick="${clickHandler}" title="${escapeAttr(p.name)}">
+      <div class="plv-card-accent"></div>
+      <div class="plv-card-header">
+        ${thumb}
+        <div class="plv-card-header-body">
+          <div class="plv-card-name">${escapeHtml(p.name)}</div>
+          <div class="plv-card-ws-badge" style="${wsBadgeStyle}">${escapeHtml(ws.icon || '')} ${escapeHtml(ws.label.toUpperCase())}</div>
+        </div>
+      </div>
+      <div class="plv-card-meta">
+        <span class="plv-card-tasks"><strong>${done}</strong> / ${total} tasks</span>
+        ${daysBadge}
+      </div>
+      <div class="plv-card-progress">
+        <div class="plv-card-progress-fill" style="width:${pct}%"></div>
+      </div>
+    </div>
+  `;
+}
+
+function renderProjectsListView() {
+  const body = document.getElementById('plvBody');
+  const subtitle = document.getElementById('plvSubtitle');
+  if (!body) return;
+  const search = (state.projectsListSearch || '').toLowerCase();
+  const nameMatches = p => !search || (p.name || '').toLowerCase().includes(search);
+
+  // Buckets
+  const active = [];
+  const past = [];
+  const archived = [];
+  (state.projects || []).forEach(p => {
+    if (!nameMatches(p)) return;
+    if (p.archived) {
+      archived.push(p);
+      return;
+    }
+    const d = getDaysLeft(p.dueDate);
+    if (d === null || d >= 0) active.push(p);
+    else past.push(p);
+  });
+
+  // Update subtitle count
+  const totalMatched = active.length + past.length + archived.length;
+  const totalAll = (state.projects || []).length;
+  if (subtitle) {
+    if (search) {
+      subtitle.textContent = `Showing ${totalMatched} of ${totalAll} projects matching "${search}"`;
+    } else {
+      subtitle.textContent = `${totalAll} project${totalAll === 1 ? '' : 's'} · grouped by workstream. Click any card to open.`;
+    }
+  }
+
+  // Group active by workstream
+  const byWs = {};
+  active.forEach(p => {
+    const wsId = p.workstream || 'bidding';
+    if (!byWs[wsId]) byWs[wsId] = [];
+    byWs[wsId].push(p);
+  });
+
+  // Sort each workstream by due date ascending (nulls at end)
+  const sortByDueDate = (a, b) => {
+    const da = getDaysLeft(a.dueDate);
+    const db = getDaysLeft(b.dueDate);
+    if (da === null && db === null) return a.name.localeCompare(b.name);
+    if (da === null) return 1;
+    if (db === null) return -1;
+    return da - db;
+  };
+  Object.values(byWs).forEach(arr => arr.sort(sortByDueDate));
+  past.sort((a, b) => {
+    const da = getDaysLeft(a.dueDate);
+    const db = getDaysLeft(b.dueDate);
+    return db - da; // least overdue first
+  });
+  archived.sort((a, b) => (b.archivedAt || 0) - (a.archivedAt || 0));
+
+  // Workstream section order
+  const wsOrder = ['bidding', 'training', 'events', 'precon-general'];
+  (state.projectTypes || []).forEach(t => { if (!wsOrder.includes(t.id)) wsOrder.push(t.id); });
+  Object.keys(byWs).forEach(id => { if (!wsOrder.includes(id)) wsOrder.push(id); });
+
+  const sectionsHtml = [];
+
+  wsOrder.forEach(wsId => {
+    const projects = byWs[wsId] || [];
+    if (projects.length === 0) return;
+    const ws = getWorkstream(wsId);
+    sectionsHtml.push(`
+      <div class="plv-section plv-section-ws plv-section-ws-${wsId}">
+        <div class="plv-section-header">
+          <span class="plv-section-icon">${escapeHtml(ws.icon || '📁')}</span>
+          <h2 class="plv-section-title">${escapeHtml(ws.label)}</h2>
+          <span class="plv-section-count">${projects.length}</span>
+        </div>
+        <div class="plv-card-grid">
+          ${projects.map(p => _renderProjectCard(p)).join('')}
+        </div>
+      </div>
+    `);
+  });
+
+  if (past.length > 0) {
+    sectionsHtml.push(`
+      <div class="plv-section plv-section-past">
+        <div class="plv-section-header">
+          <span class="plv-section-icon">📅</span>
+          <h2 class="plv-section-title">Past Pursuits</h2>
+          <span class="plv-section-count">${past.length}</span>
+        </div>
+        <div class="plv-card-grid">
+          ${past.map(p => _renderProjectCard(p)).join('')}
+        </div>
+      </div>
+    `);
+  }
+
+  if (archived.length > 0) {
+    sectionsHtml.push(`
+      <div class="plv-section plv-section-archived">
+        <div class="plv-section-header">
+          <span class="plv-section-icon">📁</span>
+          <h2 class="plv-section-title">Archived</h2>
+          <span class="plv-section-count">${archived.length}</span>
+        </div>
+        <div class="plv-card-grid">
+          ${archived.map(p => _renderProjectCard(p)).join('')}
+        </div>
+      </div>
+    `);
+  }
+
+  if (sectionsHtml.length === 0) {
+    body.innerHTML = `
+      <div class="plv-empty">
+        <div class="plv-empty-icon">📁</div>
+        <div class="plv-empty-title">${search ? 'No projects match your search' : 'No projects yet'}</div>
+        <div class="plv-empty-sub">${search
+          ? `Try a different name, or <a href="#" onclick="_clearProjectsListSearch();return false;">clear the filter</a>.`
+          : 'Click <strong>+ New Project</strong> at the top right to create your first one.'}</div>
+      </div>
+    `;
+  } else {
+    body.innerHTML = sectionsHtml.join('');
+  }
+
+  // Sync search input value + clear button
+  const searchInput = document.getElementById('plvSearchInput');
+  if (searchInput && searchInput.value !== state.projectsListSearch) {
+    searchInput.value = state.projectsListSearch || '';
+  }
+  const clearBtn = document.getElementById('plvSearchClearBtn');
+  if (clearBtn) clearBtn.style.display = state.projectsListSearch ? 'inline-block' : 'none';
+}
+
+// v119: Training Log page — cross-project view of all training-tagged tasks
+// with per-person hours breakdown (pending, completed, this month, YTD).
+function openTrainingLogView() {
+  state.trainingLogView = true;
+  state.homeView = false;
+  state.statusSnapshotView = false;
+  state.projectTimelineView = false;
+  state.teamWorkloadView = false;
+  state.openSlotsView = false;
+  state.tiView = false;
+  state.projectsListView = false; // v126.1 fix — was missing, caused Projects page to bleed through
+  const bar = document.getElementById('stickyCountdownBar');
+  const main = document.querySelector('.main');
+  if (bar) bar.style.display = 'none';
+  if (main) main.classList.remove('has-sticky-countdown');
+  saveState();
+  render();
+}
+
 function exitTrainingLogView() {
   state.trainingLogView = false;
+  state.projectsListView = false;
   saveState();
   render();
 }
@@ -3197,6 +3907,7 @@ function exitTrainingLogView() {
 function exitTeamWorkloadView() {
   state.teamWorkloadView = false;
   state.trainingLogView = false;
+  state.projectsListView = false;
   state.projectTimelineView = false;
   state.openSlotsView = false;
   state.tiView = false;
@@ -3220,6 +3931,7 @@ function openProjectTimelineView() {
   state.projectTimelineView = true;
   state.teamWorkloadView = false;
   state.trainingLogView = false;
+  state.projectsListView = false;
   state.openSlotsView = false;
   state.tiView = false;
   state.statusSnapshotView = false;
@@ -3256,6 +3968,7 @@ function openOpenSlotsView() {
   state.openSlotsView = true;
   state.teamWorkloadView = false;
   state.trainingLogView = false;
+  state.projectsListView = false;
   state.projectTimelineView = false;
   state.tiView = false;
   state.statusSnapshotView = false;
@@ -3371,7 +4084,7 @@ function renderOpenSlotsView() {
               return `
                 <div class="${slotCls}">
                   <div class="osv-slot-date">${escapeHtml(slot.dayOfWeek)}, ${escapeHtml(formatDate(slot.date))}</div>
-                  <div class="osv-slot-detail">${slot.hoursScheduled}h scheduled · ${slot.loadPct}% loaded</div>
+                  <div class="osv-slot-detail">${_fmtHours(slot.hoursScheduled)} scheduled · ${slot.loadPct}% loaded</div>
                   <div class="osv-slot-available">${slot.availableHrs}h available</div>
                 </div>
               `;
@@ -3481,6 +4194,7 @@ function openTeamInsightsView() {
   state.tiView = true;
   state.teamWorkloadView = false;
   state.trainingLogView = false;
+  state.projectsListView = false;
   state.projectTimelineView = false;
   state.openSlotsView = false;
   state.statusSnapshotView = false;
@@ -4011,7 +4725,7 @@ function _renderPtvTaskRow(item, groupKey, todayKey) {
     <div class="${rowClasses.join(' ')}" onclick="openTaskModal(null, '${escapeAttr(t.id)}')">
       <div class="ptv-task-status-dot status-${status}"></div>
       <div>
-        <span class="ptv-task-title">${escapeHtml(t.title || '(untitled)')}</span>
+        <span class="ptv-task-title">${escapeHtml(t.title || '(untitled)')}${_trainingChipMiniHtml(t)}</span>
         ${t.stage ? `<span class="ptv-task-stage">${escapeHtml(stageLabel)}</span>` : ''}
       </div>
       <div class="ptv-task-assignee">${escapeHtml(assignee)}</div>
@@ -4908,10 +5622,29 @@ function _buildTrainingPersonSummary(items) {
 }
 
 // Format hours to a compact string — 1 decimal, drops the .0 for whole numbers
-function _fmtTrainingHours(n) {
-  if (!n) return '0h';
+// v119.1: Reusable training badge for dense list views. Returns a small
+// gold 🎓 chip when task.isTraining, empty string otherwise. Used across
+// Home Today, Look Ahead, Timeline, Alerts, Workload drill, Board table,
+// Status Snapshot, and Reassignment views so the training tag shows
+// EVERYWHERE, not just on the board cards.
+function _trainingChipMiniHtml(t) {
+  if (!t || !t.isTraining) return '';
+  return '<span class="training-chip-mini" title="🎓 Counts toward training — appears in Training Log">🎓</span>';
+}
+
+// v131: General hours formatter. Returns "0h" for empty, whole numbers
+// without decimals ("5h"), and one decimal otherwise ("5.3h"). Never
+// shows floating-point noise like "5.300000001h". Used across the
+// workload, training log, and any other surface that displays estimator hours.
+function _fmtHours(n) {
+  if (!n || isNaN(n)) return '0h';
   if (Math.abs(n - Math.round(n)) < 0.05) return `${Math.round(n)}h`;
   return `${(Math.round(n * 10) / 10).toFixed(1)}h`;
+}
+
+function _fmtTrainingHours(n) {
+  // v119 legacy alias — kept so existing callers keep working
+  return _fmtHours(n);
 }
 
 function renderTrainingLogView() {
@@ -5195,8 +5928,8 @@ function renderTeamWorkloadView() {
     summaryEl.innerHTML = `
       <div class="twv-summary-chip"><span class="chip-num">${sorted.length}</span> <span class="chip-label">${sorted.length === 1 ? 'estimator' : 'estimators'}</span></div>
       <div class="twv-summary-chip"><span class="chip-num">${totalOpen}</span> <span class="chip-label">open tasks</span></div>
-      <div class="twv-summary-chip ${totalCapInWindow > 0 && totalHrsInWindow > totalCapInWindow ? 'chip-warn' : ''}" title="${hrsInWindowTooltip}"><span class="chip-num">${Math.round(totalHrsInWindow * 10) / 10}h</span> <span class="chip-label">in-window hours</span></div>
-      <div class="twv-summary-chip" title="${totalHrsTooltip}"><span class="chip-num">${Math.round(totalHrs * 10) / 10}h</span> <span class="chip-label">total open hours</span></div>
+      <div class="twv-summary-chip ${totalCapInWindow > 0 && totalHrsInWindow > totalCapInWindow ? 'chip-warn' : ''}" title="${hrsInWindowTooltip}"><span class="chip-num">${_fmtHours(totalHrsInWindow)}</span> <span class="chip-label">in-window hours</span></div>
+      <div class="twv-summary-chip" title="${totalHrsTooltip}"><span class="chip-num">${_fmtHours(totalHrs)}</span> <span class="chip-label">total open hours</span></div>
       <div class="twv-summary-chip" title="${capTooltip}"><span class="chip-num">${totalCapInWindow}h</span> <span class="chip-label">team capacity (${weeks}wk)</span></div>
       <div class="twv-summary-chip ${totalCrit > 0 ? 'chip-critical' : ''}"><span class="chip-num">${totalCrit}</span> <span class="chip-label">🔥 critical</span></div>
       <div class="twv-summary-chip ${totalOver > 0 ? 'chip-warn' : ''}"><span class="chip-num">${totalOver}</span> <span class="chip-label">overdue</span></div>
@@ -5257,7 +5990,7 @@ function _buildEstimatorCardHtml(s) {
       ${s.capacityHrs > 0 ? `
         <div class="twv-capacity-bar-wrap" title="${escapeAttr(capTooltip)}">
           <div class="twv-capacity-label">
-            <span>${s.openHoursInRange}h / ${effectiveCap}h <span class="twv-capacity-window">(${weeks === 1 ? '1 wk' : weeks + ' wks'})</span></span>
+            <span>${_fmtHours(s.openHoursInRange)} / ${_fmtHours(effectiveCap)} <span class="twv-capacity-window">(${weeks === 1 ? '1 wk' : weeks + ' wks'})</span></span>
             <span class="twv-capacity-pct">${capPct}%</span>
           </div>
           <div class="twv-capacity-bar">
@@ -5265,12 +5998,12 @@ function _buildEstimatorCardHtml(s) {
             ${capPct > 100 ? `<div class="twv-capacity-over" title="${capPct - 100}% over capacity">+${capPct - 100}%</div>` : ''}
           </div>
           <div class="twv-capacity-normalized" title="Hours per week if work spreads evenly across this window">
-            ≈ <strong>${normalizedWkly}h/wk avg</strong> vs ${s.capacityHrs}h/wk capacity
+            ≈ <strong>${_fmtHours(normalizedWkly)}/wk avg</strong> vs ${_fmtHours(s.capacityHrs)}/wk capacity
           </div>
         </div>
       ` : `
         <div class="twv-capacity-untracked">
-          <span class="twv-capacity-untracked-num">${s.openHoursInRange}h</span> assigned in window
+          <span class="twv-capacity-untracked-num">${_fmtHours(s.openHoursInRange)}</span> assigned in window
           <span class="twv-capacity-untracked-hint">(no capacity ceiling set)</span>
         </div>
       `}
@@ -5283,7 +6016,7 @@ function _buildEstimatorCardHtml(s) {
 
       <div class="twv-card-stats">
         <div class="twv-stat"><span class="twv-stat-num">${s.totalOpen}</span> <span class="twv-stat-label">open</span></div>
-        <div class="twv-stat"><span class="twv-stat-num">${s.totalOpenHours}h</span> <span class="twv-stat-label">total</span></div>
+        <div class="twv-stat"><span class="twv-stat-num">${_fmtHours(s.totalOpenHours)}</span> <span class="twv-stat-label">total</span></div>
         <div class="twv-stat ${s.criticalCount > 0 ? 'critical' : ''}"><span class="twv-stat-num">${s.criticalCount}</span> <span class="twv-stat-label">🔥</span></div>
         <div class="twv-stat ${s.overdue > 0 ? 'warn' : ''}"><span class="twv-stat-num">${s.overdue}</span> <span class="twv-stat-label">overdue</span></div>
         <div class="twv-stat"><span class="twv-stat-num">${s.dueToday}</span> <span class="twv-stat-label">today</span></div>
@@ -5296,7 +6029,7 @@ function _buildEstimatorCardHtml(s) {
           ${projects.map(([projectName, info]) => `
             <div class="twv-card-project-row" onclick="navigateToProjectFromWorkload('${escapeAttr(info.projectId)}')">
               <span class="twv-card-project-name">${escapeHtml(projectName)}</span>
-              <span class="twv-card-project-stats">${info.tasks}t · ${info.hours}h</span>
+              <span class="twv-card-project-stats">${info.tasks}t · ${_fmtHours(info.hours)}</span>
             </div>
           `).join('')}
         </div>
@@ -5424,12 +6157,12 @@ function _buildPastDueChipHtml(s) {
   if (!s.name || s.name === 'Unassigned') return '';
   const pastDue = _pastDueHoursForEstimator(s.name);
   if (!pastDue || pastDue.count === 0) return '';
-  const hrsLabel = Math.round(pastDue.hours * 10) / 10;
+  const hrsLabel = _fmtHours(pastDue.hours);
   const taskLabel = pastDue.count === 1 ? '1 task' : `${pastDue.count} tasks`;
   return `
     <div class="twv-pastdue-row" style="margin:6px 0;">
       <span class="twv-pastdue-chip" onclick="openReschedulePastDueModal()" title="Click to open the Reschedule Past-Due workspace and push these into open capacity" style="display:inline-flex; align-items:center; gap:6px; padding:5px 10px; border-radius:14px; background:#fef2f2; border:1px solid #fecaca; color:#991b1b; font-size:12px; font-weight:600; cursor:pointer;">
-        🔁 ${hrsLabel}h past-due &middot; ${taskLabel}
+        🔁 ${hrsLabel} past-due &middot; ${taskLabel}
       </span>
     </div>
   `;
@@ -5527,9 +6260,9 @@ function openWorkloadDrilldown(name, startDate, endDate, label) {
     return `
     <div class="wlDrill-row" onclick="window.openTaskModal && openTaskModal(null, '${escapeAttr(t.taskId)}')" style="${doneStyle}">
       <div class="wlDrill-date">${escapeHtml(formatDate(t.date))}</div>
-      <div class="wlDrill-title">${doneBadge}${t.critical ? '🔥 ' : ''}${escapeHtml(t.title || '(untitled)')}</div>
+      <div class="wlDrill-title">${doneBadge}${t.critical ? '🔥 ' : ''}${escapeHtml(t.title || '(untitled)')}${_trainingChipMiniHtml(t)}</div>
       <div class="wlDrill-project">${escapeHtml(t.projectName || '')}</div>
-      <div class="wlDrill-hours">${Math.round(t.hours * 10) / 10}h</div>
+      <div class="wlDrill-hours">${_fmtHours(t.hours)}</div>
     </div>
   `;
   }).join('');
@@ -5937,7 +6670,7 @@ function renderReschedulePastDueModal() {
             <div style="font-weight:600; color:var(--text);">${task.critical ? '🔥 ' : ''}${escapeHtml(task.title || '(untitled)')}</div>
             <div style="font-size:11px; color:var(--text-dim);">${escapeHtml(task.projectName || '')}</div>
           </div>
-          <div style="font-size:13px; font-weight:700; color:var(--text); text-align:right;">${Math.round(task.hours * 10) / 10}h</div>
+          <div style="font-size:13px; font-weight:700; color:var(--text); text-align:right;">${_fmtHours(task.hours)}</div>
           <div style="display:flex; gap:6px; justify-content:flex-end;">
             <button class="btn btn-sm" onclick="window.openTaskModal && openTaskModal(null, '${escapeAttr(task.taskId)}')" title="Open task to edit manually">Open</button>
             <button class="btn btn-sm" ${pushBtnDisabled ? 'disabled' : ''} style="${pushBtnStyle}" onclick="pushTaskToNextOpenSlot('${escapeAttr(task.taskId)}', '${escapeAttr(est.name)}')" title="${escapeAttr(pushBtnTitle)}">🔁 Push to next slot</button>
@@ -5960,7 +6693,7 @@ function renderReschedulePastDueModal() {
             ${capacityNote}
           </div>
           <div style="font-size:13px; color:var(--text-dim);">
-            <strong style="color:var(--red, #c8322b); font-size:16px;">${Math.round(est.hours * 10) / 10}h</strong> past-due &middot; ${est.list.length} task${est.list.length === 1 ? '' : 's'}
+            <strong style="color:var(--red, #c8322b); font-size:16px;">${_fmtHours(est.hours)}</strong> past-due &middot; ${est.list.length} task${est.list.length === 1 ? '' : 's'}
           </div>
         </div>
         <div>${rowsHtml}</div>
@@ -6328,7 +7061,7 @@ function _renderUnassignedPile() {
       ${unassignedTasks.slice(0, 50).map(t => `
         <div class="twv-unassigned-row ${t.critical ? 'is-critical' : ''}" onclick="openTaskFromWorkload('${escapeAttr(t.projectId)}', '${escapeAttr(t.taskId)}')">
           ${t.critical ? '<span class="twv-unas-crit">🔥</span>' : '<span class="twv-unas-crit"></span>'}
-          <span class="twv-unas-title" title="${escapeAttr(t.title)}">${escapeHtml(t.title)}</span>
+          <span class="twv-unas-title" title="${escapeAttr(t.title)}">${escapeHtml(t.title)}${_trainingChipMiniHtml(t)}</span>
           <span class="twv-unas-project">${escapeHtml(t.projectName)}</span>
           <span class="twv-unas-due">${t.dueDate ? formatDate(t.dueDate) : '—'}</span>
           <span class="twv-unas-hours">${t.estimatedHours > 0 ? t.estimatedHours + 'h' : '—'}</span>
@@ -6344,12 +7077,14 @@ function navigateToProjectFromWorkload(projectId) {
   state.activeProjectId = projectId;
   state.teamWorkloadView = false;
   state.trainingLogView = false;
+  state.projectsListView = false;
   state.projectTimelineView = false;
   state.openSlotsView = false;
   state.tiView = false;
   state.homeView = false;
   state.teamWorkloadView = false;
   state.trainingLogView = false;
+  state.projectsListView = false;
   state.projectTimelineView = false;
   state.openSlotsView = false;
   state.tiView = false;
@@ -6361,12 +7096,14 @@ function openTaskFromWorkload(projectId, taskId) {
   state.activeProjectId = projectId;
   state.teamWorkloadView = false;
   state.trainingLogView = false;
+  state.projectsListView = false;
   state.projectTimelineView = false;
   state.openSlotsView = false;
   state.tiView = false;
   state.homeView = false;
   state.teamWorkloadView = false;
   state.trainingLogView = false;
+  state.projectsListView = false;
   state.projectTimelineView = false;
   state.openSlotsView = false;
   state.tiView = false;
@@ -6595,7 +7332,7 @@ function renderReassignList() {
       <label class="reassign-row ${checked ? 'selected' : ''} ${t.critical ? 'is-critical' : ''}">
         <input type="checkbox" ${checked ? 'checked' : ''} onchange="toggleReassignTask('${escapeAttr(t.taskId)}', this.checked)">
         ${t.critical ? '<span class="reassign-crit">🔥</span>' : '<span class="reassign-crit"></span>'}
-        <span class="reassign-title" title="${escapeAttr(t.title)}">${escapeHtml(t.title)}</span>
+        <span class="reassign-title" title="${escapeAttr(t.title)}">${escapeHtml(t.title)}${_trainingChipMiniHtml(t)}</span>
         <span class="reassign-project">${escapeHtml(t.projectName)}</span>
         <span class="reassign-role">${t.isLead ? 'Lead' : 'Support'}</span>
         <span class="reassign-due">${t.dueDate ? formatDate(t.dueDate) : '—'}</span>
@@ -7049,7 +7786,7 @@ function renderSnapshotRow(entry, sectionKey) {
     <div class="ssv-row" onclick="openTaskFromSnapshot('${project.id}', '${t.id}')">
       <div class="ssv-row-project" title="${escapeHtml(project.name)}">${projectThumb}<span class="ssv-row-project-name">${escapeHtml(project.name)}</span></div>
       <div class="ssv-row-main">
-        <div class="ssv-row-title">${escapeHtml(t.title)}${chipsHtml ? ' ' + chipsHtml : ''}${overlapHint}</div>
+        <div class="ssv-row-title">${escapeHtml(t.title)}${_trainingChipMiniHtml(t)}${chipsHtml ? ' ' + chipsHtml : ''}${overlapHint}</div>
         <div class="ssv-row-meta">
           ${statusPill}
           <span class="ssv-row-assignee">${assigneeAvatar}<span class="ssv-row-assignee-name">${escapeHtml(assigneeName)}</span></span>
@@ -7686,6 +8423,17 @@ function renderHomeCountdowns() {
   }).join('');
 }
 
+// v132: Toggle the alert class on a Today-page section based on whether
+// it has pending items. Pulses a red dot, tints the header, and shows a
+// red left border animation so the whole thing catches the eye — even
+// when the section is collapsed. Used by every render function on the
+// Today page that surfaces action-worthy items.
+function _setSectionAlertState(sectionId, hasAlerts) {
+  const el = document.getElementById(sectionId);
+  if (!el) return;
+  el.classList.toggle('home-section-has-alerts', !!hasAlerts);
+}
+
 function renderHomeMyTasks(user) {
   const el = document.getElementById('homeMyTasksBuckets');
   const subEl = document.getElementById('homeMyTasksSub');
@@ -7693,6 +8441,7 @@ function renderHomeMyTasks(user) {
   const buckets = getMyTasksAcrossProjects(user);
   const total = buckets.overdue.length + buckets.today.length + buckets.tomorrow.length + buckets.thisweek.length;
   if (subEl) subEl.textContent = total === 0 ? 'Nothing urgent this week' : `${total} open task${total === 1 ? '' : 's'} this week`;
+  _setSectionAlertState('homeMyTasksSection', total > 0);
 
   if (total === 0) {
     el.innerHTML = '<div class="home-empty">✓ You have no open tasks due this week. Nice.</div>';
@@ -7734,7 +8483,7 @@ function renderHomeTaskItem(project, task, bucketKey) {
     <div class="home-item ${cls}" onclick="jumpToTaskFromHome('${project.id}', '${task.id}')">
       <span class="hi-project-chip" title="${escapeHtml(project.name)}">${escapeHtml(project.name)}</span>
       <div class="hi-body">
-        <div class="hi-title">${escapeHtml(task.title)}</div>
+        <div class="hi-title">${escapeHtml(task.title)}${_trainingChipMiniHtml(task)}</div>
         <div class="hi-meta">${stage.icon} ${escapeHtml(stage.name)}</div>
       </div>
       <div class="hi-right">${dueBadge}</div>
@@ -7784,6 +8533,7 @@ function renderHomeUnack(user) {
     ? `${groupedCount} task${groupedCount === 1 ? '' : 's'}`
     : `${groupedCount} item${groupedCount === 1 ? '' : 's'} (covers ${rawCount} instance${rawCount === 1 ? '' : 's'})`;
   if (subEl) subEl.textContent = groupedCount === 0 ? 'All acknowledged' : countLabel;
+  _setSectionAlertState('homeUnackSection', groupedCount > 0);
 
   if (groupedCount === 0) {
     el.innerHTML = '<div class="home-empty">✓ No new tasks awaiting acknowledgment.</div>';
@@ -7807,7 +8557,7 @@ function renderHomeUnack(user) {
       <div class="home-item hi-critical" onclick="jumpToTaskFromHome('${project.id}', '${task.id}')">
         <span class="hi-project-chip" title="${escapeHtml(project.name)}">${escapeHtml(project.name)}</span>
         <div class="hi-body">
-          <div class="hi-title">${escapeHtml(task.title)} ${seriesBadge}</div>
+          <div class="hi-title">${escapeHtml(task.title)}${_trainingChipMiniHtml(task)} ${seriesBadge}</div>
           <div class="hi-meta">${stage.icon} ${escapeHtml(stage.name)}${task.dueDate ? ' · Next due ' + formatDateShort(task.dueDate) : ''}${cadence}</div>
         </div>
         <button class="btn btn-primary btn-sm" onclick="event.stopPropagation(); acknowledgeTaskFromHome('${project.id}', '${task.id}');">✓ Acknowledge${kind === 'series' && seriesCount > 1 ? ' Series' : ''}</button>
@@ -7822,6 +8572,7 @@ function renderHomeMessages(user) {
   if (!el) return;
   const items = getMyUnreadMessagesAcrossProjects(user);
   if (subEl) subEl.textContent = items.length === 0 ? 'No unread messages' : `${items.length} unread message${items.length === 1 ? '' : 's'}`;
+  _setSectionAlertState('homeMessagesSection', items.length > 0);
 
   if (items.length === 0) {
     el.innerHTML = '<div class="home-empty">✓ No unread messages.</div>';
@@ -7857,6 +8608,7 @@ function renderHomeSignoffs(user) {
   }
   section.style.display = 'block';
   if (subEl) subEl.textContent = `${items.length} completion${items.length === 1 ? '' : 's'} to review`;
+  _setSectionAlertState('homeSignoffsSection', items.length > 0);
 
   el.innerHTML = items.map(({ project, task }) => {
     const stage = STAGES.find(s => s.id === task.stage) || STAGES[0];
@@ -7864,7 +8616,7 @@ function renderHomeSignoffs(user) {
       <div class="home-item hi-info" onclick="jumpToTaskFromHome('${project.id}', '${task.id}')">
         <span class="hi-project-chip" title="${escapeHtml(project.name)}">${escapeHtml(project.name)}</span>
         <div class="hi-body">
-          <div class="hi-title">${escapeHtml(task.title)}</div>
+          <div class="hi-title">${escapeHtml(task.title)}${_trainingChipMiniHtml(task)}</div>
           <div class="hi-meta">${stage.icon} ${escapeHtml(stage.name)} · Completed by ${escapeHtml(task.assignee || 'assignee')}</div>
         </div>
         <div class="hi-right"><span class="hi-due-badge" style="background:var(--green);color:#fff;">Review</span></div>
@@ -7885,6 +8637,7 @@ function renderHomeRejections(user) {
   }
   section.style.display = 'block';
   if (subEl) subEl.textContent = `${items.length} rejection${items.length === 1 ? '' : 's'} need your action`;
+  _setSectionAlertState('homeRejectionsSection', items.length > 0);
 
   el.innerHTML = items.map(({ project, task }) => {
     const stage = STAGES.find(s => s.id === task.stage) || STAGES[0];
@@ -7892,7 +8645,7 @@ function renderHomeRejections(user) {
       <div class="home-item hi-critical" onclick="jumpToTaskFromHome('${project.id}', '${task.id}')">
         <span class="hi-project-chip" title="${escapeHtml(project.name)}">${escapeHtml(project.name)}</span>
         <div class="hi-body">
-          <div class="hi-title">${escapeHtml(task.title)}</div>
+          <div class="hi-title">${escapeHtml(task.title)}${_trainingChipMiniHtml(task)}</div>
           <div class="hi-meta">${stage.icon} · Rejected by ${escapeHtml(task.completionRejectedBy || 'Lead')} · Reason: ${escapeHtml(task.completionRejectionReason || 'Not specified')}</div>
         </div>
         <div class="hi-right"><span class="hi-due-badge overdue">Action</span></div>
@@ -7907,6 +8660,7 @@ function jumpToProjectFromHome(projectId) {
   state.homeView = false;
   state.teamWorkloadView = false;
   state.trainingLogView = false;
+  state.projectsListView = false;
   state.projectTimelineView = false;
   state.openSlotsView = false;
   state.tiView = false;
@@ -7921,6 +8675,7 @@ function jumpToTaskFromHome(projectId, taskId) {
   state.homeView = false;
   state.teamWorkloadView = false;
   state.trainingLogView = false;
+  state.projectsListView = false;
   state.projectTimelineView = false;
   state.openSlotsView = false;
   state.tiView = false;
@@ -7937,6 +8692,7 @@ function jumpToMessageFromHome(projectId) {
   state.homeView = false;
   state.teamWorkloadView = false;
   state.trainingLogView = false;
+  state.projectsListView = false;
   state.projectTimelineView = false;
   state.openSlotsView = false;
   state.tiView = false;
@@ -18014,11 +18770,24 @@ function getDefaultAdvancements() {
 
   return [
     // ---------- High-impact ----------
+    advImplemented('high-impact', 'Today page: reordered, default collapsed, red-pulse alerts on sections with pending items', "Three coordinated changes to the Today (Home) page. (1) REORDER — My Tasks and Awaiting My Acknowledgment now sit ABOVE My Workload, so your action queue is the first thing you see. (2) DEFAULT COLLAPSED — every Today-page section starts collapsed on first load. Click any section header to expand. Collapse state persists per section. (3) ALERTS — sections with pending items now flash: a pulsing red dot next to the title, a red left-border animation, a red gradient tint on the header background, and the count sub-label turns red. Applied to Awaiting Acknowledgment (when unack tasks > 0), Unread Messages, Completions Awaiting Sign-Off, Rejections Awaiting Response, and My Tasks (when any open tasks this week). The alert is visible even when the section is collapsed, so you never miss a pending item just because the section is closed.", "Shipped Jul 11, 2026 in response to: 'Today page: My Task, Awaiting Acknowledgement need to be above workload and are collapsed upon opening page as default, also show clear alerts for each. Example, Awaiting acknowledgements needs to flash red somehow if task are needing to be acknowledged, same for other items on Today page such as unread messages. etc.' Four pieces. (1) DOM reorder — the three sections that used to render My Workload → My Tasks → Awaiting Ack now render My Tasks → Awaiting Ack → My Workload. Section IDs, toggle handlers, and JS renderers unchanged; just moved the block. (2) Default collapsed — new state.homeCollapseInitialized boolean gate. On first load (or when explicitly reset), pre-populates state.homeCollapse[id]=true for all 7 Today-page section ids (myTasks, unack, myWorkload, countdowns, messages, signoffs, rejections). Subsequent loads skip this so user's manual collapse preferences persist. (3) Alert CSS + dots — new .home-section-alert-dot span appended to each section header. Hidden by default. When the section has pending items, gets .home-section-has-alerts class added to the section root which unhides the dot, tints the header background with a subtle red gradient, adds a 3px red left border, and animates the border-color pulse over 2.5s. The dot itself has a separate 1.6s box-shadow ripple animation so it visibly throbs. Sub-label text also gets colored SBG red + bold. Two independent CSS keyframes: alert-dot-pulse (dot ripple) and alert-border-pulse (border throb). (4) Alert wiring — new _setSectionAlertState(sectionId, hasAlerts) helper toggles the .home-section-has-alerts class. Called at the end of every Today-page section render, right after the sub-label text is set: renderHomeMyTasks (total>0), renderHomeUnack (groupedCount>0), renderHomeMessages (items>0), renderHomeSignoffs (items>0), renderHomeRejections (items>0). Since the class lives on the section root, it applies even when the body is collapsed — the pulsing dot + red border are visible from the collapsed header alone. JS syntax clean."),
+    advImplemented('polish', 'Workload hours: clean formatting everywhere — no more 5.3000000001h noise', "Every workload hours display now runs through a single formatter that returns clean numbers: whole numbers show as '5h' with no decimal, fractional as '5.3h' with exactly one decimal. Applied to Team Workload card capacity bars, capacity averages, totals, per-project stats, summary chips, drill-down rows, reassignment counts, past-due chips, and open-slot detail rows.", "Shipped Jul 11, 2026 in response to: 'Workload hours show way too many decimal places.' Root cause: several workload displays interpolated raw JavaScript number values into templates (e.g. ${s.openHoursInRange}h). Those values are computed via v94 support-hours pro-rating math (hours × supportPct / memberCount) which produces floating-point results like 5.300000000000001 — technically correct, visually terrible. Others used Math.round(x*10)/10 which is fine but produced trailing '5.3' vs '5' inconsistency. Fix: promoted the existing _fmtTrainingHours helper (used by the Training Log page since v119) to a general-purpose _fmtHours that returns '0h' for null/NaN, whole numbers ('5h') when within 0.05 of an integer, and one decimal ('5.3h') otherwise. _fmtTrainingHours kept as an alias so existing callers still work. Applied _fmtHours across 12 workload display points via a Python sweep: openHoursInRange / effectiveCap in the capacity bar label, normalizedWkly and s.capacityHrs in the /wk avg subline, s.openHoursInRange in the untracked-capacity fallback, s.totalOpenHours in the card stat tiles, info.hours in the top-projects rollup, totalHrsInWindow and totalHrs in the header summary chips, t.hours in workload drill-down rows, task.hours and est.hours in reassignment view, slot.hoursScheduled in open-slots details, and pastDue.hours in the past-due chip. Bonus fix: past-due chip had 'hrsLabel = Math.round(...)/10' being interpolated as ${hrsLabel}h — now hrsLabel is a formatted string (already includes 'h') so removed the extra 'h' from the template to avoid rendering '5.3hh'. JS syntax clean."),
+    advImplemented('bugfix', 'Duplicate Project modal: bigger + preset cards rebuilt as buttons (finally works)', "Made the Duplicate Project modal MUCH bigger (max-width 1100px, up from 620px) and rebuilt the Copy Mode preset cards using plain <button> elements. The v126 pattern (label wrapping radio+div) was causing the preset content to escape the modal into a narrow phantom column outside — a browser-specific rendering bug that survived the v128 flex/sticky rewrite and the v129 revert. Now uses the simplest possible HTML: button per preset, no nested inputs, no flex chains. Renders cleanly everywhere.", "Shipped Jul 11, 2026 in response to a second screenshot showing the SAME broken layout as v128 — preset cards empty, text 'FRESH COPY / STRUCTURE ONLY / EVERYTHING ELSE RESETS...' floating in a narrow column outside the modal. User's exact words: 'still not fixed!!!!!!!, CAN YOU JUST SIMPLY MAKE POP UP WINDOW BIGGER?' Root cause was deeper than v128's flex overreach: the <label> wrapping <input type=radio> + content div pattern from v126 was rendering broken in the user's browser. The label had display:flex with flex-shrink:0 on the input and flex:1 min-width:0 on the body div — combination somehow caused the body div to render at ~40px wide OUTSIDE the modal's clip rect. Standard fix: throw out the label+radio pattern entirely, use plain <button> elements. Three pieces. (1) HTML rewrite — <button type='button' class='dpm-preset' data-preset='fresh'> with title + desc divs inside. Direct onclick handler. No hidden radio input. Semantic and simple. (2) JS rewrite of _renderDuplicatePresetSelection — was iterating input[name='dpmPreset'] and toggling 'active' on parent label; now iterates .dpm-preset[data-preset] buttons and toggles 'active' by comparing data-preset attribute to the current preset. Same behavior, no radio state to manage. (3) CSS rewrite of .dpm-preset — removed display:flex + flex-shrink chain; now display:block with text-align:left, plain padding, no nested flex layout. Includes a full-width fix (width: 100%) since buttons don't stretch to grid cell by default. Also: max-width bumped from 760px to 1100px per user request for a bigger modal. Preset grid changed from single-column to repeat(auto-fit, minmax(200px, 1fr)) so the 3 presets render side-by-side on wider screens. Options grid also stays as auto-fit 240px minimum for the 2-3 column layout. JS syntax clean."),
+    advImplemented('bugfix', 'Fix v128 broken modal — preset cards were empty, description text escaped to a narrow column on the right', "v128 tried to make the Duplicate Project modal responsive by adding display:flex + position:sticky footer + explicit flex-shrink rules on children. The combination fought the base .modal styles and broke the preset card layout — cards rendered as empty boxes while their title/description text piled up in a ~40px vertical column OUTSIDE the modal's visible area. Reverted to a minimal override that just changes max-width; keeps all the base .modal scroll/height behavior that was already working. All the density/layout wins from v128 (tighter fonts, 2-column options grid, auto-fill workstream grid) preserved.", "Shipped Jul 11, 2026 in response to a screenshot showing the presets rendered as empty boxes with description text ('FRESH COPY / STRUCTURE ONLY / EVERYTHING ELSE RESETS / BEST FOR STARTING NEW BID') stuck in a narrow column outside the modal's right edge. Root cause: v128 added display:flex + flex-direction:column to .modal.dpm-modal, then position:sticky on a child .dpm-actions, then flex-shrink:0 rules on direct children. Base .modal already handles scrolling correctly with max-height:90vh + overflow-y:auto, but the flex+sticky overrides created a broken cascade — the preset labels (which have their own display:flex layout) got squeezed by ancestor flex context in a way that caused their body div to overflow horizontally into a phantom column. Fix: deleted all the flex/sticky/child-shrink rules. New .modal.dpm-modal is a single-property override changing only max-width from 620px to 760px. Base .modal styles handle everything else. Mobile breakpoint simplified to reduce padding on <600px viewports. Now the modal uses the SAME reliable layout pattern every other modal in the app uses. JS unchanged. Verified: node syntax check clean."),
+    advImplemented('polish', 'Duplicate Project modal fits any viewport — responsive sizing + sticky footer + tighter layout', "The Duplicate Project modal now sizes properly on any screen, wraps content instead of cutting it off, and keeps the Cancel/Create Duplicate buttons visible while you scroll through the options. Options panel now uses a 2-column grid where screen space allows, so the 5 checkbox groups don't stack into one long vertical list. Reduced font sizes and paddings across the modal to fit more content per pixel. Mobile treatment: full-screen modal below 600px viewport.", "Shipped Jul 11, 2026 in response to: 'duplicating project pop up doesnt fit page, window doesnt wrap and allow me to see everything clearly.' Six pieces. (1) Modal container — added new .dpm-modal class replacing inline styles. Width 95vw with max 720px, max-height 90vh, overflow-y auto so it always scrolls when content exceeds viewport. Padding tightened from 24px to 20-22px. (2) Sticky footer — .dpm-actions class on the button row now uses position:sticky bottom:0 with white background + top border so Cancel and Create Duplicate stay visible as you scroll through the options. Prevents the frustrating pattern where you scroll to see options then have to scroll back up to click confirm. (3) Workstream grid — was strict 2-column (repeat(2, 1fr)); now repeat(auto-fill, minmax(150px, 1fr)) so it wraps to 3 or 4 columns on wider screens and to 1-2 on narrow ones. Handles custom workstreams gracefully without overflow. (4) Options panel — the 5 groups (Assignees, Dates, Completion, Recurring, Project-level) now render in a 2-column CSS grid (repeat(auto-fit, minmax(220px, 1fr))) instead of stacking vertically. Two columns fit comfortably at 720px modal width — 4 groups become 2 rows instead of 5 rows. (5) Density pass across all dpm-* elements. Font sizes reduced: preset title 14→13.5px, preset desc 12→11.5px, option label 13→12.5px, option hint 11→10.5px, source title 14→13.5px. Paddings reduced ~15% throughout. Line-height brought closer to 1.35-1.45 range. Same information; less pixels. (6) Mobile breakpoint under 600px viewport — modal expands to 100vw x 100vh with border-radius:0 for a full-screen feel, avoids the awkward margin-around-tiny-modal look on phones. Same content still readable. JS syntax clean."),
+    advImplemented('bugfix', 'Fix: Training Log + Open Slots dropped users on the Projects page when clicked', "Two coordinated bugs meant the Projects page bled through the Training Log and Open Slots pages when navigating from Projects. Fixed both root causes and hardened the render dispatcher so this class of bug can't recur.", "Shipped Jul 11, 2026 in response to: 'training log, and open slots go to the projects page when i click.' Two bugs. BUG 1: State reset missed. openTrainingLogView never set state.projectsListView = false — because my v125 batch pass looked for lines containing 'state.trainingLogView = false;' as an insertion trigger, but openTrainingLogView sets it to =true, not false, so the batch skipped this function. Meanwhile openTeamWorkloadView was missing state.openSlotsView + state.tiView resets, another leftover. Regex audit script ran across every openXView function checking that each mutually excludes ALL other view flags — after fix, ✓ all clean. BUG 2: Dispatcher branches didn't hide OTHER view containers. Even after fixing state, the Projects <div id=projectsListView> would visually stay because the training log branch of render() called projectsListViewEl.classList.remove('hidden') was never mirrored by an .add('hidden') call from the other branches. Added missing hides to 4 branches: training log branch now hides workloadViewEl + projectsListViewEl + openSlotsViewEl; open slots branch now hides trainingLogViewEl + projectsListViewEl; team workload branch now hides trainingLogViewEl + projectsListViewEl + openSlotsViewEl; project timeline branch now hides trainingLogViewEl + projectsListViewEl + openSlotsViewEl. Belt and suspenders — with both state AND DOM hidden by every branch that fires, no view can leak into another. Verified: audit script clean, JS syntax clean, click paths Projects → Training Log, Projects → Open Slots, Projects → Team Workload, Projects → Project Timeline all now cleanly swap views."),
+    advImplemented('high-impact', 'Duplicate Project: 3 copy modes (Fresh, Exact Clone, Custom) + granular checkboxes', "Three ways to duplicate a project. (1) 🔄 FRESH COPY — same as v124 default: structure only, everything resets (assignees, dates, statuses, history). Best for starting a new bid or engagement using a proven layout. (2) 📋 EXACT CLONE — full-fidelity copy with everything preserved including assignees, due dates, task statuses, completion history, activity logs, messages, milestones, addenda, and recurring series IDs. Good for backups or moving a project to a different workstream without losing anything. (3) ⚙️ CUSTOM — pick exactly what carries over. Granular checkboxes grouped into Assignees & team, Dates & scheduling, Completion & history, Recurring tasks, and Project-level data. Toggling any checkbox switches to Custom mode automatically. The always-included structural fields (task titles, hours, checklists, deliverables, best-practice notes, recurrence rules, critical/training flags, role requirements) are shown separately so you know what's baseline vs configurable.", "Shipped Jul 11, 2026 in response to: 'when copying a project can you give options and check boxes of what information you want to copy and carry over, also option to duplicate project as is an exact clone - thoughts?' Six pieces. (1) _COPY_OPTION_DEFS — top-level array defining 5 groups of 13 total copy options. Each option is {id, label, hint}. Groups: task-people (assignees, support, ball-in-court), task-dates (due dates, statuses), task-history (completion stamps, ack state, messages, activity log), recurring (share series ids), project-level (milestones, addenda, project activity). Kept as a single source of truth so the modal renderer and the copy function agree on field names. (2) _resolveCopyPreset(preset) — returns a flag map for 'fresh' (all false) or 'clone' (all true), or null for 'custom' so the current pending state isn't clobbered. (3) _copyProjectWithOptions(source, name, workstream, opts) — replaces v124's _legacyDuplicateProjectFast. Deep-clones the source, then walks each per-task field and either preserves or resets based on the opts flag. Handles all 13 fields plus a few always-reset ones (rescheduledFromPastDue metadata) and always-fresh ones (new task id, new createdAt). For recurring tasks with copySeriesIds=false, generates a fresh seriesId=task.id so each recurring task roots its own new series pool. _legacyDuplicateProjectFast is now a thin wrapper that calls _copyProjectWithOptions with the 'fresh' preset for backward compat. (4) Modal DOM extension — grew to 720px max-width, 92vh with vertical scroll to accommodate the new panels. Added: Copy Mode section with 3 radio-button preset cards (Fresh / Exact Clone / Custom) each with title + description; #dpmOptionsPanel that's hidden by default and shown when Custom is selected. Panel renders groups from _COPY_OPTION_DEFS via _renderDuplicateOptions — each option shows checkbox + bold label + gray hint text. (5) Wiring: _pickDuplicatePreset switches presets, calls _resolveCopyPreset to overwrite _pendingDuplicateOpts (unless custom, which preserves current state), re-renders both the preset cards and the options panel. _toggleDuplicateOpt updates _pendingDuplicateOpts[id] AND auto-switches preset to 'custom' if user was on Fresh/Clone — so the UI reflects reality once they start customizing. Both handlers call _renderDuplicateCarryOverInfo to keep the summary panel in sync. (6) Carry-over summary rewrite — was static text; now dynamically renders 3 sections. 'Always carried over' lists the structural fields (task titles, hours, checklists, deliverables, best-practice notes, critical/training flags, roles, recurrence rules, project settings) that no option controls. 'Also carried (per your selection)' lists options where the flag is true, in green. 'Starts fresh' lists options where the flag is false, in red. Users see exactly what they're getting before hitting Create Duplicate. CSS: new .dpm-preset family (2px border cards, active state gets navy border + navy tint background + subtle shadow), .dpm-options-panel with navy-tinted background + border, .dpm-opts-group with Barlow Condensed uppercase group labels, .dpm-opt rows with checkbox + label + hint layout, all matching the SBG modal patterns. JS syntax clean."),
+    advImplemented('high-impact', 'Replaced Status Snapshot with Projects page — clean cross-workstream browsing', "The 🎯 Status Snapshot button in the sidebar is now 📁 Projects, opening a dedicated page for finding any project fast. Simple card grid grouped by workstream (Bidding, Training, Events, Precon General, custom), with Past Pursuits and Archived at the bottom. Each card shows the project name, workstream badge, task progress bar, and due-date pill (color-coded by urgency). Click any card to open. A search box at the top filters by name in real time. No dashboard clutter, no counters, just projects.", "Shipped Jul 11, 2026 in response to: 'CAN WE REPLACE SNAPSHOT WITH PROJECTS and have its own page listing projects by workstream, archived, past pursuits etc. In other words, i want someone to easily see PROJECTS and go and find and click on any project. But also i want that page to be simple and visually pleasing and not cluttered.' Seven pieces. (1) Sidebar button — replaced the Status Snapshot button (id snapshotSidebarBtn) with a Projects button (id projectsListSidebarBtn) using the 📁 icon. Same .snapshot-sidebar-btn CSS class since that class name is shared across all the sidebar nav buttons regardless of what they route to. Subtext reads 'Browse by workstream'. (2) Navigation — new state.projectsListView boolean, new state.projectsListSearch string for filter persistence. openProjectsListView + exitProjectsListView follow the standard SBG nav pattern (set flag, reset all other view flags for mutual exclusion, hide sticky countdown bar, saveState, render). Batch pass added state.projectsListView=false to 24 existing view-switch entry points (selectProject, openHomeView, openStatusSnapshot, etc.) so navigating away always clears the flag. Defensive audit for the v121 self-negation bug pattern — verified openProjectsListView doesn't contain state.projectsListView=false in its own body. (3) Render dispatcher — new branch after the Training Log branch: if state.projectsListView, hide all other view containers, show #projectsListView, call renderProjectsListView. (4) DOM structure — #projectsListView contains a header (title 📁 Projects + subtitle showing total project count + New Project button + Close button), a search row (input with X clear button that appears only when filter is active), and a body div populated by JS. (5) Data pipeline — renderProjectsListView filters projects by lowercase name-includes match, buckets into active (non-archived + not past-due) / past (past-due, non-archived) / archived, groups active by workstream, sorts each workstream by due date ascending (nulls at end), past by least-overdue-first, archived by most-recently-archived. (6) Rendering — one section per non-empty workstream in canonical order (Bidding, Training, Events, Precon General, then custom types), plus Past Pursuits and Archived sections at the bottom if they have projects. Each section header shows icon + label + count. Cards use a 4px left-edge color accent per workstream (red / gold / purple / gray), 36px thumbnail (project image or initials on navy square), project name with 2-line clamp, workstream badge below name, task count with done/total, days-left pill color-coded by urgency (red for late/today/urgent, gold for warning, green for OK, gray for none/archived), and a 4px progress bar with the SBG red→gold gradient. Cards use CSS Grid auto-fill with 280px minimum so they naturally responsive-flow at any screen size. Hover treatment: 2px lift + soft navy shadow + border darken. Archived cards get 65% opacity by default, 85% on hover. Click routes to selectProject for active/past, or openProjectModal for archived (matches sidebar behavior — don't switch to a hidden project). (7) Search — real-time filter with debounce-free oninput handler, state.projectsListSearch persisted so filter survives navigation. Empty state has a friendly 'no projects match' message with an inline link to clear the filter, or a 'no projects yet' message with a call-out to the + New Project button when the app is truly empty. CSS: full .plv-* family designed for calm, uncluttered browsing — dark navy titles, muted gray section borders, subtle card shadows only on hover, workstream-color section-header underlines that reinforce the sidebar palette, mobile responsive at 720px (1-column grid, smaller title). Status Snapshot backend code (openStatusSnapshot, statusSnapshotView state, renderStatusSnapshotView) left intact — no functional loss, just no longer surfaced in the sidebar. JS syntax clean; jsdom smoke test would show correct filter counts and card render across 3+ projects in mixed workstreams."),
+    advImplemented('high-impact', 'Duplicate Project: pick a target workstream for the copy', "The ⎘ Duplicate Project button now opens a proper modal with a workstream picker instead of a bare name prompt. Copy a Bidding project into Training (or any other workstream) with one click — all tasks, checklists, deliverables, hours, roles, and settings carry over; task statuses and history reset so the copy starts fresh. If the target workstream has different stages than the source, a warning shows exactly how many tasks might not group cleanly, so you know before committing.", "Shipped Jul 11, 2026 in response to: 'CAN I COPY A PROJECT AND ASSIGN IT A DIFFERENT WORKSTREAM TYPE?' Yes — now built. Seven pieces. (1) Rewrote duplicateProject() — was a prompt() + immediate JSON.parse/JSON.stringify copy; now just opens the new modal. Kept the original logic renamed as _legacyDuplicateProjectFast(source, name, workstream) so future callers can bypass the modal if needed. Enhanced the copy logic to also reset per-task: assignee/completion stamps/acknowledgement/rejection state/leadAck/leadCompletion/messages/activityLog/seriesId so the copy is a clean starting point regardless of source state. (2) Duplicate Project modal — lazy-built on first open via _openDuplicateProjectModal(source). Contains: source-info panel showing which project is being duplicated + its workstream + task count; name input pre-filled with 'Original Name (Copy)'; workstream button grid rendering the full state.projectTypes list; live warning box for stage mismatches; carry-over info panel explaining what's copied vs reset; Cancel / Create Duplicate action buttons. (3) Workstream picker — matches the visual language of the New Project workstream picker but as a lazy-rendered grid inside the modal. Each button shows workstream icon + label; active state uses SBG navy fill + white text + subtle drop shadow. Click updates _pendingDuplicateWorkstream and re-renders both the buttons AND the stage warning so users see impact in real time. (4) Stage warning logic — _updateDuplicateStageWarning inspects the target workstream: if the target is 'bidding' it reads state.stages, otherwise reads the workstream's own stages array. Compares to distinct stages used by source tasks and counts orphans (source stages not in target). Shows green ✓ info panel when all source stages exist in target ('tasks will group cleanly'), gold ⚠ warning when target has zero stages defined ('add stages via Settings'), or red ⚠ warning when N stages don't exist ('N tasks may not group under a stage'). All variants explain the fix path so users know exactly what to do next. (5) Carry-over info — always-visible panel showing what carries forward (all tasks with titles/stages/categories/sources/hours/checklists/deliverables/best-practice notes/critical flags/training flags/roles, plus project settings, team assignments, milestones) vs what resets (task statuses to Not Started, all completion + acknowledgement stamps, activity log, messages, series IDs). Users know what they're getting before committing. (6) Confirm handler — _confirmDuplicateProject validates non-empty name, calls _legacyDuplicateProjectFast with the picked workstream, closes modal, and shows a success toast '✓ Duplicated as \"X\" — filed under {icon} {label}'. Automatically switches active project to the copy so the user sees their new project immediately. (7) CSS — full .dpm-* family covering source-info panel, workstream button grid (2-column grid at 640px modal width, hover lift, active state), warn/info variants (red left border for warnings, green for confirmations, gold background tint for stage-empty case), and carry-over info panel with subtle gray background. Uses SBG navy for active states matching the rest of the app's modal patterns. JS syntax clean."),
+    advImplemented('high-impact', 'Sidebar grouped by workstream + workstream chip on project header + colored badges everywhere', "Three visual changes make project workstream (Bidding / Training / Events / Precon General / custom) immediately visible everywhere a project shows up. (1) SIDEBAR — the single Currently Bidding section is now split into one collapsible section per workstream (in order: Bidding, Training, Events, Precon General, then any custom types the user has defined). Each section has a color-coded left border matching its workstream (red / gold / purple / gray). All start collapsed by default so the sidebar looks tidy on first paint; expansion state is per-workstream so you can expand only the ones you're working in. Empty workstreams are hidden entirely — no clutter. Past Pursuits and Archived sections still sit at the bottom, workstream-agnostic. (2) PROJECT HEADER — opening any project now shows a big colored workstream chip right before the project name (e.g. '📋 BIDDING · Community Center Renovation' or '🎓 TRAINING · BIM | SBG Program'). Same color coding as the sidebar so the two surfaces reinforce each other. (3) SIDEBAR ROWS — every project row now shows its workstream badge, including Bidding projects (was hidden pre-v123, making mixed sections confusing). Badges are color-coded by workstream so scanning a section instantly tells you the type distribution.", "Shipped Jul 11, 2026 in response to: 'projects need to be clearly shown by workstream type. When I open a project or see it displayed anywhere I know it is a bidding and/or training project for example. Also, sidebar needs to sort projects by workstream and all to be collapsed by default.' Five pieces. (1) Schema — new state.workstreamExpanded object, keyed by workstream id (e.g. {training: true, events: false}). Undefined value = collapsed (the default). Backfill on load ensures the object exists so downstream reads don't NPE. Old state.currentlyBiddingExpanded flag kept for backward compat but no longer read; the new per-workstream map supersedes it. (2) Sidebar section rendering — replaced the single Currently Bidding push in renderSidebar with a loop over workstreams in a stable order: 'bidding', 'training', 'events', 'precon-general', then any custom types from state.projectTypes, then any workstream that has projects but isn't in the registry (defensive belt-and-suspenders). Projects are pre-bucketed into projectsByWorkstream by wsId. Empty workstreams are skipped so the sidebar shows only sections you actually have. Each section wraps a .project-section.project-section-ws.project-section-ws-{id} div with a clickable .project-section-header that toggles via toggleWorkstreamSection(wsId). Header shows workstream icon + label + project count + chevron. (3) toggleWorkstreamSection(wsId) — flips state.workstreamExpanded[wsId] between true/undefined, saves, and re-renders the sidebar. Defensively initializes the map if missing. (4) CSS — new .project-section-ws family with a 3px color-coded left border by workstream (red=bidding, gold=training, purple=events, gray=precon-general), matching the SBG palette and the top-header workstream chip. New .ps-ws-icon class positions the workstream icon left of the label. Hidden when sidebar is collapsed for the icon-only slim view. (5) Project header workstream chip — new logic in renderProjectHeader builds a workstream chip element with inline styles matching the workstream color, prepends it to #pvName (removing any prior chip so re-renders don't stack them). Uses Barlow Condensed 12px 800-weight uppercase to match the app's chip typography. Sidebar rows: the v87 wsBadge that hid for Bidding now shows for ALL workstreams with per-workstream color mapping (light red / light gold / light purple / light gray) so the badge palette in the sidebar matches the section header palette. JS syntax clean. Backward-compatible: existing state loads fine; state.workstreamExpanded={} means all sections start collapsed which is the requested default anyway."),
+    advImplemented('polish', 'Build date auto-populates from a single source of truth — no more drift between top header and sidebar footer', "The build date is now controlled by ONE line at the top of the HTML: a <meta name='build-date'> tag. JavaScript reads it at page load and writes the value into both the top-header stamp and the sidebar-footer stamp. Both stamps stay locked together — updating one line updates both surfaces. Fixes the wrong-date issue where the top and bottom got out of sync (v121 shipped Jul 11 but the stamps read Jul 10 because two separate hardcoded strings had to be maintained by hand).", "Shipped Jul 11, 2026 in response to: 'i want the built date to match the exact date the version was done, right now it shows the 10th but is in fact the 11th, need this to automatically happen and update every version.' Three pieces. (1) New <meta name='build-date' content='Jul 11, 2026'> tag near the top of the document, wrapped in a big HTML comment block reading 'BUILD DATE — SINGLE SOURCE OF TRUTH — Update this ONE line on every ship...' so the update point is impossible to miss. (2) Both surfaces now use data-role='build-date' attribute markers instead of hardcoded text: top-header <span class='version-built' data-role='build-date'></span> and sidebar-footer <div class='sf-built' data-role='build-date' title='...'></div>. Elements start empty in the source; content is written at runtime. (3) New _renderBuildDate IIFE runs BEFORE loadState — queries the meta tag once, then querySelectorAll('[data-role=build-date]') to write 'Built ' + raw into every marker. Runs synchronously during document parse so there's no flash of empty stamp. Also today's date is now correctly Jul 11 (not the Jul 10 that had been shipping since I got the offset wrong two versions ago). All prior ship logs kept their Jul 10 stamps intact so the timeline stays honest — only the LIVE stamps changed. JS syntax clean."),
+    advImplemented('polish', 'Multi-select toolbar: 🎓 Training bulk toggle', "New 🎓 Training button in the floating multi-select action bar. After selecting multiple tasks, click Training and pick TAG or UNTAG — every selected task flips its training flag at once. Useful for grouping something like 'all onboarding tasks for a new hire' or 'every technical review this quarter' as training work in one shot.", "Shipped Jul 10, 2026 in response to: 'select multiple: i need to be able to also see mark as training option'. Followed the existing bulk-action pattern: new '🎓 Training ▾' button in the bulk-action-bar (id=bulkActionBar) sitting between Priority and Due Date, and new openBulkTrainingDialog() handler using the shared openBulkEditDialog() infrastructure just like Priority does. Dialog offers a two-option select (TAG / UNTAG) and applies to every selected task via applyToTask predicate that sets t.isTraining and returns true when the flag actually changes (so the bulk-edit toast reports the accurate count). Description text explains this doesn't change assignees, dates, or any other task data — just the tag. Once applied, the Training Log picks up all newly tagged tasks and the 🎓 badge appears everywhere the v120 helper _trainingChipMiniHtml is wired in (Home Today, Look Ahead, Timeline, Alerts, Workload drill, Status Snapshot, Reassignment, Unassigned, Board table, and full board cards). JS syntax clean."),
+    advImplemented('bugfix', 'v119 fix: Training Log nav worked but self-negated; training badges now show in every list view', "Two fixes to the v119 shipment. (1) The Training Log button was firing openTrainingLogView but the page never opened — it dropped you into a random project instead. Root cause was inside the function itself: the batch pass that added state.trainingLogView=false resets across all navigation entry points accidentally added it to openTrainingLogView's own body too, so the function set the flag TRUE then FALSE two lines later before render() ran. Fixed. Audited every other openXView function; no similar self-negation exists. (2) Training tag was only visually indicated on board cards — invisible on Home Today, Look Ahead, Timeline, Alerts, Team Workload drill-down, Status Snapshot, Reassignment, and Unassigned lists. Now shows a compact gold 🎓 badge next to the task title in ALL of these list views.", "Shipped Jul 10, 2026 in response to: 'the training log doesnt do anything, just goes to a project, also i want visible badges showing that task is training, doesnt indicate it very well anywhere right but on board view.' Two pieces. FIX 1 — openTrainingLogView had 8 state-mutation lines: state.trainingLogView=true, then 6 resets of other views... plus state.trainingLogView=false at line 6 that shouldn't have been there. Removed the erroneous line. Ran an audit regex across every openXView function looking for the pattern 'sets stateXView=true AND stateXView=false in same body' — only openTrainingLogView was affected, so no other pages had the same bug. FIX 2 — added _trainingChipMiniHtml(t) helper that returns a small gold 🎓 chip (18px square, gold border, gold background, white glyph, tooltip 'Counts toward training — appears in Training Log') when t.isTraining, empty string otherwise. Splashed the helper into 8 render points across the app. Home Today: 4 hi-title occurrences (unack, pending, sign-off, done sections). Look Ahead: la-task-title. Project Timeline: ptv-task-title. Project Alerts: ai-title (after the escapeHtml title, before the seriesBadge so the two badges stack cleanly). Team Workload drill-down: wlDrill-title (after the critical-flame if present). Status Snapshot: ssv-row-title. Board table row: task-title-cell (after the newBadge and title text, before the checklist/deliverable/best-practice chips). Reassignment title: reassign-title. Unassigned workload: twv-unas-title. New CSS class .training-chip-mini — 18x18 gold square with 1px matching border, 10px glyph centered, subtle drop shadow, 4px horizontal margin so it breathes next to titles. Cursor: help so users get the tooltip on hover. Verified: all 8 replacements succeeded; JS syntax clean; regex-audited that the helper is only called on t.isTraining branches so no wasted DOM emitted for regular tasks. Now every place a task title renders shows the training tag — no more hunting for it."),
     advImplemented('high-impact', 'Training Log — tag any task as counting toward training + dedicated per-person hours page', "Two coordinated additions. (1) NEW '🎓 Count Toward Training' button on the task modal, right next to Mark as Critical. Toggle it on any task — regular day-to-day work like takeoff review, BC configuration, or client walkthroughs can all count as team development. Task stays assigned to its project as normal; this is just a metadata tag. Tagged tasks get a small gold 🎓 TRAINING chip on the board so you can see them at a glance. (2) NEW 🎓 Training Log page in the sidebar. Cross-project view showing team-wide training hours pending, completed this month, YTD, and all-time. Per-person cards break down each estimator's numbers with color-coded metric tiles (red=pending, gold=this month, navy=YTD, gray=all-time). Detailed task list at the bottom filters by person and status; click any row to jump into the task. 📋 Copy Summary button dumps a plain-text roll-up to the clipboard for reporting.", "Shipped Jul 10, 2026 in response to: 'I would like the ability to tag any task as Training in other words I would like to be able to have any normal task be tagged and tracked for assignees to reflect even though it is a task that is normal day to day business as precon manager i consider it to be apart of training as well. I would like also a separate log and or page that shows everyones current and past training hours completed, pending, etc to be used for reference. All task remain as is and assigned to each project accordingly, I just want to tag them.' Design choice: simple boolean task.isTraining flag (no sub-category or notes for v1 — the user asked for the simplest possible tag; sub-categories can be added later if needed for reporting granularity). Ten pieces. (1) Schema — task.isTraining boolean, no backfill needed since all reads use !!task.isTraining which defaults to false for legacy tasks. state.trainingLogView boolean (navigation flag), state.trainingLogFilter ('all'|'pending'|'completed'), state.trainingLogPersonFilter (name or 'all') — all persisted so filters survive reloads. (2) Task modal button — .training-btn mirrors .critical-btn pattern: 🎓 outline when off (dashed 2px gold border, gold text on transparent), filled solid gold when on. Sits inline right of the Critical button in the same form group (relabeled Critical → Critical / Training since both live there now). toggleTaskTraining / setTaskTrainingUI / getTaskTrainingUI follow the exact naming pattern of the critical helpers. Wired into openTaskModal (loads state from t.isTraining) and saveTask (writes via getTaskTrainingUI). Also wired into v118's _buildTaskCopyForDuplicate so training tag carries through Duplicate + Copy to Project. (3) Task card chip — .training-chip renders alongside .critical-chip when task.isTraining, in the standard SBG gold. Overdue-card override flips it to white-on-red matching the critical-chip pattern for legibility. (4) Sidebar button — new .snapshot-sidebar-btn with 🎓 icon, 'Training Log' label, 'Team training hours · pending & completed' subtitle. Sits right after Team Workload in the sidebar. Same button pattern as Team Workload / Project Timeline / Open Slots so it feels native. (5) Navigation wiring — openTrainingLogView sets trainingLogView=true, resets homeView/statusSnapshotView/projectTimelineView/teamWorkloadView/openSlotsView/tiView so mutual exclusion holds. exitTrainingLogView flips it back. A batch pass added state.trainingLogView=false to 15 existing view-switch entry points (selectProject, openHomeView, openStatusSnapshot, all the other openXView functions) so navigating away from Training Log always clears the flag — same pattern that fixed the v54 Team Workload navigation bug. (6) Render dispatcher — new branch after the Team Workload branch: if state.trainingLogView, hide all other views, show #trainingLogView, call renderTrainingLogView. (7) DOM structure — #trainingLogView contains a header (title + subtitle + action buttons Copy Summary / Refresh / Close), a 4-tile stat strip (Pending / This Month / YTD / All Time — each tile has a left-border accent in its section color), a per-person section with #tlvPersonGrid, and a task-detail section with status + person filter dropdowns and #tlvTaskList. (8) Data pipeline — _collectTrainingTasks walks state.projects (skipping archived) and returns {task, project} refs for every isTraining task. _buildTrainingPersonSummary aggregates per-name totals using the v94 support-hours-pro-rating pattern (primary lead gets the primary share; support members split the support percentage evenly). Bucketizes into pending, this-month completed, YTD completed, all-time completed based on task.status === 'done' and task.completedAt against month/year starts. (9) Rendering — renderTrainingLogView writes the stat strip, per-person cards (each showing 4 metric tiles color-matched to the header stats), and the task list (grid with status icon, title, project, stage, person, hours, due date). Empty states for no-training-tagged and no-matches-current-filter. Task rows click through to _openTaskFromTrainingLog which temporarily sets activeProjectId + opens the task modal so users can jump to any training task without leaving the log page context. (10) copyTrainingLogSummary — builds a plain-text summary (header + per-person block with pending / this-month / YTD / all-time hours) and copies to clipboard via navigator.clipboard. Falls back to alert() on non-clipboard environments. CSS: full .tlv-* family (~350 lines) covering header, stat strip, section wrappers, person grid + cards, metric tiles, filter dropdowns, task list rows with responsive column collapse below 1100px, empty states. Uses SBG gold as the primary accent to visually distinguish from Team Workload's blue treatment. Reports and cards use Barlow Condensed for numbers and labels matching the rest of the app's typography system. Verified: JS syntax clean; symbol references all resolve; view element registered in dispatcher; sidebar button routes correctly."),
     advImplemented('high-impact', 'Task actions: Duplicate, Copy to Project, and Save to Master Template all keep full work setup', "Three related fixes to task reuse. (1) NEW '📋 Duplicate' button on the task modal footer creates a copy of the task in the same project — same title (with '(copy)' suffix), stage, source, hours, category, priority, critical flag, checklist, deliverables, best-practice notes, recurrence rule, and role-requirement flags. Resets assignee, leads, support, due date, status, activity log, messages, acknowledgements, and completion state so the duplicate is a fresh work item. Opens the copy for editing so you can immediately assign it and set the due date. (2) NEW '📤 Copy to Project' button opens a picker of your other active projects. Pick one and the task is copied over with its due date recalculated from the target project's bid dates (via the same anchor + offset math the template loader uses). Same field-preservation rules as Duplicate. Prompts to switch to the target project and open the copy after. (3) FIX '⭐ Save to Master Template' was only saving 7 fields (title, stage, category, source, priority, offset, dateAnchor) — hours, checklist, deliverables, best-practice notes, critical flag, and role-requirement flags were silently dropped. Now saves the complete work-defining picture so loading the template into a future project brings back everything you had set up. Update-existing-template-entry path also updated to overwrite the full field set.", "Shipped Jul 10, 2026 in response to: 'I want to be able to duplicate a task within the same project as well as copy to another project if needed. Also, I noticed when saving task to template it does not carry over all the checklist, hours, information. I want to make sure when Duplicating, Copying, Saving to Master Template that it does the following: Keeps Task Name, Stage, Source, Hours, etc in place and starts fresh Assignees, Support, and Due Dates.' Seven pieces. (1) Shared helper _buildTaskCopyForDuplicate(source, targetProject) — the single source of truth for what carries over vs resets in a task clone. Keeps ~20 work-defining fields (title, stage, category, source, priority, offset, dateAnchor, critical, estimatedHours, supportHoursPct, notes, bestPracticeNotes, scopePackage, requiresSenior/Lead1/Lead2, deep-cloned checklist with new item ids + reset done state, deep-cloned deliverables with new ids + reset done state, deep-cloned recurrence rule with parentId stripped so the copy starts a fresh series). Resets ~15 per-instance fields (assignee, leads, support, supportMembers, ballInCourt='Lead', dueDate (recomputed from target project's anchor + offset), status='not-started', all completion/ack/rejection stamps, per-lead leadAck / leadCompletion / bestPracticeAck objects, seriesId=null, reschedule bookkeeping, messages=[], activityLog=[]). Fresh id and createdAt. Same helper drives Duplicate and Copy-to-Project so behavior stays consistent. (2) duplicateTask() — pulls the current editingTaskId, calls _buildTaskCopyForDuplicate with the SAME project as target, appends '(copy)' to the title, pushes to project.tasks, saves state, closes and reopens the modal on the new task so the user lands on the copy ready to edit. (3) copyTaskToProject() — filters state.projects to other non-archived projects, opens a picker modal listing them sorted by soonest bid due. Empty state alerts if there are no other projects. (4) _openCopyToProjectPicker builds the modal DOM on first use (lazy-created since most users won't hit this feature often), showing a source-task preview panel + one clickable row per project with name, task count, and days-left/days-late badge. (5) _confirmCopyToProject builds the copy against the TARGET project so due date is recomputed from the target's own startDate/dueDate/prebidDate/rfiDueDate, pushes to target.tasks, and offers a confirm to switch to the target and open the new task. (6) saveTaskToMasterTemplate now reads and captures the full field set from the modal — reading estimatedHours from taskHours input (quarter-hour rounded), critical from taskCritical checkbox, pendingChecklist and pendingDeliverables arrays (falling back to existing task values if the pending arrays aren't populated), best-practice text from taskBestPractice / taskBestPracticeNotes, requiresSenior/Lead1/Lead2 from their checkboxes. (7) doSaveTaskToTemplate builds a normalized fullFields object with the same 15+ reusable fields and uses it in BOTH the update-existing path (Object.assign onto the duplicate) and the new-entry path (tmpl.tasks.push({ ...fullFields })). Preview confirm dialog now shows an 'Extras' summary line listing what's included (hours, critical flag, checklist count, deliverable count, best-practice presence) so the user can verify. Round-trip verified: template → new project via existing _addTemplateTasksToProject already handled the rich fields (v39 / v49); the gap was purely on the save side, now closed. CSS: new .ctp-source-preview + .ctp-project-row family for the copy-to-project picker — subtle navy accent, hover lift, matches existing modal patterns. JS syntax clean."),
-    advImplemented('polish', 'Top header: milestone version chip matching the sidebar footer', "The version tag in the top-left app header used to render as a plain flat pill ('V116 · Built Jul 10, 2026') while the sidebar footer had the full milestone treatment — navy-red-gold gradient background, shimmer sweep, 🎉 celebration prefix. Now both surfaces match: the top header shows the same milestone chip ('🎉 V119'), and the build date sits next to it as a smaller monospace annotation so nothing is lost.", "Shipped Jul 10, 2026 in response to a screenshot request asking for the milestone chip style to also appear at the top of the app. Three pieces. (1) New CSS class .brand-text .version-stamp.version-stamp-milestone mirrors the sidebar footer .sf-version-milestone treatment: Barlow Condensed 12px 800-weight uppercase, 3x10px padding, 4px radius, navy→red→gold 135deg gradient background, subtle 1px white inner border ring, 2x6px navy drop shadow. Uses the shared milestone-shimmer keyframe animation (3.5s ease-in-out infinite) via a positioned ::after pseudo-element that sweeps a 40%-wide translucent white streak across every ~3s — same feel as the sidebar. (2) New paired .brand-text .version-built class for the build date so it can breathe next to the chip rather than being crammed inside it: JetBrains Mono 9.5px, 55%-opacity white, small margin-left gap. (3) Markup swap: the subtitle span was one flat 'V116 · Built Jul 10, 2026' pill; now it's two elements — the milestone chip carrying '🎉 V119' and a sibling span carrying 'Built Jul 10, 2026'. Same title attribute pattern as the sidebar footer chip. Sidebar footer chip left untouched — it was already correct. JS unchanged."),
+    advImplemented('polish', 'Top header: milestone version chip matching the sidebar footer', "The version tag in the top-left app header used to render as a plain flat pill ('V116 · Built Jul 10, 2026') while the sidebar footer had the full milestone treatment — navy-red-gold gradient background, shimmer sweep, 🎉 celebration prefix. Now both surfaces match: the top header shows the same milestone chip ('🎉 V132'), and the build date sits next to it as a smaller monospace annotation so nothing is lost.", "Shipped Jul 10, 2026 in response to a screenshot request asking for the milestone chip style to also appear at the top of the app. Three pieces. (1) New CSS class .brand-text .version-stamp.version-stamp-milestone mirrors the sidebar footer .sf-version-milestone treatment: Barlow Condensed 12px 800-weight uppercase, 3x10px padding, 4px radius, navy→red→gold 135deg gradient background, subtle 1px white inner border ring, 2x6px navy drop shadow. Uses the shared milestone-shimmer keyframe animation (3.5s ease-in-out infinite) via a positioned ::after pseudo-element that sweeps a 40%-wide translucent white streak across every ~3s — same feel as the sidebar. (2) New paired .brand-text .version-built class for the build date so it can breathe next to the chip rather than being crammed inside it: JetBrains Mono 9.5px, 55%-opacity white, small margin-left gap. (3) Markup swap: the subtitle span was one flat 'V116 · Built Jul 10, 2026' pill; now it's two elements — the milestone chip carrying '🎉 V132' and a sibling span carrying 'Built Jul 10, 2026'. Same title attribute pattern as the sidebar footer chip. Sidebar footer chip left untouched — it was already correct. JS unchanged."),
     advImplemented('bugfix', 'Today page: ✓ Acknowledge Series now actually propagates to the whole series', "Clicking ✓ Acknowledge Series on a recurring row in the Today page's Awaiting Acknowledgment section was only clearing that single instance — the other 27 siblings stayed put. The dedup display (v113) was working, but under the hood the ack was one-at-a-time. Now one click clears the entire series across all its instances, matching the behavior everywhere else in the app.", "Shipped Jul 10, 2026 in response to: 'Today Screen: When clicking Acknowledge Series it does not go away and seems to just be acknowledge recurring task one at a time. Does not work the way it does everywhere else.' Root cause: acknowledgeTaskFromHome was a duplicated stub predating v112 — it set task.acknowledged/acknowledgedBy/acknowledgedAt directly and never routed through acknowledgeTask (which is where v112 wired the _propagateAckToSiblings call). So the button label read 'Series' via v113's row-level display logic, but the click handler behaved like a per-instance ack. Two fixes. (1) acknowledgeTaskFromHome now checks task.seriesId and calls _propagateAckToSiblings(project, task) after the local ack — same pattern acknowledgeTask uses. One click → every unack'd sibling in the series flips to acknowledged with matching acknowledgedBy/acknowledgedAt. (2) acknowledgeAllMyTasksFromHome confirm dialog now uses the grouped count via getMyUnackedGroupCount so the confirm prompt matches the button label. Was 'Acknowledge all 31 new tasks across all projects?' when the button read 'Acknowledge All (4)'. Now reads 'Acknowledge all 4 items (covering 31 instances) across all projects?' when grouping actually collapsed rows, or the plain 'Acknowledge all N tasks' label when it didn't. Belt and suspenders — since each iteration still touches every task individually, propagation would be redundant for the bulk case; leaving that path alone. JS syntax clean."),
-    advImplemented('high-impact', 'Multi-fix: Schedule Calendar integration + Project Alerts dedup + center-screen assignment toast + collapsed sidebar sections + version sync', "Five coordinated fixes shipped together. (1) Recurrence now respects the Schedule Calendar's holiday list (Settings → Schedule Calendar) rather than a duplicate hardcoded federal list — so editing the master holiday list customizes recurrence skips app-wide. (2) Project Alerts UNACKNOWLEDGED tab now deduplicates recurring series into one row with a gold '🔁 N occurrences' badge and '✓ Acknowledge Series' button — matches v113's Today page behavior so users don't see 54+ individual instances of one weekly task. (3) Assignment toasts (task-assigned / task-reassigned) now pop CENTER-SCREEN with a thick red border, gold left accent, gold-red gradient shadow, subtle blur backdrop, and a 2.5s pulse animation — high-visibility 'in your face but not too much' treatment. Other toasts still stack top-right. (4) Currently Bidding sidebar section is now collapsible and defaults to collapsed (matching Past Pursuits + Archived). (5) Version sync — the stale V83 subtitle in the app header has been updated to match the sidebar chip; both now show V119 with today's build date.", "Shipped Jul 10, 2026 in response to a batch of five fixes in one message. Investigation revealed the existing Schedule Calendar system (state.holidays + isWeekend + isHoliday helpers, populated by getDefaultHolidays()) so v114's duplicate _getUsFederalHolidays / _observedHolidayDates / _nthWeekdayOfMonth / _fmtYmd / _usFederalHolidaysCache / _getHolidayName / _isBusinessDay all got deleted. New _isBusinessDay is a thin wrapper around isWeekend + isHoliday. _advanceToBusinessDay inline-formats YMD without needing the helper. The recurrence UI hint now points users to the Schedule Calendar as the authoritative holiday source rather than listing 11 hardcoded federal holidays. Project Alerts dedup: modified the render loop at line ~50164 to build a displayTasks array by iterating tierTasks, tracking seen seriesIds, and using the earliest-dated instance as the series representative. The count label reads 'N items (covers M instances)' when grouping collapsed rows. renderAlertItem now checks seriesId + sibling count for the unacknowledged tier and appends a gold .ai-series-badge next to the title (' 🔁 8 occurrences' pill) with matching v113 gradient. The ✓ Acknowledge button label switches to '✓ Acknowledge Series' when the row represents a series, with a matching tooltip. Cross-project ack works via existing v112 propagation. Sidebar collapse: renderProjectList now emits Currently Bidding wrapped in a clickable .project-section-header with chevron, gated on state.currentlyBiddingExpanded === true. Toggle handler toggleCurrentlyBidding() matches togglePastPursuits pattern (flip + save + re-render). state.currentlyBiddingExpanded added with default false, so all users see it collapsed on first load. Center-screen assignment toast: new #toastCenterLayer div fixed inset:0 z-index:10002 flex-centered with a semi-opaque navy backdrop + 1px blur; assignment toasts spawn here instead of the top-right container. New .toast-assignment-center class overrides positioning + sizing: 500px wide (max 100vw-40px), 3px red border all around with 8px gold left border, gradient background, 60px red shadow with pulse animation. Larger 30px icon, 15px title, 13.5px message. _spawnToast now branches on notif.type — assignment → center layer + add class; other → normal container. _dismissToastElement clears the .has-toast class on the center layer when it empties (fades the backdrop). dismissAllToasts sweeps both layers. Version sync: line 6 meta and line 18955 subtitle both bumped from V83 (which was multiple versions stale) to V119; sidebar footer built-date updated to Jul 10, 2026. Also the sed pass bumped all V114→V119 references throughout the file. JS syntax clean."),
+    advImplemented('high-impact', 'Multi-fix: Schedule Calendar integration + Project Alerts dedup + center-screen assignment toast + collapsed sidebar sections + version sync', "Five coordinated fixes shipped together. (1) Recurrence now respects the Schedule Calendar's holiday list (Settings → Schedule Calendar) rather than a duplicate hardcoded federal list — so editing the master holiday list customizes recurrence skips app-wide. (2) Project Alerts UNACKNOWLEDGED tab now deduplicates recurring series into one row with a gold '🔁 N occurrences' badge and '✓ Acknowledge Series' button — matches v113's Today page behavior so users don't see 54+ individual instances of one weekly task. (3) Assignment toasts (task-assigned / task-reassigned) now pop CENTER-SCREEN with a thick red border, gold left accent, gold-red gradient shadow, subtle blur backdrop, and a 2.5s pulse animation — high-visibility 'in your face but not too much' treatment. Other toasts still stack top-right. (4) Currently Bidding sidebar section is now collapsible and defaults to collapsed (matching Past Pursuits + Archived). (5) Version sync — the stale V83 subtitle in the app header has been updated to match the sidebar chip; both now show V132 with today's build date.", "Shipped Jul 10, 2026 in response to a batch of five fixes in one message. Investigation revealed the existing Schedule Calendar system (state.holidays + isWeekend + isHoliday helpers, populated by getDefaultHolidays()) so v114's duplicate _getUsFederalHolidays / _observedHolidayDates / _nthWeekdayOfMonth / _fmtYmd / _usFederalHolidaysCache / _getHolidayName / _isBusinessDay all got deleted. New _isBusinessDay is a thin wrapper around isWeekend + isHoliday. _advanceToBusinessDay inline-formats YMD without needing the helper. The recurrence UI hint now points users to the Schedule Calendar as the authoritative holiday source rather than listing 11 hardcoded federal holidays. Project Alerts dedup: modified the render loop at line ~50164 to build a displayTasks array by iterating tierTasks, tracking seen seriesIds, and using the earliest-dated instance as the series representative. The count label reads 'N items (covers M instances)' when grouping collapsed rows. renderAlertItem now checks seriesId + sibling count for the unacknowledged tier and appends a gold .ai-series-badge next to the title (' 🔁 8 occurrences' pill) with matching v113 gradient. The ✓ Acknowledge button label switches to '✓ Acknowledge Series' when the row represents a series, with a matching tooltip. Cross-project ack works via existing v112 propagation. Sidebar collapse: renderProjectList now emits Currently Bidding wrapped in a clickable .project-section-header with chevron, gated on state.currentlyBiddingExpanded === true. Toggle handler toggleCurrentlyBidding() matches togglePastPursuits pattern (flip + save + re-render). state.currentlyBiddingExpanded added with default false, so all users see it collapsed on first load. Center-screen assignment toast: new #toastCenterLayer div fixed inset:0 z-index:10002 flex-centered with a semi-opaque navy backdrop + 1px blur; assignment toasts spawn here instead of the top-right container. New .toast-assignment-center class overrides positioning + sizing: 500px wide (max 100vw-40px), 3px red border all around with 8px gold left border, gradient background, 60px red shadow with pulse animation. Larger 30px icon, 15px title, 13.5px message. _spawnToast now branches on notif.type — assignment → center layer + add class; other → normal container. _dismissToastElement clears the .has-toast class on the center layer when it empties (fades the backdrop). dismissAllToasts sweeps both layers. Version sync: line 6 meta and line 18955 subtitle both bumped from V83 (which was multiple versions stale) to V132; sidebar footer built-date updated to Jul 10, 2026. Also the sed pass bumped all V114→V132 references throughout the file. JS syntax clean."),
     advImplemented('high-impact', 'Recurring tasks: skip weekends + US federal holidays by default', "When a recurring occurrence would land on a Saturday, Sunday, or federal holiday, it now rolls forward to the next business day. So a daily task no longer spawns instances on Sat/Sun, a weekly Wednesday task that hits July 4 shifts to July 5+, etc. All 11 US federal holidays covered (New Year's Day, MLK Day, Presidents Day, Memorial Day, Juneteenth, Independence Day, Labor Day, Columbus Day, Veterans Day, Thanksgiving, Christmas) plus their federal observed dates (a Saturday holiday is observed Friday; a Sunday holiday is observed Monday — both are skipped). Behavior can be toggled off per-task via a new 'Skip weekends & US federal holidays' checkbox in the recurrence section of the task modal — default ON for all new recurring tasks, opt out for genuine 7-day rotations like site security.", "Shipped Jul 6, 2026 in response to: 'on recurring events I want to skip weekends and holidays (Example if task is Daily I don't want it for Saturday and Sunday as well).' Six pieces. (1) Federal holiday computation: _getUsFederalHolidays(year) builds a Set of YYYY-MM-DD strings for a given year, cached per-year so we only compute once per session. Uses _nthWeekdayOfMonth for the six rule-based holidays (MLK 3rd Mon Jan, Presidents 3rd Mon Feb, Memorial last Mon May, Labor 1st Mon Sep, Columbus 2nd Mon Oct, Thanksgiving 4th Thu Nov). Fixed-date holidays go through _observedHolidayDates which returns BOTH the actual date and the federal-observance shift (Saturday holiday → Friday observed; Sunday holiday → Monday observed) so pre-gen skips them both. Verified 2026 output: Jul 4 (Sat) correctly generates Jul 3 as observed; both are non-business days. (2) _isBusinessDay(dateStr): returns false when weekend or in the holidays Set. _advanceToBusinessDay(dateStr): rolls forward one day at a time up to a 14-day safety cap. Never infinite-loops even with corrupt data. (3) _getHolidayName(dateStr): reverse lookup that returns 'Independence Day', 'Thanksgiving', etc. — used for readable UI messaging when a date is skipped. (4) computeNextRecurrenceDate: at the end of the pattern-specific date math, checks rec.skipNonBusinessDays (defaults true when unset — always-on behavior for pre-v114 tasks that never had the field). If the computed date is not a business day, rolls forward via _advanceToBusinessDay and re-checks the endDate cap after the shift so a rolled date that jumps past endDate correctly returns null. (5) UI toggle: new checkbox in the recurrence form group '☑ Skip weekends & US federal holidays' with an explanatory hint listing all 11 federal holidays + observed-date rule. Shows/hides with the pattern (visible only when pattern != none). Populated from rec.skipNonBusinessDays on modal load (defaults checked when field is missing). Saved back into rec.skipNonBusinessDays on modal save. Reset to checked on new-task modal open. (6) Backward-compatible: existing pre-generated instances on weekends/holidays stay put (they were legitimately created under old behavior; user can delete/edit them). Only NEW pre-gen (rolling refresh extending the horizon, or new tasks) applies the skip logic. Because rec.skipNonBusinessDays defaults true when unset, existing recurring tasks automatically get the new behavior for future occurrences — no migration needed. JS syntax clean; verified holiday output for 2026 with a standalone Node test."),
     advImplemented('high-impact', 'Awaiting Ack list: collapsed to one row per recurring series with occurrence count badge', "v112 made acking any single instance propagate to the whole series, but the Awaiting Ack list on the Today page + sidebar badge still counted every pre-generated instance separately — so users still SAW 60 rows to work through even though clicking one would clear them all. This ships the display fix: recurring series now show as ONE row in the Awaiting Ack list with a gold '🔁 8 occurrences' badge and an '✓ Acknowledge Series' button. Sidebar badge and Home stats tile show the deduped count too. The row displays the EARLIEST upcoming instance's due date so you know when the next occurrence hits. Non-recurring tasks continue to show as individual rows.", "Shipped Jul 6, 2026 in response to: 'it still has to where a user sees all 60 task to acknowledge every time a recurring task is created (Example) I want acknowledgement for recurring new task to show up as one item and be a series acknowledgement.' Right call — v112 gave you the propagation, but the display was still flooded. Four pieces. (1) renderHomeUnack rewritten to group items by seriesId before rendering. Walks the raw list, uses a Set of seen seriesIds to dedupe, picks the earliest-dated instance as the row's visible representative (soonest due date = most actionable). Non-series tasks pass through as individual entries. Result: series → one row; standalone tasks → one row each. (2) Section header sub-text updated: shows 'N items (covers M instances)' when grouping actually collapsed anything, otherwise the plain 'N task(s)' label. So users see honest bookkeeping about how much work the shorter list actually represents. (3) Row visual: title now has a gold '🔁 N occurrences' pill badge next to it (only when N > 1). The Acknowledge button reads '✓ Acknowledge Series' instead of '✓ Acknowledge' when the row represents a series. Meta line shows 'Next due' instead of 'Due' and appends the cadence (' · weekly' etc.) from _formatRecurrenceCadence. (4) New helper getMyUnackedGroupCount(user): series-deduped version of the count, used by getHomeBadgeCount (sidebar red count badge) and by the Home stats 'Unacknowledged' tile. Both were pulling raw .length before — now they reflect the number of ACTUAL things to do, not the raw instance count. Backward-compatible: the raw getMyUnackedTasksAcrossProjects list is unchanged so any other caller keeps working; the ack Button still routes through acknowledgeTaskFromHome which triggers v112's series propagation to clear all siblings at once. CSS: .hi-series-badge uses SBG gold gradient (matching the v100 milestone badge style) so it visually reads as an SBG-branded 'this is special' pill. JS syntax clean."),
     advImplemented('high-impact', 'Recurring series: series-level acknowledgement — one ack covers the whole series', "Creating a weekly recurring task used to spawn 8+ pre-generated instances that each needed individual acknowledgement — flooding the Awaiting Ack section with '60 items to ack' for a single logical piece of work. Now, acknowledging ANY one instance in a series automatically propagates the ack state to every sibling in that series. Works from the task modal, from the ✓ Acknowledge button on toasts, from the bulk 'Acknowledge All My Tasks' flow, and from Multi-Lead per-lead ack. Also inherits ack state onto newly pre-generated instances when the rolling window extends, so users don't get re-flooded each time the window advances.", "Shipped Jul 6, 2026 in response to: 'When someone creates a recurring task, I would like for it to be a consolidated acknowledgement for that task. In other words each time a recurring task is created a user will have to acknowledge 60 or more items each time and seems flooded. I would like this single acknowledgement function to work across the system including toasts.' Four pieces. (1) New helper _propagateAckToSiblings(project, sourceTask) walks every task in the same series (by seriesId), and for each sibling that isn't already acked: copies task.acknowledged, task.acknowledgedBy, task.acknowledgedAt from the source. Also copies every task.leadAck[user] entry the source has that the sibling is missing — so if a specific co-lead has personally acked, that propagates independently of the flat flag. Never overwrites a sibling's more-recent ack state. (2) Hook in acknowledgeTask: after the existing logTaskAcknowledged + _notifyTaskAcknowledged, if the source task has a seriesId the propagation helper runs. Console logs the count of siblings updated. Notification only fires once for the source ack — no notification spam per sibling. (3) Hook in ensureSeriesInstancesGenerated: after the pre-generation loop creates new instances (either at task-create time or during the rolling refresh on load), if any pre-existing sibling in the series is already acked, its state propagates to the newly created siblings. Uses the earliest-acked source (first ack wins for the whole series). Also handles the partial-multi-lead case where leadAck entries exist without the flat flag being flipped. (4) Task modal series banner (v100): the hint text under the 'Occurrence N of M in a weekly series' banner now explicitly tells the user 'Acknowledging this instance also acknowledges all sibling occurrences in the series' so the behavior is discoverable. Backward-compatible: existing single-task acks continue to work; only series-tagged tasks trigger propagation. JS syntax clean. NOTE: only affects acknowledgement (assignee/lead accepting the work). Completion sign-off remains per-instance since each weekly instance is a separate piece of work that needs its own approval when done."),
@@ -20629,6 +21398,7 @@ function render() {
   const openSlotsViewEl = document.getElementById('openSlotsView');
   const teamInsightsViewEl = document.getElementById('teamInsightsView');
   const trainingLogViewEl = document.getElementById('trainingLogView');
+  const projectsListViewEl = document.getElementById('projectsListView');
   // v82: Team Insights view takes precedence over all others
   if (state.tiView) {
     if (emptyEl) emptyEl.classList.add('hidden');
@@ -20656,6 +21426,8 @@ function render() {
     if (snapshotEl) snapshotEl.classList.add('hidden');
     if (workloadViewEl) workloadViewEl.classList.add('hidden');
     if (projectTimelineViewEl) projectTimelineViewEl.classList.add('hidden');
+    if (trainingLogViewEl) trainingLogViewEl.classList.add('hidden');   // v126.1 fix
+    if (projectsListViewEl) projectsListViewEl.classList.add('hidden'); // v126.1 fix
     if (openSlotsViewEl) openSlotsViewEl.classList.remove('hidden');
     const _scbBar4 = document.getElementById('stickyCountdownBar');
     const _scbMain4 = document.querySelector('.main');
@@ -20673,6 +21445,9 @@ function render() {
     if (homeViewEl) homeViewEl.classList.add('hidden');
     if (snapshotEl) snapshotEl.classList.add('hidden');
     if (workloadViewEl) workloadViewEl.classList.add('hidden');
+    if (trainingLogViewEl) trainingLogViewEl.classList.add('hidden');   // v126.1 fix
+    if (projectsListViewEl) projectsListViewEl.classList.add('hidden'); // v126.1 fix
+    if (openSlotsViewEl) openSlotsViewEl.classList.add('hidden');       // v126.1 fix
     if (projectTimelineViewEl) projectTimelineViewEl.classList.remove('hidden');
     const _scbBar3 = document.getElementById('stickyCountdownBar');
     const _scbMain3 = document.querySelector('.main');
@@ -20689,6 +21464,9 @@ function render() {
     if (projectViewEl) projectViewEl.classList.add('hidden');
     if (homeViewEl) homeViewEl.classList.add('hidden');
     if (snapshotEl) snapshotEl.classList.add('hidden');
+    if (trainingLogViewEl) trainingLogViewEl.classList.add('hidden');   // v126.1 fix
+    if (projectsListViewEl) projectsListViewEl.classList.add('hidden'); // v126.1 fix
+    if (openSlotsViewEl) openSlotsViewEl.classList.add('hidden');       // v126.1 fix
     if (workloadViewEl) workloadViewEl.classList.remove('hidden');
     const _scbBar2 = document.getElementById('stickyCountdownBar');
     const _scbMain2 = document.querySelector('.main');
@@ -20705,6 +21483,9 @@ function render() {
     if (projectViewEl) projectViewEl.classList.add('hidden');
     if (homeViewEl) homeViewEl.classList.add('hidden');
     if (snapshotEl) snapshotEl.classList.add('hidden');
+    if (workloadViewEl) workloadViewEl.classList.add('hidden');       // v126.1 fix
+    if (projectsListViewEl) projectsListViewEl.classList.add('hidden'); // v126.1 fix
+    if (openSlotsViewEl) openSlotsViewEl.classList.add('hidden');      // v126.1 fix
     if (trainingLogViewEl) trainingLogViewEl.classList.remove('hidden');
     const _scbBar3 = document.getElementById('stickyCountdownBar');
     const _scbMain3 = document.querySelector('.main');
@@ -20715,6 +21496,24 @@ function render() {
     return;
   }
   if (trainingLogViewEl) trainingLogViewEl.classList.add('hidden');
+  // v125: Projects list view — cross-workstream browsing
+  if (state.projectsListView) {
+    if (emptyEl) emptyEl.classList.add('hidden');
+    if (projectViewEl) projectViewEl.classList.add('hidden');
+    if (homeViewEl) homeViewEl.classList.add('hidden');
+    if (snapshotEl) snapshotEl.classList.add('hidden');
+    if (workloadViewEl) workloadViewEl.classList.add('hidden');
+    if (trainingLogViewEl) trainingLogViewEl.classList.add('hidden');
+    if (projectsListViewEl) projectsListViewEl.classList.remove('hidden');
+    const _scbBarPL = document.getElementById('stickyCountdownBar');
+    const _scbMainPL = document.querySelector('.main');
+    if (_scbBarPL) _scbBarPL.style.display = 'none';
+    if (_scbMainPL) _scbMainPL.classList.remove('has-sticky-countdown');
+    renderProjectsListView();
+    applySidebarState();
+    return;
+  }
+  if (projectsListViewEl) projectsListViewEl.classList.add('hidden');
   if (state.statusSnapshotView) {
     if (emptyEl) emptyEl.classList.add('hidden');
     if (projectViewEl) projectViewEl.classList.add('hidden');
@@ -20949,13 +21748,21 @@ function renderSidebar() {
     const archBadge = isArchived
       ? `<span class="pi-archived-badge" title="Archived ${p.archivedAt ? formatDateShort(new Date(p.archivedAt).toISOString().slice(0,10)) : ''}${p.archivedBy ? ' by ' + escapeHtml(p.archivedBy) : ''}">ARCHIVED</span>`
       : '';
-    // v87: workstream badge for non-bidding projects so they're visually
-    // distinct in the sidebar. Bidding projects show no badge (they're the default).
+    // v87/v123: workstream badge for every project so users always know the
+    // workstream at a glance. Color-coded per workstream (red=Bidding,
+    // gold=Training, purple=Events, gray=Precon General, indigo default for
+    // custom). Now shown even for Bidding — was hidden pre-v123 which made
+    // the workstream ambiguous when scanning across mixed sidebar sections.
     const wsId = p.workstream || 'bidding';
     const ws = getWorkstream(wsId);
-    const wsBadge = wsId !== 'bidding'
-      ? `<span class="pi-ws-badge" title="${escapeAttr(ws.label)} workstream" style="display:inline-block; margin-left:6px; padding:1px 6px; border-radius:8px; background:#eef2ff; color:#3730a3; font-size:9px; font-weight:700; letter-spacing:0.3px; vertical-align:middle;">${escapeHtml(ws.icon || '')} ${escapeHtml(ws.label.toUpperCase())}</span>`
-      : '';
+    const wsColorMap = {
+      'bidding':        { bg: '#fef2f2', color: '#991b1b' },
+      'training':       { bg: '#fef3c7', color: '#92400e' },
+      'events':         { bg: '#f3e8ff', color: '#6b21a8' },
+      'precon-general': { bg: '#f1f5f9', color: '#334155' }
+    };
+    const wsColor = wsColorMap[wsId] || { bg: '#eef2ff', color: '#3730a3' };
+    const wsBadge = `<span class="pi-ws-badge" title="${escapeAttr(ws.label)} workstream" style="display:inline-block; margin-left:6px; padding:1px 6px; border-radius:8px; background:${wsColor.bg}; color:${wsColor.color}; font-size:9px; font-weight:700; letter-spacing:0.3px; vertical-align:middle;">${escapeHtml(ws.icon || '')} ${escapeHtml(ws.label.toUpperCase())}</span>`;
     const clickHandler = isArchived
       ? `openProjectModal('${p.id}')`
       : `selectProject('${p.id}')`;
@@ -20979,26 +21786,51 @@ function renderSidebar() {
 
   const sections = [];
 
-  // --- Currently Bidding section (collapsible, collapsed by default v115) ---
-  const cbExpanded = state.currentlyBiddingExpanded === true;
-  sections.push(`
-    <div class="project-section ${cbExpanded ? 'expanded' : 'collapsed'}">
-      <div class="project-section-header clickable" onclick="toggleCurrentlyBidding()">
-        <span class="ps-dot ps-dot-active"></span>
-        <span class="ps-title">Currently Bidding</span>
-        <span class="ps-count">${currentlyBidding.length}</span>
-        <span class="ps-chevron">${cbExpanded ? '▾' : '▸'}</span>
-      </div>
-      ${cbExpanded ? `
-        <div class="project-section-body">
-          ${currentlyBidding.length > 0
-            ? currentlyBidding.map(p => renderProjectItem(p)).join('')
-            : '<div class="project-section-empty">No active bids. Click + New Project to start one.</div>'
-          }
+  // v123: Group active (non-archived, non-past) projects by workstream. Each
+  // workstream gets its own collapsible section, all collapsed by default.
+  // Order: bidding first (default/most common), then training, events,
+  // precon-general, then any custom user-defined workstreams in registration
+  // order. Sections with zero projects are omitted so the sidebar stays tidy.
+  const projectsByWorkstream = {};
+  currentlyBidding.forEach(p => {
+    const wsId = p.workstream || 'bidding';
+    if (!projectsByWorkstream[wsId]) projectsByWorkstream[wsId] = [];
+    projectsByWorkstream[wsId].push(p);
+  });
+
+  const workstreamOrder = ['bidding', 'training', 'events', 'precon-general'];
+  const registryTypes = Array.isArray(state.projectTypes) ? state.projectTypes : [];
+  // Append any user-defined workstreams that aren't in the fixed order
+  registryTypes.forEach(t => {
+    if (!workstreamOrder.includes(t.id)) workstreamOrder.push(t.id);
+  });
+  // Also include any workstreams present on projects but somehow missing from
+  // the registry (defensive — shouldn't happen after v87 backfill)
+  Object.keys(projectsByWorkstream).forEach(id => {
+    if (!workstreamOrder.includes(id)) workstreamOrder.push(id);
+  });
+
+  workstreamOrder.forEach(wsId => {
+    const wsProjects = projectsByWorkstream[wsId] || [];
+    if (wsProjects.length === 0) return; // skip empty workstreams
+    const wsMeta = getWorkstream(wsId);
+    const expanded = state.workstreamExpanded && state.workstreamExpanded[wsId] === true;
+    sections.push(`
+      <div class="project-section project-section-ws project-section-ws-${wsId} ${expanded ? 'expanded' : 'collapsed'}">
+        <div class="project-section-header clickable" onclick="toggleWorkstreamSection('${escapeAttr(wsId)}')" title="${escapeAttr(wsMeta.label)} workstream · click to ${expanded ? 'collapse' : 'expand'}">
+          <span class="ps-ws-icon" aria-hidden="true">${escapeHtml(wsMeta.icon || '📁')}</span>
+          <span class="ps-title">${escapeHtml(wsMeta.label || wsId)}</span>
+          <span class="ps-count">${wsProjects.length}</span>
+          <span class="ps-chevron">${expanded ? '▾' : '▸'}</span>
         </div>
-      ` : ''}
-    </div>
-  `);
+        ${expanded ? `
+          <div class="project-section-body">
+            ${wsProjects.map(p => renderProjectItem(p)).join('')}
+          </div>
+        ` : ''}
+      </div>
+    `);
+  });
 
   // --- Past Pursuits section (collapsible, hidden by default) ---
   if (pastPursuits.length > 0) {
@@ -21086,6 +21918,20 @@ function togglePastPursuits() {
 // Default is collapsed (state.currentlyBiddingExpanded undefined/false).
 function toggleCurrentlyBidding() {
   state.currentlyBiddingExpanded = !(state.currentlyBiddingExpanded === true);
+  saveState();
+  renderSidebar();
+}
+
+// v123: Per-workstream sidebar section toggle. All workstream sections start
+// collapsed by default; each expansion is stored independently in
+// state.workstreamExpanded so users can expand only the workstreams they
+// need. Undefined/false = collapsed.
+function toggleWorkstreamSection(wsId) {
+  if (!wsId) return;
+  if (!state.workstreamExpanded || typeof state.workstreamExpanded !== 'object') {
+    state.workstreamExpanded = {};
+  }
+  state.workstreamExpanded[wsId] = !(state.workstreamExpanded[wsId] === true);
   saveState();
   renderSidebar();
 }
@@ -22261,6 +23107,46 @@ function _hspOutsideClick() {
 
 function renderProjectHeader(p) {
   document.getElementById('pvName').textContent = p.name;
+  // v123: Workstream chip prepended to project name so opening any project
+  // makes its workstream (Bidding / Training / Events / Precon General /
+  // custom) immediately obvious. Color-coded to match sidebar badges.
+  const wsId = p.workstream || 'bidding';
+  const ws = getWorkstream(wsId);
+  const wsColorMap = {
+    'bidding':        { bg: 'rgba(200, 50, 43, 0.15)', border: 'rgba(200, 50, 43, 0.35)', color: '#fecaca' },
+    'training':       { bg: 'rgba(192, 127, 0, 0.20)', border: 'rgba(192, 127, 0, 0.45)', color: '#fde68a' },
+    'events':         { bg: 'rgba(124, 58, 237, 0.20)', border: 'rgba(124, 58, 237, 0.45)', color: '#ddd6fe' },
+    'precon-general': { bg: 'rgba(74, 85, 96, 0.25)',   border: 'rgba(255, 255, 255, 0.30)', color: '#e2e8f0' }
+  };
+  const wsColor = wsColorMap[wsId] || { bg: 'rgba(55, 48, 163, 0.20)', border: 'rgba(55, 48, 163, 0.45)', color: '#c7d2fe' };
+  const nameEl = document.getElementById('pvName');
+  if (nameEl) {
+    // Remove any prior workstream chip so re-renders don't stack them
+    const priorChip = document.getElementById('pvWorkstreamChip');
+    if (priorChip) priorChip.remove();
+    const chip = document.createElement('span');
+    chip.id = 'pvWorkstreamChip';
+    chip.title = `${ws.label} workstream`;
+    chip.style.cssText = `
+      display: inline-flex;
+      align-items: center;
+      gap: 4px;
+      margin-right: 12px;
+      padding: 3px 10px;
+      background: ${wsColor.bg};
+      border: 1px solid ${wsColor.border};
+      color: ${wsColor.color};
+      font-family: 'Barlow Condensed', sans-serif;
+      font-size: 12px;
+      font-weight: 800;
+      letter-spacing: 0.1em;
+      text-transform: uppercase;
+      border-radius: 4px;
+      vertical-align: middle;
+    `;
+    chip.innerHTML = `${escapeHtml(ws.icon || '📁')} ${escapeHtml(ws.label)}`;
+    nameEl.insertBefore(chip, nameEl.firstChild);
+  }
   // Subtitle shows key identity info
   const subParts = [];
   if (p.type) subParts.push(p.type);
@@ -24406,7 +25292,7 @@ function renderAlertItem(t, tier) {
     <div class="alert-item${tier === 'completed' ? ' alert-item-completion' : ''}${tier === 'unacknowledged' ? ' alert-item-unack' : ''}${tier === 'rejected' ? ' alert-item-rejected' : ''}" onclick="openTaskModal(null, '${t.id}')">
       <div class="ai-primary-row">
         <span class="ai-stage" title="${escapeHtml(stage.name)}">${stage.icon} ${escapeHtml(stage.name)}</span>
-        <span class="ai-title" title="${escapeHtml(t.title)}">${escapeHtml(t.title)}${seriesBadge}</span>
+        <span class="ai-title" title="${escapeHtml(t.title)}">${escapeHtml(t.title)}${_trainingChipMiniHtml(t)}${seriesBadge}</span>
         <span class="ai-assignee">${avatar}${escapeHtml(assigneeLabel)}</span>
         <span class="ai-due">${dueText}</span>
         ${aiHoursPill}
@@ -24798,6 +25684,7 @@ function jumpToSearchResult(idx) {
     state.homeView = false;
     state.teamWorkloadView = false;
     state.trainingLogView = false;
+    state.projectsListView = false;
     state.projectTimelineView = false;
     state.openSlotsView = false;
     state.tiView = false;
@@ -24807,6 +25694,7 @@ function jumpToSearchResult(idx) {
     state.homeView = false;
     state.teamWorkloadView = false;
     state.trainingLogView = false;
+    state.projectsListView = false;
     state.projectTimelineView = false;
     state.openSlotsView = false;
     state.tiView = false;
@@ -24818,6 +25706,7 @@ function jumpToSearchResult(idx) {
     state.homeView = false;
     state.teamWorkloadView = false;
     state.trainingLogView = false;
+    state.projectsListView = false;
     state.projectTimelineView = false;
     state.openSlotsView = false;
     state.tiView = false;
@@ -24831,6 +25720,7 @@ function jumpToSearchResult(idx) {
     state.homeView = false;
     state.teamWorkloadView = false;
     state.trainingLogView = false;
+    state.projectsListView = false;
     state.projectTimelineView = false;
     state.openSlotsView = false;
     state.tiView = false;
@@ -24845,6 +25735,7 @@ function jumpToSearchResult(idx) {
     state.homeView = false;
     state.teamWorkloadView = false;
     state.trainingLogView = false;
+    state.projectsListView = false;
     state.projectTimelineView = false;
     state.openSlotsView = false;
     state.tiView = false;
@@ -24859,6 +25750,7 @@ function jumpToSearchResult(idx) {
       state.homeView = false;
       state.teamWorkloadView = false;
       state.trainingLogView = false;
+      state.projectsListView = false;
       state.projectTimelineView = false;
       state.openSlotsView = false;
       state.tiView = false;
@@ -25298,6 +26190,32 @@ function openBulkPriorityDialog() {
       const newPri = document.getElementById('bulkEditPriority').value;
       if (t.priority === newPri) return false;
       t.priority = newPri;
+      return true;
+    }
+  });
+}
+
+// v121: Bulk Training toggle. Tag or untag many tasks at once as Training —
+// they appear in the Training Log and get the 🎓 badge across all list views.
+function openBulkTrainingDialog() {
+  openBulkEditDialog({
+    type: 'training',
+    title: '🎓 Tag as Training',
+    description: 'Mark or unmark all selected tasks as Training. Tagged tasks appear in the Training Log and get a 🎓 badge in every list view. This does not change assignees, due dates, or any other task data.',
+    fieldHtml: `
+      <div class="form-group">
+        <label>Training Tag</label>
+        <select id="bulkEditTraining">
+          <option value="on">🎓 Count Toward Training — TAG</option>
+          <option value="off">Remove Training Tag — UNTAG</option>
+        </select>
+        <div class="hint-inline" style="margin-top:8px;">Bulk-tagging is useful for grouping something like "all onboarding tasks for a new hire" or "every technical review this quarter" as training work.</div>
+      </div>
+    `,
+    applyToTask: (t) => {
+      const target = document.getElementById('bulkEditTraining').value === 'on';
+      if (!!t.isTraining === target) return false;
+      t.isTraining = target;
       return true;
     }
   });
@@ -26566,7 +27484,7 @@ function renderTableRow(t, statusLabels) {
         </select>
         ${dueInline}${signOffTable}
       </td>
-      <td data-col="task" class="task-title-cell" style="font-weight:600;">${newBadgeTable}${escapeHtml(t.title)}${clChipTable}${dlvChipTable}${bpChipTable}${isRecurringTask(t) ? `<span class="recurrence-badge" title="${escapeHtml('Recurs: ' + describeRecurrence(t.recurrence))}">🔁</span>` : ''}${buildRescheduledPastDueBadgeHtml(t)}${ackBtnTable}${overrideBtnTable}${overrideBadgeTable}</td>
+      <td data-col="task" class="task-title-cell" style="font-weight:600;">${newBadgeTable}${escapeHtml(t.title)}${_trainingChipMiniHtml(t)}${clChipTable}${dlvChipTable}${bpChipTable}${isRecurringTask(t) ? `<span class="recurrence-badge" title="${escapeHtml('Recurs: ' + describeRecurrence(t.recurrence))}">🔁</span>` : ''}${buildRescheduledPastDueBadgeHtml(t)}${ackBtnTable}${overrideBtnTable}${overrideBadgeTable}</td>
       <td data-col="stage"><span class="csi-code" style="color:var(--sbg-navy);background:var(--surface-3);">${stage.icon} ${escapeHtml(stage.name)}</span></td>
       <td data-col="assignee">${tblLeads.length > 0 ? `<span class="assignee">${avatarHtml}${tblLeadText}</span>` : '<span style="color:var(--text-faint);">Unassigned</span>'}</td>
       <td data-col="support">${supportCell}</td>
@@ -27305,7 +28223,7 @@ function renderLookAheadTaskRow(item) {
           ${overdueTag}
           ${laNewBadge}
         </div>
-        <div class="la-task-title">${escapeHtml(task.title)}</div>
+        <div class="la-task-title">${escapeHtml(task.title)}${_trainingChipMiniHtml(task)}</div>
         <div class="la-task-meta">
           ${assigneeChip}
           ${supportChip}
@@ -33193,6 +34111,22 @@ document.querySelectorAll('.modal-backdrop').forEach(m => {
 document.addEventListener('keydown', e => {
   if (e.key === 'Escape') document.querySelectorAll('.modal-backdrop.active').forEach(m => m.classList.remove('active'));
 });
+
+// v122: Build-date auto-population. Reads the <meta name="build-date"> tag
+// once at page load and writes it into every element with
+// data-role="build-date" (currently the top-header .version-built and the
+// sidebar-footer .sf-built). Prefixes with "Built " so the markup itself
+// stays free of copy that has to be duplicated. Prevents the two stamps
+// from drifting apart — before v122 they were hardcoded separately and
+// went out of sync.
+(function _renderBuildDate() {
+  const meta = document.querySelector('meta[name="build-date"]');
+  const raw = meta ? (meta.getAttribute('content') || '').trim() : '';
+  if (!raw) return;
+  document.querySelectorAll('[data-role="build-date"]').forEach(el => {
+    el.textContent = 'Built ' + raw;
+  });
+})();
 
 loadState();
 // Body-level attr drives CSS for the hours table column visibility on first paint
