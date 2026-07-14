@@ -39,6 +39,11 @@
     // installNotificationRelay). notificationsLastSeenAt deliberately NOT here:
     // it's each user's own unread pointer.
     notifications: ['notifications'],
+    // v140 deletion tombstones ({tasks:[],projects:[]}, boot-pruned by the
+    // app). Created only on the DELETER's tab; syncing them means every
+    // computer's merge-import honors deletions instead of resurrecting
+    // deleted work from an old backup.
+    tombstones: ['tombstones'],
   };
 
   // If more than this many tasks changed in one project in one pass, it's
