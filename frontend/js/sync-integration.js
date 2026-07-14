@@ -33,6 +33,12 @@
     // Who the team lead is (drives realtime.js edit-popup routing: only the lead
     // sees everyone's edits; everyone else sees only the lead's). Shared, synced.
     team: ['teamLead'],
+    // The shared activity feed (bell dropdown). Each entry is authored on the
+    // ACTOR's tab by _emitNotification; syncing the array (capped at 200 by the
+    // app) is what lets OTHER computers see it -- and toast it (see
+    // installNotificationRelay). notificationsLastSeenAt deliberately NOT here:
+    // it's each user's own unread pointer.
+    notifications: ['notifications'],
   };
 
   // If more than this many tasks changed in one project in one pass, it's
@@ -254,56 +260,53 @@
   // handles badly (replacing every project at once can 404 / trip the
   // destructive-delete guard mid-stream).
   //
-  // Replace applyImport with a backend-aware version: build the same new state,
-  // push it ATOMICALLY via PUT /api/state (confirmDestructive), WAIT for the
-  // server to confirm, reset the sync baseline, and only THEN reload.
+  // Wrap applyImport: DELEGATE the state mutation to the app's own
+  // implementation (whose merge logic keeps evolving -- v134 fixed the
+  // taskTemplates key, v136 added classification/notification/pref merging;
+  // reimplementing it here drifted), but swallow the timers it schedules
+  // (the ~250ms location.reload() race + the saveState debounce), then push
+  // the result ATOMICALLY via PUT /api/state (confirmDestructive), WAIT for
+  // the server to confirm, reset the sync baseline, and only THEN reload.
   function installImportOverride() {
     if (!window.api || !window.api.enabled) return;
-    window.applyImport = async function (mode) {
-      const imported = window._pendingImportState;
-      if (!imported) {
-        alert('No import data available. Try again.');
-        if (typeof window.closeImportConfirm === 'function') window.closeImportConfirm();
-        return;
-      }
-      if (mode === 'replace') {
-        const ok = confirm('This REPLACES all live data on the server (for everyone) with this backup. Current projects, tasks, templates and settings will be lost. Continue?');
-        if (!ok) return;
-      }
+    const appApplyImport = window.applyImport;
+    if (typeof appApplyImport !== 'function' || appApplyImport.__sbgImportWrapped) return;
+
+    const wrapped = async function (mode) {
+      // Fingerprint so a cancelled confirm / failed parse (which the app
+      // handles internally) doesn't trigger a pointless server push.
+      const fingerprint = function () {
+        try { return (window.state.projects || []).length + ':' + JSON.stringify(window.state).length; }
+        catch (e) { return String(Math.random()); }
+      };
+      const before = fingerprint();
+
+      // Run the app's own import synchronously, capturing every timer it
+      // schedules: its reload would race the async push, and the saveState
+      // debounce would fight the atomic PUT below.
+      const origSetTimeout = window.setTimeout;
+      window.setTimeout = function () { return 0; };
       try {
-        // 1) Build the new local state exactly like app.js's applyImport does.
-        if (mode === 'replace') {
-          Object.keys(window.state).forEach(k => { delete window.state[k]; });
-          Object.keys(imported).forEach(k => { window.state[k] = imported[k]; });
-        } else {
-          if (typeof window._mergeImportedArrays === 'function') {
-            window._mergeImportedArrays(window.state, imported, 'projects', 'id');
-            window._mergeImportedArrays(window.state, imported, 'masterTaskTemplates', 'id');
-            window._mergeImportedArrays(window.state, imported, 'teamMembers', 'name');
-          }
-          if (Array.isArray(imported.teamHolidays)) {
-            const ex = new Set(window.state.teamHolidays || []);
-            imported.teamHolidays.forEach(h => ex.add(h));
-            window.state.teamHolidays = Array.from(ex);
-          }
-          if (typeof imported.hoursStageDefaults === 'object' &&
-              Object.keys(window.state.hoursStageDefaults || {}).length === 0) {
-            window.state.hoursStageDefaults = imported.hoursStageDefaults;
-          }
-        }
+        appApplyImport(mode);
+      } finally {
+        window.setTimeout = origSetTimeout;
+      }
+
+      if (fingerprint() === before) return;   // user cancelled / import no-op
+
+      try {
         window.state.bulkSelectionMode = false;
         window.state.bulkSelectedTaskIds = [];
         try { localStorage.setItem(STORAGE_KEY, JSON.stringify(window.state)); } catch (e) {}
 
-        // 2) Push the whole state to the server atomically and WAIT for it.
-        //    getState() first so expectedVersion matches the server's current
-        //    version (the version guard is NOT bypassed by confirmDestructive).
-        //    Retry a few times in case the version moves between read and write.
+        // Push the whole state and WAIT. getState() first so expectedVersion
+        // matches the server (the version guard is NOT bypassed by
+        // confirmDestructive); retry in case the version moves between calls.
         const full = JSON.parse(JSON.stringify(window.state));
         let saved = false, lastErr = null;
         for (let attempt = 0; attempt < 4 && !saved; attempt++) {
           try {
-            await window.api.getState({ force: true }); // refresh expectedVersion
+            await window.api.getState({ force: true });
             await window.api.putState(full, { confirmDestructive: true });
             saved = true;
           } catch (err) {
@@ -313,20 +316,85 @@
         }
         if (!saved) throw (lastErr || new Error('could not save to server'));
 
-        // 3) Reset the sync baseline so the incremental diff sees no change and
-        //    doesn't immediately fight the import we just pushed.
+        // Reset the baseline so the incremental diff doesn't fight the push.
         window.lastSyncedState = JSON.parse(JSON.stringify(window.state));
-
-        if (typeof window.closeImportConfirm === 'function') window.closeImportConfirm();
-        alert('Import complete (' + mode + '). Saved to the server. Reloading…');
         window.location.reload();
       } catch (e) {
-        console.error('Import apply failed:', e);
+        console.error('Import backend push failed:', e);
         alert('Import could NOT be saved to the server:\n' + (e && e.message ? e.message : e) +
-              '\n\nNothing on the server was changed.');
-        if (typeof window.closeImportConfirm === 'function') window.closeImportConfirm();
+              '\n\nThe server copy is unchanged. Fix the connection and try the import again.');
       }
     };
+    wrapped.__sbgImportWrapped = true;
+    window.applyImport = wrapped;
+  }
+
+  // ---- cross-computer notification toasts -----------------------------------
+  // The app's _emitNotification runs on the ACTOR's tab only: it appends to
+  // state.notifications and toasts locally. Syncing the array (settings group
+  // 'notifications' above) delivers the entries to everyone else's state via
+  // the realtime merge -- but nothing would POP for them. This relay watches
+  // for entries this tab didn't author and runs them through the app's own
+  // _spawnToast, so the app's rules (Just Mine / Team-wide scope, silence
+  // toggle, Manager Mode) decide what actually pops.
+  var _notifSeen = null;   // Set of notification ids this tab has processed
+  function _seedNotifSeen() {
+    _notifSeen = new Set();
+    ((window.state && window.state.notifications) || []).forEach(function (n) {
+      if (n && n.id) _notifSeen.add(n.id);
+    });
+  }
+  function relayFreshNotifications() {
+    if (!window.state || !Array.isArray(window.state.notifications)) return;
+    if (_notifSeen === null) { _seedNotifSeen(); return; }   // first pass: history, don't toast
+    var fresh = [];
+    for (var i = 0; i < window.state.notifications.length; i++) {
+      var n = window.state.notifications[i];
+      if (!n || !n.id || _notifSeen.has(n.id)) continue;
+      _notifSeen.add(n.id);
+      fresh.push(n);
+    }
+    if (!fresh.length) return;
+    // Keep the seen-set bounded (the feed itself is capped at 200 by the app).
+    if (_notifSeen.size > 600) _seedNotifSeen();
+    if (typeof window._spawnToast !== 'function') return;
+    // Newest-first array; toast oldest-first so stacking reads naturally.
+    for (var k = fresh.length - 1; k >= 0; k--) {
+      try { window._spawnToast(fresh[k]); } catch (e) {}
+    }
+    if (typeof window._refreshNotificationBell === 'function') {
+      try { window._refreshNotificationBell(); } catch (e) {}
+    }
+  }
+  function installNotificationRelay() {
+    // (a) register self-authored entries as seen BEFORE any render pass, so
+    // this tab never re-toasts what the app already toasted locally.
+    var origEmit = window._emitNotification;
+    if (typeof origEmit === 'function' && !origEmit.__sbgNotifHooked) {
+      var wrappedEmit = function () {
+        var r = origEmit.apply(this, arguments);
+        if (_notifSeen === null) _seedNotifSeen();
+        else {
+          var head = (window.state.notifications || [])[0];
+          if (head && head.id) _notifSeen.add(head.id);
+        }
+        return r;
+      };
+      wrappedEmit.__sbgNotifHooked = true;
+      window._emitNotification = wrappedEmit;
+    }
+    // (b) after every render (realtime merges always end in one), toast any
+    // entry that arrived from another computer.
+    var origRender = window.render;
+    if (typeof origRender === 'function' && !origRender.__sbgNotifHooked) {
+      var wrappedRender = function () {
+        var r = origRender.apply(this, arguments);
+        try { relayFreshNotifications(); } catch (e) {}
+        return r;
+      };
+      wrappedRender.__sbgNotifHooked = true;
+      window.render = wrappedRender;
+    }
   }
 
   // ---- hook saveState ------------------------------------------------------
@@ -353,6 +421,7 @@
   function boot() {
     installSaveHook();
     installImportOverride();
+    installNotificationRelay();
     if (typeof window.state === 'undefined') return;
     if (!window.api || !window.api.enabled) {
       if (window.router && typeof window.router.afterStateLoad === 'function') window.router.afterStateLoad();
