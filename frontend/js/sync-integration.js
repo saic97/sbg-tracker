@@ -254,6 +254,7 @@
   window.scheduleApiSync = scheduleApiSync;
   window.syncStateFromServer = syncStateFromServer;
   window.performIncrementalSync = performIncrementalSync;
+  window.dedupRecurringDuplicates = function () { return dedupRecurringDuplicates(); };
 
   // ---- import override -----------------------------------------------------
   // The app's applyImport() (app.js) replaces/merges window.state, calls
@@ -402,6 +403,52 @@
     }
   }
 
+  // ---- recurring-duplicate guard ---------------------------------------------
+  // V139's spawn-recurrence-on-edit creates a brand-NEW series each time a
+  // recurring task's recurrence is re-saved, instead of replacing the old one.
+  // Every series then generates its own instances, so the same task piles up
+  // N times per occurrence day (observed live: 295 groups / 849 extra tasks).
+  // Until the monolith fixes that, this boot-time pass deletes same-day copies:
+  // recurring instances only (seriesId + dueDate set), same project + same
+  // normalized title + same due date; keeps the most-progressed copy
+  // (done > in-progress > rest), tie-broken toward the OLDEST series (uids
+  // sort chronologically). Deletions go through the app's own tombstone
+  // recorder so V140 merge-imports keep them dead everywhere.
+  function dedupRecurringDuplicates() {
+    const st = window.state;
+    if (!st || !Array.isArray(st.projects)) return 0;
+    const rank = function (s) { return s === 'done' ? 3 : s === 'in-progress' ? 2 : 1; };
+    let removed = 0;
+    for (const p of st.projects) {
+      if (!Array.isArray(p.tasks) || p.tasks.length < 2) continue;
+      const groups = {};
+      for (const t of p.tasks) {
+        if (!t || !t.seriesId || !t.dueDate) continue;
+        const key = (t.title || '').trim().toLowerCase() + '|' + t.dueDate;
+        (groups[key] = groups[key] || []).push(t);
+      }
+      const doomed = new Set();
+      for (const key in groups) {
+        const g = groups[key];
+        if (g.length < 2) continue;
+        g.sort(function (a, b) {
+          return (rank(b.status) - rank(a.status)) ||
+                 String(a.seriesId).localeCompare(String(b.seriesId)) ||
+                 String(a.id).localeCompare(String(b.id));
+        });
+        for (let i = 1; i < g.length; i++) doomed.add(g[i].id);
+      }
+      if (!doomed.size) continue;
+      const goners = p.tasks.filter(function (t) { return doomed.has(t.id); });
+      p.tasks = p.tasks.filter(function (t) { return !doomed.has(t.id); });
+      if (typeof window._recordTaskTombstonesBulk === 'function') {
+        try { window._recordTaskTombstonesBulk(p, goners); } catch (e) {}
+      }
+      removed += goners.length;
+    }
+    return removed;
+  }
+
   // ---- hook saveState ------------------------------------------------------
   // The app's saveState() only writes localStorage. Wrap it so every save also
   // schedules a backend sync. Because saveState is a function-declaration
@@ -443,6 +490,16 @@
         if (typeof render === 'function') render();
       }
       if (window.router && typeof window.router.afterStateLoad === 'function') window.router.afterStateLoad();
+      // Recurring-duplicate guard: runs once the server copy IS the sync
+      // baseline, so the removals diff-sync as ordinary deletions.
+      try {
+        const n = dedupRecurringDuplicates();
+        if (n > 0) {
+          console.log('[sync] recurring-duplicate guard removed ' + n + ' same-day duplicate task(s)');
+          if (typeof window.saveState === 'function') window.saveState();
+          if (typeof render === 'function') render();
+        }
+      } catch (e) { console.warn('[sync] dedup guard failed:', e && e.message); }
     });
   }
 
