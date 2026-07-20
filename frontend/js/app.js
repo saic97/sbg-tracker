@@ -333,6 +333,28 @@ function loadState() {
     // dismissed. state.toastsSilenced flips the whole system off in one click
     // from the bell dropdown footer.
     if (typeof state.toastsSilenced !== 'boolean') state.toastsSilenced = false;
+    // v145: Dark mode preference, off by default. Applied to body class
+    // and reflected in the toggle icon by _applyDarkModeFromState().
+    if (typeof state.darkMode !== 'boolean') state.darkMode = false;
+    // v140: Deletion tombstones — records that persist after a task or
+    // project is hard-deleted, so exports can carry the deletion forward
+    // and merge-mode imports can honor it on other machines. Without
+    // these, a task deleted on Machine A and then merge-imported on
+    // Machine B would silently stay on B (merge only ADDS, never removes).
+    // Retention: cap total at 1000, prune anything older than 180 days
+    // on load so localStorage doesn't bloat indefinitely.
+    if (!state.tombstones || typeof state.tombstones !== 'object') {
+      state.tombstones = { tasks: [], projects: [] };
+    }
+    if (!Array.isArray(state.tombstones.tasks)) state.tombstones.tasks = [];
+    if (!Array.isArray(state.tombstones.projects)) state.tombstones.projects = [];
+    const _tsCutoff = Date.now() - (180 * 86400000);
+    state.tombstones.tasks = state.tombstones.tasks
+      .filter(t => t && t.id && (t.deletedAt || 0) > _tsCutoff)
+      .slice(-1000);
+    state.tombstones.projects = state.tombstones.projects
+      .filter(p => p && p.id && (p.deletedAt || 0) > _tsCutoff)
+      .slice(-1000);
     // v94: support hours pro-rating. Lead assignees carry full task hours;
     // support members contribute a configurable fraction (default 25%). The
     // task modal can override per-task via task.supportHoursPct; otherwise
@@ -962,6 +984,8 @@ function exportTrackerStateToJson() {
       _templateCount: Array.isArray(state.taskTemplates) ? state.taskTemplates.length : 0,
       _teamMemberCount: Array.isArray(state.teamMembers) ? state.teamMembers.length : 0,
       _notificationCount: Array.isArray(state.notifications) ? state.notifications.length : 0,
+      _tombstoneTaskCount: (state.tombstones && Array.isArray(state.tombstones.tasks)) ? state.tombstones.tasks.length : 0,
+      _tombstoneProjectCount: (state.tombstones && Array.isArray(state.tombstones.projects)) ? state.tombstones.projects.length : 0,
       state: state
     };
     const json = JSON.stringify(payload, null, 2);
@@ -978,7 +1002,7 @@ function exportTrackerStateToJson() {
     document.body.removeChild(a);
     URL.revokeObjectURL(url);
     // Light confirmation — no modal, just a toast-style alert
-    alert(`Exported successfully!\n\nFile: ${filename}\nProjects: ${payload._projectCount} (${payload._archivedProjectCount} archived)\nTemplates: ${payload._templateCount}\nTeam members: ${payload._teamMemberCount}\nNotifications: ${payload._notificationCount}\n\nSave this file somewhere safe (OneDrive recommended).`);
+    alert(`Exported successfully!\n\nFile: ${filename}\nProjects: ${payload._projectCount} (${payload._archivedProjectCount} archived)\nTemplates: ${payload._templateCount}\nTeam members: ${payload._teamMemberCount}\nNotifications: ${payload._notificationCount}\nDeletion tombstones: ${payload._tombstoneTaskCount} task${payload._tombstoneTaskCount === 1 ? '' : 's'}, ${payload._tombstoneProjectCount} project${payload._tombstoneProjectCount === 1 ? '' : 's'}\n\nSave this file somewhere safe (OneDrive recommended).`);
   } catch (e) {
     console.error('Export failed:', e);
     alert('Export failed: ' + e.message + '\n\nIf this persists, copy your data manually via DevTools (F12 → Console → copy(localStorage.getItem(\'' + STORAGE_KEY + '\'))).');
@@ -1055,6 +1079,19 @@ function _confirmAndApplyImport(importedState, metadata, filename) {
   // v136: new notifications that would come in via merge (by id dedup)
   const currentNotifIds = new Set((state.notifications || []).map(n => n && n.id).filter(Boolean));
   const newNotifsFromImport = (importedState.notifications || []).filter(n => n && n.id && !currentNotifIds.has(n.id)).length;
+  // v140: Tombstone counts — how many task/project deletions the backup
+  // would apply (only counting ones that would ACTUALLY remove something,
+  // i.e. the target still has the task/project in question).
+  const importedTaskTombIds = new Set((importedState.tombstones && importedState.tombstones.tasks || []).map(t => t.id).filter(Boolean));
+  const importedProjectTombIds = new Set((importedState.tombstones && importedState.tombstones.projects || []).map(p => p.id).filter(Boolean));
+  let tombTasksWouldRemove = 0;
+  let tombProjectsWouldRemove = 0;
+  (state.projects || []).forEach(p => {
+    if (importedProjectTombIds.has(p.id)) tombProjectsWouldRemove++;
+    (p.tasks || []).forEach(t => {
+      if (importedTaskTombIds.has(t.id)) tombTasksWouldRemove++;
+    });
+  });
 
   const modalId = 'importConfirmModal';
   const existing = document.getElementById(modalId);
@@ -1082,6 +1119,7 @@ function _confirmAndApplyImport(importedState, metadata, filename) {
             <div><strong style="color:#166534;">${newFromImport}</strong> project${newFromImport === 1 ? '' : 's'} added (new IDs from backup)</div>
             <div><strong style="color:var(--sbg-navy, #0a2540);">${inBothCount}</strong> project${inBothCount === 1 ? '' : 's'} already exist${stateDifferCount > 0 ? ` — <strong style="color:var(--sbg-red, #c8322b);">${stateDifferCount}</strong> ha${stateDifferCount === 1 ? 's' : 've'} different archive/workstream state (will be synced)` : ' (no changes)'}</div>
             <div><strong style="color:#166534;">${newNotifsFromImport}</strong> notification${newNotifsFromImport === 1 ? '' : 's'} added to your bell history</div>
+            ${(tombTasksWouldRemove > 0 || tombProjectsWouldRemove > 0) ? `<div><strong style="color:var(--sbg-red, #c8322b);">${tombTasksWouldRemove}</strong> task${tombTasksWouldRemove === 1 ? '' : 's'} and <strong style="color:var(--sbg-red, #c8322b);">${tombProjectsWouldRemove}</strong> project${tombProjectsWouldRemove === 1 ? '' : 's'} will be REMOVED — deleted in the backup, still present here</div>` : ''}
             <div><strong style="color:var(--sbg-gold, #c07f00);">User preferences</strong> — signed-in user, toast mute, notification scope, and section-collapse state come from the backup where the current device is at its default</div>
           </div>
         </div>
@@ -1139,6 +1177,21 @@ function applyImport(mode) {
       // the project's classification, not fields that describe live work
       // — so tasks, messages, assignees on existing projects stay put.
       _syncImportedProjectClassifications(state, imported);
+      // v141: Sync recurrence caps on tasks that exist in both — so a
+      // series ended/trimmed on Machine A stops auto-regen on Machine B.
+      const recSynced = _syncImportedTaskRecurrenceCaps(state, imported);
+      if (recSynced > 0) {
+        console.log(`[v141] Synced recurrence caps on ${recSynced} task${recSynced === 1 ? '' : 's'}`);
+      }
+      // v140: Apply deletion tombstones from the backup — remove tasks and
+      // projects that were deleted on the source machine so cross-computer
+      // sync respects deletions instead of silently keeping them.
+      // Also merges the imported tombstones into local so future exports
+      // carry them forward too.
+      const tombResult = _applyImportedTombstones(state, imported);
+      if (tombResult && (tombResult.taskCount > 0 || tombResult.projectCount > 0)) {
+        console.log(`[v140] Applied ${tombResult.taskCount} task and ${tombResult.projectCount} project tombstones from backup`);
+      }
       // Merge holidays (string array, dedupe)
       if (Array.isArray(imported.teamHolidays)) {
         const existing = new Set(state.teamHolidays || []);
@@ -1193,6 +1246,11 @@ function applyImport(mode) {
       if (imported.toastsSilenced === true && state.toastsSilenced !== true) {
         state.toastsSilenced = true;
       }
+      // v145: Dark mode preference — adopt if the backup has it on and
+      // the current device is at default (off).
+      if (imported.darkMode === true && state.darkMode !== true) {
+        state.darkMode = true;
+      }
       // Signed-in user identity: adopt from backup if current is unset
       if (typeof imported.currentUser === 'string' && imported.currentUser && !(state.currentUser || '').trim()) {
         state.currentUser = imported.currentUser;
@@ -1239,6 +1297,52 @@ function applyImport(mode) {
 // week, backed up, reloaded state → archive state should come back).
 // Only fields that describe HOW the project is classified are synced;
 // live work (tasks, messages, assignments) is left alone.
+// v141: Sync recurrence caps (endDate, skipDates) from imported tasks
+// onto existing tasks with matching IDs. Without this, Machine A's
+// series-delete decisions would only survive as tombstones (task IDs
+// removed), but any surviving series members on Machine B would keep
+// their old recurrence pattern with no endDate, and auto-regen would
+// happily spawn new future instances on B. Syncing the recurrence cap
+// tells B's auto-regen to stop where A stopped.
+function _syncImportedTaskRecurrenceCaps(target, source) {
+  if (!Array.isArray(target.projects) || !Array.isArray(source.projects)) return 0;
+  // Build a fast lookup: taskId → imported task
+  const importedTaskById = new Map();
+  source.projects.forEach(p => {
+    if (Array.isArray(p.tasks)) {
+      p.tasks.forEach(t => { if (t && t.id) importedTaskById.set(t.id, t); });
+    }
+  });
+  let synced = 0;
+  target.projects.forEach(p => {
+    if (!Array.isArray(p.tasks)) return;
+    p.tasks.forEach(t => {
+      if (!t || !t.id || !t.recurrence || typeof t.recurrence !== 'object') return;
+      const importedTask = importedTaskById.get(t.id);
+      if (!importedTask || !importedTask.recurrence) return;
+      let changed = false;
+      // endDate: adopt if the imported one is TIGHTER (i.e., earlier)
+      const iEnd = importedTask.recurrence.endDate;
+      if (iEnd && (!t.recurrence.endDate || iEnd < t.recurrence.endDate)) {
+        t.recurrence.endDate = iEnd;
+        changed = true;
+      }
+      // skipDates: union of local + imported
+      if (Array.isArray(importedTask.recurrence.skipDates) && importedTask.recurrence.skipDates.length > 0) {
+        if (!Array.isArray(t.recurrence.skipDates)) t.recurrence.skipDates = [];
+        importedTask.recurrence.skipDates.forEach(d => {
+          if (!t.recurrence.skipDates.includes(d)) {
+            t.recurrence.skipDates.push(d);
+            changed = true;
+          }
+        });
+      }
+      if (changed) synced++;
+    });
+  });
+  return synced;
+}
+
 function _syncImportedProjectClassifications(target, source) {
   if (!Array.isArray(target.projects) || !Array.isArray(source.projects)) return;
   const targetById = new Map(target.projects.map(p => [p.id, p]));
@@ -1258,6 +1362,87 @@ function _syncImportedProjectClassifications(target, source) {
     if (changed) synced++;
   });
   return synced;
+}
+
+// v140: Tombstone helpers — record a task or project deletion so it can
+// be carried across the JSON export/import boundary. Without these,
+// merge-mode imports would silently re-instate deletions the user made
+// on another machine (or in the past, from a stale backup).
+function _recordTaskTombstone(project, task) {
+  if (!task || !task.id) return;
+  if (!state.tombstones) state.tombstones = { tasks: [], projects: [] };
+  if (!Array.isArray(state.tombstones.tasks)) state.tombstones.tasks = [];
+  // Dedup: if we've already recorded this task's tombstone, refresh it
+  state.tombstones.tasks = state.tombstones.tasks.filter(t => t.id !== task.id);
+  state.tombstones.tasks.push({
+    id: task.id,
+    projectId: project ? project.id : null,
+    title: task.title || '',
+    deletedAt: Date.now(),
+    deletedBy: (typeof getCurrentUser === 'function' && getCurrentUser()) || 'unknown',
+    seriesId: task.seriesId || null
+  });
+  // Cap
+  if (state.tombstones.tasks.length > 1000) {
+    state.tombstones.tasks = state.tombstones.tasks.slice(-1000);
+  }
+}
+function _recordTaskTombstonesBulk(project, tasksArr) {
+  if (!Array.isArray(tasksArr)) return;
+  tasksArr.forEach(t => _recordTaskTombstone(project, t));
+}
+function _recordProjectTombstone(project) {
+  if (!project || !project.id) return;
+  if (!state.tombstones) state.tombstones = { tasks: [], projects: [] };
+  if (!Array.isArray(state.tombstones.projects)) state.tombstones.projects = [];
+  state.tombstones.projects = state.tombstones.projects.filter(p => p.id !== project.id);
+  state.tombstones.projects.push({
+    id: project.id,
+    name: project.name || '',
+    deletedAt: Date.now(),
+    deletedBy: (typeof getCurrentUser === 'function' && getCurrentUser()) || 'unknown'
+  });
+  if (state.tombstones.projects.length > 1000) {
+    state.tombstones.projects = state.tombstones.projects.slice(-1000);
+  }
+}
+// Apply tombstones from the imported state during merge — remove tasks
+// and projects from current state that were deleted in the backup.
+// Returns {taskCount, projectCount} for the diff panel.
+function _applyImportedTombstones(target, source) {
+  const result = { taskCount: 0, projectCount: 0 };
+  if (!source || !source.tombstones) return result;
+  const srcTaskIds = new Set((source.tombstones.tasks || []).map(t => t.id).filter(Boolean));
+  const srcProjectIds = new Set((source.tombstones.projects || []).map(p => p.id).filter(Boolean));
+  // Remove tombstoned tasks from every current project
+  if (srcTaskIds.size > 0 && Array.isArray(target.projects)) {
+    target.projects.forEach(p => {
+      if (!Array.isArray(p.tasks)) return;
+      const before = p.tasks.length;
+      p.tasks = p.tasks.filter(t => !srcTaskIds.has(t.id));
+      result.taskCount += (before - p.tasks.length);
+    });
+  }
+  // Remove tombstoned projects from current state
+  if (srcProjectIds.size > 0 && Array.isArray(target.projects)) {
+    const before = target.projects.length;
+    target.projects = target.projects.filter(p => !srcProjectIds.has(p.id));
+    result.projectCount += (before - target.projects.length);
+  }
+  // Merge the imported tombstones into local tombstones so subsequent
+  // exports carry them forward too (with dedup + cap on load).
+  if (!target.tombstones) target.tombstones = { tasks: [], projects: [] };
+  const localTaskIds = new Set(target.tombstones.tasks.map(t => t.id));
+  (source.tombstones.tasks || []).forEach(t => {
+    if (t && t.id && !localTaskIds.has(t.id)) target.tombstones.tasks.push(t);
+  });
+  const localProjectIds = new Set(target.tombstones.projects.map(p => p.id));
+  (source.tombstones.projects || []).forEach(p => {
+    if (p && p.id && !localProjectIds.has(p.id)) target.tombstones.projects.push(p);
+  });
+  if (target.tombstones.tasks.length > 1000) target.tombstones.tasks = target.tombstones.tasks.slice(-1000);
+  if (target.tombstones.projects.length > 1000) target.tombstones.projects = target.tombstones.projects.slice(-1000);
+  return result;
 }
 
 function _mergeImportedArrays(target, source, arrName, keyField) {
@@ -2724,6 +2909,24 @@ function _copyProjectWithOptions(sourceProject, newName, targetWorkstream, opts)
   copy.archived = false;
   copy.archivedAt = null;
   copy.archivedBy = '';
+  // v142: If the clone is landing in a DIFFERENT workstream than the source,
+  // the source's task.stage values (which are workstream-specific) will be
+  // orphans in the new workstream — Board/Table views group by stage and
+  // won't show tasks whose stage isn't in the current workstream's stage
+  // list. Compute a valid remap target so all cloned tasks land on a real
+  // stage of the target workstream and stay visible.
+  const sourceWs = (sourceProject.workstream || 'bidding');
+  const targetWs = copy.workstream;
+  const workstreamChanged = sourceWs !== targetWs;
+  let remapStageId = null;
+  if (workstreamChanged && typeof getProjectStages === 'function') {
+    try {
+      const targetStages = getProjectStages(copy);
+      if (Array.isArray(targetStages) && targetStages.length > 0) {
+        remapStageId = targetStages[0].id;
+      }
+    } catch (_) { /* fall through — no remap */ }
+  }
   // Project-level fields — clear or keep based on options
   if (!opts.copyProjectActivity) copy.activityLog = [];
   if (!opts.copyAddenda) copy.addenda = [];
@@ -2732,6 +2935,11 @@ function _copyProjectWithOptions(sourceProject, newName, targetWorkstream, opts)
   (copy.tasks || []).forEach(t => {
     t.id = uid();
     t.createdAt = Date.now();
+    // v142: Remap stage to the target workstream's first stage if we're
+    // crossing workstreams. Otherwise leave the source stage alone.
+    if (remapStageId) {
+      t.stage = remapStageId;
+    }
     // People
     if (!opts.copyAssignees) {
       t.assignee = '';
@@ -3638,6 +3846,7 @@ function deleteProject() {
     return;
   }
 
+  _recordProjectTombstone(p); // v140 — carry the deletion across JSON exports
   state.projects = state.projects.filter(x => x.id !== id);
   if (state.activeProjectId === id) {
     const fallback = getActiveProjects()[0];
@@ -6028,6 +6237,16 @@ function copyTrainingLogSummary() {
 
 // Render the entire workload page.
 function renderTeamWorkloadView() {
+  // v148: Update the Reschedule Past-Due button badge with the current count
+  try {
+    const pd = _collectPastDueTasks();
+    const badge = document.getElementById('twvRescheduleBadge');
+    if (badge && pd && pd.totals) {
+      const n = pd.totals.uniqueTaskCount || 0;
+      badge.textContent = n;
+      badge.style.display = n > 0 ? 'inline-block' : 'none';
+    }
+  } catch (_) {}
   // Sync controls to state
   document.querySelectorAll('.twv-seg-btn').forEach(b => {
     if (b.dataset.scope) {
@@ -6497,9 +6716,14 @@ function setWorkloadMode(mode) {
 function _collectPastDueTasks(opts) {
   opts = opts || {};
   const filterEstimator = opts.filterEstimator || null; // optional: restrict to one person
-  const range = _workloadDateRange();
-  const cutoff = range.startDate; // YYYY-MM-DD
+  // v148: Cutoff is TODAY, not the workload window start. User wants
+  // "past due from today's date backward" — anything due today or later
+  // is upcoming/current, not past-due, regardless of the workload window
+  // scope. Previously used _workloadDateRange().startDate which caused
+  // upcoming/current-day tasks to appear when the user was scoped to
+  // "Next Week" or later windows.
   const todayStr = formatDateForInput(new Date());
+  const cutoff = todayStr; // YYYY-MM-DD
   const projects = (state.projects || []).filter(p => !p.archived);
 
   const tasksByEstimator = new Map();
@@ -6571,7 +6795,7 @@ function _collectPastDueTasks(opts) {
     bucket8to30Hours: 0, bucket8to30Count: 0,
     bucket30PlusHours: 0, bucket30PlusCount: 0,
     cutoff,
-    windowLabel: range.label
+    windowLabel: 'Today' // v148: past-due is now relative to today, not the workload window
   };
   // Note: allTasks may double-count hours when a task has multiple leads.
   // For total hours we want the unique task count, so dedupe by taskId.
@@ -6642,7 +6866,106 @@ function _findNextOpenSlotDate(memberName, opts) {
 // Push a task to the next open slot for its first lead.
 // Updates task.dueDate, saves state, re-renders the modal.
 function pushTaskToNextOpenSlot(taskId, leadName) {
-  // Find the task
+  // v148: Show preview modal with the auto-suggested slot + manual date picker.
+  // Actual push routes through _confirmPushTaskToDate.
+  let target = null;
+  (state.projects || []).forEach(p => {
+    (p.tasks || []).forEach(t => {
+      if (t.id === taskId) target = t;
+    });
+  });
+  if (!target) {
+    alert('Task not found — it may have been deleted. Refresh and try again.');
+    return;
+  }
+  const hrs = (typeof target.estimatedHours === 'number' && target.estimatedHours > 0) ? target.estimatedHours : 0;
+  const suggestedDate = _findNextOpenSlotDate(leadName, { hoursNeeded: hrs });
+
+  const todayStr = formatDateForInput(new Date());
+  const tomorrow = new Date();
+  tomorrow.setDate(tomorrow.getDate() + 1);
+  const tomorrowStr = formatDateForInput(tomorrow);
+  const defaultManualDate = suggestedDate || tomorrowStr;
+
+  const member = (state.teamMembers || []).find(m => m.name === leadName);
+  const capacityStatus = (!member || !(member.capacityHrs > 0))
+    ? `<div style="color:var(--sbg-red, #c8322b); font-size:12px; margin-top:6px;">⚠ ${escapeHtml(leadName)} has no weekly capacity set in Capacity &amp; PTO — no auto-suggestion available. Pick a manual date below.</div>`
+    : '';
+
+  const suggestionBlock = suggestedDate
+    ? `
+      <div style="background:linear-gradient(135deg, rgba(46,125,50,0.12), rgba(46,125,50,0.04)); border:1px solid rgba(46,125,50,0.35); border-radius:8px; padding:14px 16px; margin-bottom:14px;">
+        <div style="font-size:11px; color:var(--text-dim); text-transform:uppercase; letter-spacing:0.5px; font-weight:700;">🎯 Suggested Next Slot</div>
+        <div style="font-size:22px; font-weight:700; color:var(--text); margin-top:4px;">${escapeHtml(formatDate(suggestedDate))}</div>
+        <div style="font-size:12px; color:var(--text-dim); margin-top:3px;">First day within the next 4 weeks where ${escapeHtml(leadName)} is at or below 75% capacity</div>
+      </div>`
+    : `
+      <div style="background:linear-gradient(135deg, rgba(200,50,43,0.10), rgba(200,50,43,0.03)); border:1px solid rgba(200,50,43,0.35); border-radius:8px; padding:14px 16px; margin-bottom:14px;">
+        <div style="font-size:11px; color:var(--sbg-red, #c8322b); text-transform:uppercase; letter-spacing:0.5px; font-weight:700;">⚠ No Auto-Slot Available</div>
+        <div style="font-size:14px; color:var(--text); margin-top:4px;">
+          ${(!member || !(member.capacityHrs > 0))
+            ? escapeHtml(leadName) + ' has no capacity set (or is Unassigned). Set capacity in Capacity &amp; PTO, or pick a manual date below.'
+            : escapeHtml(leadName) + ' is fully booked over the next 4 weeks. Pick a manual date below or reassign the task.'}
+        </div>
+      </div>`;
+
+  const oldDateText = target.dueDate ? formatDate(target.dueDate) : 'unscheduled';
+  const daysLate = target.dueDate
+    ? Math.max(0, Math.round((new Date(todayStr + 'T00:00:00') - new Date(target.dueDate + 'T00:00:00')) / 86400000))
+    : 0;
+
+  const modalId = 'pushToSlotPreviewModal';
+  const existing = document.getElementById(modalId);
+  if (existing) existing.remove();
+
+  const html = `
+    <div class="modal-backdrop active" id="${modalId}">
+      <div class="modal" style="max-width:560px;" onclick="event.stopPropagation()">
+        <h3 style="margin:0 0 4px 0;">🔁 Push to Open Slot</h3>
+        <div style="font-size:13px; color:var(--text-dim); margin-bottom:14px;">
+          <strong style="color:var(--text);">${escapeHtml(target.title)}</strong>
+          <br>Currently due ${escapeHtml(oldDateText)}${daysLate > 0 ? ` · <span style="color:var(--sbg-red, #c8322b); font-weight:600;">${daysLate} day${daysLate === 1 ? '' : 's'} late</span>` : ''}
+          <br>Lead: ${escapeHtml(leadName)}${hrs > 0 ? ` · ${hrs}h estimated` : ''}
+          ${capacityStatus}
+        </div>
+
+        ${suggestionBlock}
+
+        <div style="background:var(--surface-2); border:1px solid var(--border); border-radius:8px; padding:14px 16px; margin-bottom:14px;">
+          <div style="font-size:11px; color:var(--text-dim); text-transform:uppercase; letter-spacing:0.5px; font-weight:700; margin-bottom:8px;">📅 Or Hand-Pick a Date</div>
+          <input type="date" id="pushToSlotManualDate" value="${escapeAttr(defaultManualDate)}" min="${escapeAttr(todayStr)}" style="width:100%; padding:9px 12px; font-size:14px; border:1px solid var(--border); border-radius:6px; background:var(--surface); color:var(--text);">
+          <div style="font-size:11px; color:var(--text-dim); margin-top:6px;">Any date from today forward. Overrides the auto-suggestion.</div>
+        </div>
+
+        <div style="display:flex; gap:10px; justify-content:flex-end; flex-wrap:wrap;">
+          <button class="btn btn-sm" onclick="closePushToSlotPreview()">Cancel</button>
+          ${suggestedDate
+            ? `<button class="btn btn-sm" style="background:var(--surface-2); border:1px solid var(--border); color:var(--text); font-weight:600;" onclick="_confirmPushTaskToDate('${escapeAttr(taskId)}', '${escapeAttr(leadName)}', '${escapeAttr(suggestedDate)}', 'auto')">🎯 Use Suggested (${escapeHtml(formatDate(suggestedDate))})</button>`
+            : ''}
+          <button class="btn btn-sm btn-primary" onclick="_pushTaskToManualDate('${escapeAttr(taskId)}', '${escapeAttr(leadName)}')">✓ Push to Selected Date</button>
+        </div>
+      </div>
+    </div>
+  `;
+  document.body.insertAdjacentHTML('beforeend', html);
+}
+
+function closePushToSlotPreview() {
+  const el = document.getElementById('pushToSlotPreviewModal');
+  if (el) el.remove();
+}
+
+function _pushTaskToManualDate(taskId, leadName) {
+  const dateInput = document.getElementById('pushToSlotManualDate');
+  if (!dateInput || !dateInput.value) {
+    alert('Please pick a date first.');
+    return;
+  }
+  _confirmPushTaskToDate(taskId, leadName, dateInput.value, 'manual');
+}
+
+function _confirmPushTaskToDate(taskId, leadName, nextDate, source) {
+  // v148: actual push logic — shared by auto-suggest and manual-date paths.
   let target = null;
   let targetProject = null;
   (state.projects || []).forEach(p => {
@@ -6652,26 +6975,15 @@ function pushTaskToNextOpenSlot(taskId, leadName) {
   });
   if (!target) {
     alert('Task not found — it may have been deleted. Refresh and try again.');
+    closePushToSlotPreview();
     return;
   }
-  const hrs = (typeof target.estimatedHours === 'number' && target.estimatedHours > 0) ? target.estimatedHours : 0;
-  const nextDate = _findNextOpenSlotDate(leadName, { hoursNeeded: hrs });
   if (!nextDate) {
-    const member = (state.teamMembers || []).find(m => m.name === leadName);
-    if (!member || !(member.capacityHrs > 0)) {
-      alert(`${leadName} has no weekly capacity set in Capacity & PTO settings, so I can't find an open slot. Set their capacity first, or move the task manually via the task edit modal.`);
-    } else {
-      alert(`No open days found for ${leadName} in the next 4 weeks at or below 75% load. They may be fully booked. Consider reassigning to someone with capacity, or open the task to set a date manually.`);
-    }
+    alert('No target date provided.');
     return;
   }
   const oldDate = target.dueDate;
   target.dueDate = nextDate;
-  // v89: Flag this task as having been rescheduled from past-due — permanent
-  // accountability marker. Meta captures the most recent push; pushCount
-  // tracks how many times it's slipped so a supervisor can see repeat
-  // offenders. Once set, rescheduledFromPastDue never clears — the badge
-  // is a life-of-task record even after the task is marked done.
   const today = formatDateForInput(new Date());
   let daysLate = 0;
   if (oldDate) {
@@ -6689,20 +7001,12 @@ function pushTaskToNextOpenSlot(taskId, leadName) {
     rescheduledBy: (state.currentUser || '').trim() || 'Unknown user',
     daysWasLate: daysLate,
     newDueDate: nextDate,
-    pushCount: priorCount + 1
+    pushCount: priorCount + 1,
+    source: source || 'auto'
   };
-  // Anchor mode: if this task was bid-day or pre-bid or rfi anchored, the
-  // anchor logic will overwrite our change next time the project saves.
-  // Switch it to a free-floating date by setting anchor to bid-start with
-  // a dayOffset that resolves to the new date. Simpler: just clear the
-  // anchor's auto-recompute by leaving it alone — manual edits override
-  // until the user changes the anchor. Per v82_BidDueFix, the reanchor
-  // trigger only fires on project-level date changes, not task-level
-  // due-date edits, so we're safe.
   saveState();
-  // v91: also fire a notification about the date change so the assignee
-  // and other leads see it in their bell (not just the past-due badge)
   _notifyTaskDueDateChanged(targetProject, target, oldDate, nextDate, getCurrentUser());
+  closePushToSlotPreview();
   // Re-render the reschedule modal if it's open
   if (document.getElementById('reschedulePastDueModal')) {
     renderReschedulePastDueModal();
@@ -6761,8 +7065,8 @@ function renderReschedulePastDueModal() {
         <div style="font-size:48px; margin-bottom:12px;">✓</div>
         <h3 style="margin:0 0 8px 0; color:var(--text);">No past-due work</h3>
         <p style="margin:0; max-width:520px; margin-left:auto; margin-right:auto;">
-          Nothing is past-due relative to the active window (${escapeHtml(t.windowLabel)}, starting ${escapeHtml(formatDate(t.cutoff))}).
-          All work is either inside the current window or already complete.
+          Nothing is due before today (${escapeHtml(formatDate(t.cutoff))}).
+          Every incomplete task is either due today or later.
         </p>
       </div>
     `;
@@ -6780,7 +7084,7 @@ function renderReschedulePastDueModal() {
       <div style="background:var(--surface-2); border-left:4px solid var(--gold, #c07f00); padding:12px 14px; border-radius:6px;">
         <div style="font-size:11px; color:var(--text-dim); text-transform:uppercase; letter-spacing:0.5px;">Cutoff Date</div>
         <div style="font-size:18px; font-weight:700; color:var(--text);">Before ${escapeHtml(formatDate(t.cutoff))}</div>
-        <div style="font-size:12px; color:var(--text-dim); margin-top:2px;">Active window: ${escapeHtml(t.windowLabel)}</div>
+        <div style="font-size:12px; color:var(--text-dim); margin-top:2px;">Only true past-due — nothing current or upcoming</div>
       </div>
       <div style="background:var(--surface-2); border-left:4px solid var(--navy, #0a2540); padding:12px 14px; border-radius:6px;">
         <div style="font-size:11px; color:var(--text-dim); text-transform:uppercase; letter-spacing:0.5px;">Age Distribution</div>
@@ -7541,9 +7845,11 @@ function applyReassignment() {
   if (!confirm(`Reassign ${_reassignSelected.size} task${_reassignSelected.size === 1 ? '' : 's'} from "${sourceAssignee}" to "${target}"?`)) return;
 
   let count = 0;
+  const actor = getCurrentUser() || 'System';
   (state.projects || []).forEach(project => {
     (project.tasks || []).forEach(task => {
       if (!_reassignSelected.has(task.id)) return;
+      const oldAssignee = task.assignee || '';
       // Update lead chips
       if (Array.isArray(task.leads)) {
         const idx = task.leads.indexOf(sourceAssignee);
@@ -7565,6 +7871,13 @@ function applyReassignment() {
         }
       } else if (task.support === sourceAssignee) {
         task.support = target;
+      }
+      // v143: emit an assignment notification per reassigned task so the
+      // new assignee actually finds out. Previously bulk reassign silently
+      // swapped assignees with no bell notification, no toast, no message
+      // — the target user would only discover it on next open.
+      if (oldAssignee !== task.assignee && typeof _notifyTaskAssignment === 'function') {
+        try { _notifyTaskAssignment(project, task, oldAssignee, task.assignee, actor); } catch (_) {}
       }
       count++;
     });
@@ -10114,6 +10427,14 @@ function ensureSeriesInstancesGenerated(project, sourceTask, options) {
   let currentInstance = (latestDated.recurrence && latestDated.recurrence.instanceNumber) || members.length;
   let added = 0;
   const seenDueDates = new Set(members.filter(m => m.dueDate).map(m => m.dueDate));
+  // v141: series-level skip list — dates the user explicitly deleted with
+  // 'this-only' scope. Auto-regen must never re-add them.
+  const skipDates = new Set();
+  members.forEach(m => {
+    if (m.recurrence && Array.isArray(m.recurrence.skipDates)) {
+      m.recurrence.skipDates.forEach(d => skipDates.add(d));
+    }
+  });
   const maxIterations = 200;
 
   for (let i = 0; i < maxIterations; i++) {
@@ -10127,6 +10448,12 @@ function ensureSeriesInstancesGenerated(project, sourceTask, options) {
 
     // Dedup: never create two instances on the same due date within one series
     if (seenDueDates.has(nextDate)) {
+      anchorDate = nextDate;
+      continue;
+    }
+    // v141: Honor the series-level skip list — user explicitly deleted
+    // this date via 'this-only' scope, do not resurrect it.
+    if (skipDates.has(nextDate)) {
       anchorDate = nextDate;
       continue;
     }
@@ -15031,6 +15358,17 @@ function _applySeriesPropagate(project, existing, delta, scope) {
 }
 
 // v100: Delete series members by scope.
+// v141: Also updates the surviving members' recurrence pattern so
+// auto-regeneration on next state load doesn't recreate the deleted
+// instances. Three scopes:
+//   - 'this-only': add the deleted instance's dueDate to skipDates on
+//     all surviving members. computeNextRecurrenceDate + the auto-regen
+//     loop check that set and skip those dates forever.
+//   - 'this-and-future': set recurrence.endDate on all surviving members
+//     to the day before existing.dueDate. Auto-regen stops there.
+//   - 'entire-series': set recurrence.endDate to yesterday on all
+//     surviving members (typically completed instances). Auto-regen
+//     stops immediately.
 function _applySeriesDelete(project, existing, scope) {
   if (!project || !existing) return 0;
   const members = getSeriesMembers(project, existing);
@@ -15048,8 +15386,54 @@ function _applySeriesDelete(project, existing, scope) {
     return 0;
   }
   const idsToDelete = new Set(toDelete.map(m => m.id));
+  _recordTaskTombstonesBulk(project, toDelete); // v140
+
+  // v141: Update recurrence on surviving members so auto-regen respects the delete.
+  const survivors = members.filter(m => !idsToDelete.has(m.id));
+  if (survivors.length > 0) {
+    if (scope === 'this-only' && anchorDate) {
+      // Skip this specific date forever. Applied to ALL survivors so any
+      // one of them serving as template later still respects the skip.
+      survivors.forEach(m => {
+        if (!m.recurrence || typeof m.recurrence !== 'object') return;
+        if (!Array.isArray(m.recurrence.skipDates)) m.recurrence.skipDates = [];
+        if (!m.recurrence.skipDates.includes(anchorDate)) {
+          m.recurrence.skipDates.push(anchorDate);
+        }
+      });
+    } else if (scope === 'this-and-future' && anchorDate) {
+      // Cap the series at the day before the deleted instance.
+      const cap = _shiftDateStr(anchorDate, -1);
+      survivors.forEach(m => {
+        if (!m.recurrence || typeof m.recurrence !== 'object') return;
+        // Only tighten — don't extend an existing earlier cap.
+        if (!m.recurrence.endDate || cap < m.recurrence.endDate) {
+          m.recurrence.endDate = cap;
+        }
+      });
+    } else if (scope === 'entire-series') {
+      // Cap at yesterday so no future instances can be regenerated.
+      const today = formatDateForInput(new Date());
+      const yesterday = _shiftDateStr(today, -1);
+      survivors.forEach(m => {
+        if (!m.recurrence || typeof m.recurrence !== 'object') return;
+        if (!m.recurrence.endDate || yesterday < m.recurrence.endDate) {
+          m.recurrence.endDate = yesterday;
+        }
+      });
+    }
+  }
+
   project.tasks = project.tasks.filter(t => !idsToDelete.has(t.id));
   return toDelete.length;
+}
+
+// v141: Shift a YYYY-MM-DD date string by N days (positive or negative).
+function _shiftDateStr(dateStr, deltaDays) {
+  if (!dateStr) return dateStr;
+  const d = new Date(dateStr + 'T00:00:00');
+  d.setDate(d.getDate() + deltaDays);
+  return formatDateForInput(d);
 }
 
 // v100: Open the "Apply changes to..." dialog. User picks scope, we apply
@@ -15487,6 +15871,7 @@ function deleteTask() {
   }
   if (!confirm('Delete this task?')) return;
   logTaskDeleted(project, taskToDelete);
+  _recordTaskTombstone(project, taskToDelete); // v140
   project.tasks = project.tasks.filter(t => t.id !== editingTaskId);
   saveState();
   closeModal('taskModal');
@@ -15503,6 +15888,7 @@ function _openSeriesDeleteDialog(project, existing) {
     // Fallback — modal missing, just delete this instance with a confirm.
     if (!confirm('Delete this task?')) return;
     logTaskDeleted(project, existing);
+    _recordTaskTombstone(project, existing); // v140
     project.tasks = project.tasks.filter(t => t.id !== existing.id);
     saveState();
     render();
@@ -15576,6 +15962,81 @@ function cancelSeriesDelete() {
   const modal = document.getElementById('seriesDeleteModal');
   if (modal) modal.classList.remove('active');
   _pendingSeriesDelete = null;
+}
+
+// v150: Compact status menu launched from calendar events. Opens a small
+// popup near the click target with the 5 status options. Selecting one
+// routes through the existing updateTaskStatus which handles notification,
+// activity log, save + render. Uses a floating menu instead of a full
+// modal so users stay in-context on the calendar.
+function _openCalStatusMenu(taskId, evt) {
+  if (!taskId) return;
+  // Close any existing cal-status-menu first
+  const existing = document.getElementById('calStatusMenu');
+  if (existing) existing.remove();
+
+  // Find the task to seed the current-status highlight
+  let currentStatus = 'not-started';
+  (state.projects || []).forEach(p => {
+    (p.tasks || []).forEach(t => { if (t.id === taskId) currentStatus = t.status || 'not-started'; });
+  });
+
+  const options = [
+    { id: 'not-started', label: 'Not Started', icon: '○', color: 'var(--text-faint)' },
+    { id: 'in-progress', label: 'In Progress', icon: '◐', color: 'var(--blue)' },
+    { id: 'blocked',     label: 'Blocked / RFI', icon: '⚠', color: 'var(--red)' },
+    { id: 'pending',     label: 'Pending',     icon: '⏳', color: 'var(--purple)' },
+    { id: 'done',        label: 'Complete',    icon: '✓', color: 'var(--green)' }
+  ];
+
+  const menuHtml = `
+    <div id="calStatusMenu" class="cal-status-menu" onclick="event.stopPropagation()">
+      <div class="cal-status-menu-hdr">Change Status</div>
+      ${options.map(o => `
+        <button class="cal-status-menu-item ${currentStatus === o.id ? 'active' : ''}" onclick="_pickCalStatus('${escapeAttr(taskId)}', '${o.id}')">
+          <span class="cal-status-menu-icon" style="color:${o.color};">${o.icon}</span>
+          <span class="cal-status-menu-label">${escapeHtml(o.label)}</span>
+          ${currentStatus === o.id ? '<span class="cal-status-menu-current">current</span>' : ''}
+        </button>
+      `).join('')}
+    </div>
+  `;
+  document.body.insertAdjacentHTML('beforeend', menuHtml);
+
+  // Position the menu near the click target
+  const menu = document.getElementById('calStatusMenu');
+  if (menu && evt && evt.target) {
+    const rect = evt.target.getBoundingClientRect();
+    const menuW = 200;
+    const menuH = menu.offsetHeight || 240;
+    let left = rect.left + window.scrollX;
+    let top = rect.bottom + window.scrollY + 4;
+    // Nudge if would clip off right edge
+    if (left + menuW > window.innerWidth - 8) left = window.innerWidth - menuW - 8;
+    // Flip above if would clip off bottom
+    if (top + menuH > window.innerHeight + window.scrollY - 8) top = rect.top + window.scrollY - menuH - 4;
+    menu.style.left = left + 'px';
+    menu.style.top = top + 'px';
+  }
+
+  // Close on any outside click. Guard binds so we don't leak listeners.
+  setTimeout(() => {
+    const closeHandler = (e) => {
+      const m = document.getElementById('calStatusMenu');
+      if (m && !m.contains(e.target)) {
+        m.remove();
+        document.removeEventListener('click', closeHandler, true);
+      }
+    };
+    document.addEventListener('click', closeHandler, true);
+  }, 0);
+}
+function _pickCalStatus(taskId, newStatus) {
+  const menu = document.getElementById('calStatusMenu');
+  if (menu) menu.remove();
+  if (typeof updateTaskStatus === 'function') {
+    updateTaskStatus(taskId, newStatus);
+  }
 }
 
 function updateTaskStatus(taskId, status) {
@@ -17054,6 +17515,16 @@ function _spawnToast(notif) {
     ? document.getElementById('toastCenterLayer')
     : document.getElementById('toastContainer');
   if (!targetLayer) return;
+  // v149: Dedup at the toast layer. When Lead Manager Mode is on (scope=team),
+  // a single event that emits per-recipient (say 3 associated people) would
+  // pop 3 identical-looking toasts because each has a different recipient
+  // but the same visible fingerprint. Skip if a live toast with the same
+  // (type + taskId + actor) already exists in the layer. Bookkeeping the
+  // fingerprint on the DOM node so the check is O(existing).
+  const fingerprint = (notif.type || '') + '|' + (notif.taskId || '') + '|' + (notif.actorName || '');
+  const dupeInDom = Array.from(targetLayer.querySelectorAll('.toast-card'))
+    .some(el => el.dataset.toastFingerprint === fingerprint);
+  if (dupeInDom) return;
   // Cap concurrent toasts — keep newest 5 in either layer
   const existing = targetLayer.querySelectorAll('.toast-card');
   if (existing.length >= 5) {
@@ -17084,6 +17555,11 @@ function _spawnToast(notif) {
   `;
   // Insert new toast at the TOP of the layer so newest is on top
   targetLayer.insertAdjacentHTML('afterbegin', html);
+  // v149: Stamp the fingerprint on the DOM node so subsequent spawns can
+  // detect duplicates (Lead Manager Mode emits one notif per recipient
+  // for the same event, and we want only one visible toast).
+  const spawnedEl = document.getElementById(toastId);
+  if (spawnedEl) spawnedEl.dataset.toastFingerprint = fingerprint;
   // v115: toggle backdrop on center layer when it holds any toast
   if (isAssignmentToast) {
     targetLayer.classList.add('has-toast');
@@ -17337,6 +17813,41 @@ function toggleToastsSilenced() {
   if (state.toastsSilenced) dismissAllToasts();
   // Re-render the dropdown so the footer button label updates
   _renderNotificationDropdown();
+}
+
+// v145: Dark mode toggle — flips state.darkMode and refreshes the body
+// class + icon. Uses the ready-to-render helper so on-load application
+// and click both flow through the same code path.
+function toggleDarkMode() {
+  state.darkMode = !state.darkMode;
+  saveState();
+  _applyDarkModeFromState();
+  // Small confirmation toast so the change is legible
+  try {
+    if (typeof showToast === 'function') {
+      showToast(state.darkMode ? '🌙 Dark mode on' : '☀ Light mode on', 'info');
+    }
+  } catch (_) {}
+}
+// Apply state.darkMode to the DOM (body class + toggle icon). Called
+// during initial load and after every toggle so both paths stay in sync.
+function _applyDarkModeFromState() {
+  const on = !!state.darkMode;
+  document.body.classList.toggle('dark-mode', on);
+  const icon = document.getElementById('darkModeIcon');
+  if (icon) icon.textContent = on ? '☀' : '🌙';
+  const btn = document.getElementById('darkModeToggleBtn');
+  if (btn) btn.title = on ? 'Switch to light mode (Alt+D)' : 'Switch to dark mode (Alt+D)';
+}
+// Alt+D keyboard shortcut for the toggle. Fires once at first script eval.
+if (typeof window !== 'undefined' && !window._sbgDarkModeShortcutBound) {
+  window._sbgDarkModeShortcutBound = true;
+  document.addEventListener('keydown', function(e) {
+    if (e.altKey && !e.ctrlKey && !e.metaKey && (e.key === 'd' || e.key === 'D')) {
+      e.preventDefault();
+      toggleDarkMode();
+    }
+  });
 }
 
 function _notificationIcon(type) {
@@ -19091,6 +19602,17 @@ function getDefaultAdvancements() {
 
   return [
     // ---------- High-impact ----------
+    advImplemented('polish', 'Calendar view: inline status picker on each event (no more opening the full task modal to mark Complete)', "Every task chip on the calendar now has a small status circle glyph that appears on hover. Click it → compact floating menu opens with the five statuses (Not Started, In Progress, Blocked/RFI, Pending, Complete) — pick one and the task updates. Current status is highlighted with a red tint and 'current' label. Menu closes on outside click. Fastest way to mark a task Done or Blocked without leaving the calendar.", "Shipped Jul 20, 2026 in response to: 'calendar view, can you make so that I can select status? Complete, blocked etc?' Three pieces. (1) Calendar event rendering: each cal-event now includes a <button class='cal-status-picker'> element before the task title, showing the current status as a compact glyph (○ not-started, ◐ in-progress, ⚠ blocked, ⏳ pending, ✓ done). onclick calls _openCalStatusMenu(taskId, event) with stopPropagation so it doesn't also open the full task modal. Styled as a 18px circle with opacity:0 by default so the calendar chip stays visually clean — reveals on parent .cal-event:hover with a subtle scale animation. Dark-mode variant swaps the background to a semi-transparent black with white/gold accent on hover. (2) _openCalStatusMenu function: closes any existing menu first, reads the task's current status for highlighting, builds a floating popup with the 5 options (each showing colored icon + label + 'current' badge on the active one), inserts into document.body with position:absolute, computes placement based on the click target's bounding rect (nudges left if it would clip off screen right, flips above if it would clip off bottom). Sets up an outside-click handler via document.addEventListener with a setTimeout(0) guard so the current click event doesn't immediately close the menu it just spawned. Handler removes itself when the menu closes. (3) _pickCalStatus: closes the menu and routes through the existing updateTaskStatus(taskId, newStatus) function so all downstream behavior (activity log, notifications, completion guardrails on transitions into 'done', recurrence spawn on complete, save + render) fires normally. CSS: new .cal-status-menu class with 200px min-width, 8px radius, box-shadow scaled for both light and dark modes, cal-status-menu-in keyframe animation for the slide-in reveal, and .cal-status-menu-item hover + .active states. Full diagnostic run stayed green (68/68 + 19/19). JS syntax clean."),
+    advImplemented('bugfix', 'Toast dedup: no more triple-firing of the same notification (Lead Manager Mode fix)', "Root cause: when Lead Manager Mode is on (state.notificationScope == team), a single event like a task's hours changing emits ONE notification per associated recipient — assignee + all leads + project lead + support members can be 3-5 distinct notifications for one action. Each fires its own toast because the scope='mine' recipient filter is bypassed in team mode. All the toasts have the same message text since none of the change-notification helpers include a per-recipient customization. Fix: added a fingerprint-based dedup at the toast layer — if a live toast with the same (type + taskId + actor) is already visible, skip spawning another one for the same event.", "Shipped Jul 20, 2026 in response to: 'toast notifications seem to be tripled of the same notification everytime.' Investigation traced through the notification pipeline. _emitNotification has a 5-second dedup keyed on (type + taskId + actor + recipient) — different recipients bypass it, which is correct at the notifications-log level (each recipient gets their own bell entry). But _spawnToast fires from inside _emitNotification for state.notifications[0] on every call. In personal scope (Mine), the toast is suppressed unless the recipient is the current user, so only 1 toast for any event that names you. In team scope (Lead Manager Mode), the recipient filter is bypassed to show all activity — but that means N emissions to N recipients spawn N toasts for the same underlying event, and _notifyTaskHoursChanged / _notifyTaskDueDateChanged / _notifyTaskStatusChange / _notifyTaskAcknowledged all use the shared _getTaskAssociatedPeople set which is typically 2-4 people, so the same-looking toast triples/quadruples up. Two pieces. (1) Compute fingerprint = type + '|' + taskId + '|' + actorName inside _spawnToast. Scan targetLayer (either toastCenterLayer or toastContainer) for existing .toast-card elements whose data-toast-fingerprint attribute matches; if found, return early — no duplicate spawn. Runs before the concurrent-cap check so we don't evict a legitimate older toast just to spawn a duplicate. (2) Stamp the fingerprint on the just-inserted DOM node via document.getElementById(toastId).dataset.toastFingerprint = fingerprint right after insertAdjacentHTML. Together this means the FIRST recipient's notification for a given event spawns a visible toast, and all subsequent same-fingerprint notifications for that event (whether from the same emit sequence or from a later re-emit within the toast lifetime) are silently deduped in the DOM. When the toast is dismissed or ages out, a genuine new event with the same actor+task would legitimately fire again — that's correct behavior. Fingerprint does NOT include recipient name, since the whole point is that per-recipient duplicates should collapse. Personal-scope users see no change (they only ever spawned 1 toast per event anyway). Team-scope / Lead Manager users now see 1 toast per event instead of N. JS syntax clean; full diagnostic run stayed green (68/68 + 19/19)."),
+    advImplemented('high-impact', 'Reschedule Past-Due: strictly before today + prominent workload button + push-slot preview with manual date', "Three connected fixes. (1) Reschedule Past-Due modal now filters strictly to tasks due before today — no more upcoming or current-day tasks showing as past-due when the workload window is scoped to Next Week or later. (2) The Reschedule Past-Due button on the Team Workload toolbar is now big, gold-red gradient, with a white count badge showing exactly how many tasks need attention — visually calls to the eye instead of hiding among the other sm buttons. (3) Push to Next Slot now opens a preview modal showing the auto-suggested next open date AND a manual date picker — you can accept the suggestion, override with a hand-picked date, or cancel. No more one-click surprises.", "Shipped Jul 20, 2026 in response to: 'Reschedule Past Due seems to show also upcoming and current day task, I just need to reflect past due from todays date backward. Also on workload page i want button to be bigger and stand out. Also, i want push to next slot to give preview of what that next slot day is as well as option to hand select date if needed.' Three fixes bundled since they all live on the Team Workload page and share the Reschedule flow. (1) _collectPastDueTasks: cutoff was range.startDate (workload window's start date). When user scoped to This Week, cutoff was Monday — so past-due showed only Mon-through-yesterday. When scoped to Next Week, cutoff was next Monday — so tasks due TODAY or LATER THIS WEEK appeared as past-due. Fixed to hardcode cutoff = todayStr = formatDateForInput(new Date()). Now anything with dueDate < today is past-due, period. Header rollup label updated from 'Active window: <label>' to 'Only true past-due — nothing current or upcoming.' Empty state copy updated to 'Every incomplete task is either due today or later.' totals.windowLabel repurposed to constant 'Today' since it's no longer window-derived. (2) Toolbar button: was <button class='btn btn-sm'> — indistinguishable from Capacity & PTO, Stand-up Summary, Refresh, Close beside it. Replaced with new .twv-reschedule-btn class: 9px 18px padding, 14px bold text, linear-gradient(135deg, var(--sbg-red) 0%, #a82820 100%) background, 8px border-radius, sbg-red-tinted shadow that lifts on hover (translateY -1px + stronger shadow + slightly brighter gradient), inset-highlight ring for depth. Adds a .twv-reschedule-badge span (white pill, sbg-red text, 22px min-width) that shows the count. renderTeamWorkloadView() opens with a _collectPastDueTasks() call, reads totals.uniqueTaskCount into the badge, hides the badge when count is 0. Dark-mode variant tunes the shadow rgba(232,89,82,0.35). (3) pushTaskToNextOpenSlot refactored: previously computed _findNextOpenSlotDate and immediately did the push with an alert on failure. Now opens pushToSlotPreviewModal (max-width 560px, ID pushToSlotPreviewModal) showing: task title + current due date + days-late chip + lead + hours meta, a 🎯 Suggested Next Slot card (green-tinted panel with the big auto-picked date + explanation 'First day within the next 4 weeks where <lead> is at or below 75% capacity') OR a red-tinted 'No Auto-Slot Available' card explaining why (no capacity set / fully booked / unassigned), and a 📅 Or Hand-Pick a Date section with <input type='date' min='today'> pre-filled to the suggested date (or tomorrow if none) and helper caption 'Any date from today forward. Overrides the auto-suggestion.' Footer has three buttons: Cancel, 🎯 Use Suggested (if there is one), and ✓ Push to Selected Date (uses whatever's in the date input). Both success paths route through _confirmPushTaskToDate(taskId, leadName, nextDate, source) which does the actual mutation (dueDate + rescheduledFromPastDueMeta with new source: 'auto' | 'manual' field for later telemetry), notifies, and re-renders the reschedule modal + workload view. closePushToSlotPreview() and _pushTaskToManualDate() are the modal helpers. Full diagnostic run stayed green (68/68 static + 19/19 live). JS syntax clean."),
+    advImplemented('bugfix', 'Dark mode: navy/blue text no longer disappears into the dark background', "228 places in the CSS used color:var(--sbg-navy) for headings, labels, project names, badges, etc. — and dark navy text on a dark navy background is invisible. Fixed by repurposing --sbg-navy in dark mode to a bright accent blue (#6ea3ff) that reads cleanly on dark surfaces. The ~15 elements that legitimately need a DARK navy background (header, btn-navy, btn-dark, active pills/tabs/segmented controls, this-week badge, task-modal navy bar) are explicitly re-set to a new --sbg-navy-bg-solid variable so they stay dark navy. Links and inline-styled navy text are also handled via attribute selectors.", "Shipped Jul 15, 2026 in response to: 'anything that has blue font or color seems to get lost in the black.' Same root cause across 228 CSS rules: color:var(--sbg-navy) with --sbg-navy sitting at #0a2540 in dark mode — practically the same lightness as the dark background. Text became invisible. Four pieces. (1) Redefined --sbg-navy in body.dark-mode to #6ea3ff — a bright accent blue that's still recognizably blue but reads cleanly on dark surfaces. Also added --sbg-navy-fg (same value, semantic alias) and --sbg-navy-bg-solid (#0a2540) for the explicit dark-navy background use case. Bumped --sbg-navy-2 to #1a3a68 (lighter than v145's #133761) so the hover/depth cue stays visible on dark. (2) Explicit re-navy background overrides for the ~15 elements that legitimately need a dark navy backdrop: .btn-navy, .btn-dark, .pill-tab.active, .view-btn.active, .twv-seg-btn.active, .ssv-scope-btn.active, .twv-strip-bar.bar-some, .twv-lookahead-bar.bar-low, .hi-due-badge.thisweek, .home-sidebar-btn.active, .snapshot-sidebar-btn.active, .tlv-stat-ytd::before, .ssv-stat-card.ssv-stat-allopen::before, .task-modal-navy-bar, task-blue-bar in taskModal, .modal-header.modal-header-navy. All get background: var(--sbg-navy-bg-solid) with color: #fff. Border colors also pinned to sbg-navy-bg-solid so active pills stay solid instead of showing bright border-color. header stays at sbg-navy-bg-solid too. (3) Text-only reinforcement for common heading/label patterns (stage-panel-title, home-section-title, plv-project-name, adv-row-title, modal-title, display, subtitle-heading, display-title) — they inherit from var(--text) explicitly so any override that shadowed --sbg-navy still gives a proper light color. Links use var(--blue) which was already brightened to #58a6ff, hover #79b8ff for the affordance. (4) Attribute-selector safety net for inline styles that hardcode #0a2540 (text or background) — color forced to var(--text) with !important, background forced to sbg-navy-bg-solid with !important. Catches anything the class selectors miss. Note on version chip milestone gradient: uses linear-gradient(135deg, var(--sbg-navy) 0%, var(--sbg-red) 55%, var(--sbg-gold) 100%) — in dark mode this now becomes bright-blue→red→gold instead of navy→red→gold, which reads as a more energetic accent on the dark header. Not fixed since it looks intentional; can be pinned back to navy if the user prefers. Full diagnostic run stayed green (68/68 + 19/19). JS syntax clean."),
+    advImplemented('polish', 'Dark mode compensation layer — covers the biggest visual containers with hardcoded whites', "Follow-up polish pass to make dark mode actually usable across the app. The base v145 :root variable swap already worked for anything using CSS vars, but ~94 places in the CSS still hardcoded #fff / white backgrounds and ~67 places hardcoded dark navy text — those didn't shift. Added a big compensation layer of body.dark-mode overrides that catches the biggest visual containers: main layout surfaces, sidebar, task cards, stage panels, home sections, projects list, training log, team workload, home my workload, project timeline, team insights, master task templates, open slots, tables (task/template/workload), dropdowns + popovers + tooltips + notification dropdown, toast cards, modal internals (task/project/setup + checklist/deliverables/messages/activity), buttons (primary/navy/danger/success/ghost), badges/pills/chips/csi-codes/task-meta-pills, status-fill task cards, headings, subtle/muted/helper text, search + filter inputs, progress bars, task-modal blue bar + hours strip, advancement modal rows, and header stats. Also catches any lingering inline styles with `style='background:#fff'` or `color:#0a2540` via attribute selectors with !important as the last-line defense.", "Shipped Jul 15, 2026 in response to: 'Keep going with Dark Mode to make it look better.' Since I can't render the tracker in a browser here, I couldn't screenshot the actual look — went by heuristic instead. Audited the CSS for hardcoded lightness (94 hardcoded whites, 67 hardcoded dark text colors) and added a ~200-line compensation block right after the base :root override, targeting the 40+ most common container class patterns in the tracker. Six pieces. (1) Layout + sidebar: .main-content, #mainScrollArea, .project-workspace, .workspace-scroll, .content-area all use var(--bg); sidebar, .sidebar-nav, .sidebar-body use var(--surface); project-item hover + active use var(--surface-2). Sidebar footer text (sf-version, sf-built, sf-tagline) shifts to var(--text-dim). (2) All the big Board/Table/Home cards: task-card, stage-panel, board-panel, hi-card, plv-card, ctp-project-row, tlv-stat-tile, twv-card, hmw-card, ptv-project-block, tiv-tile, mst-card, home-section, os-day-tile all use var(--surface) with var(--text) foreground and var(--border) border. Nested surfaces (task-card-body, stage-empty, hi-meta, plv-project-meta, mst-preview) use var(--surface-2) for the slight depth cue. (3) Tables (task-table, mst-table, twv-table, hmw-table) get column-by-column treatment: th uses surface-2, td uses surface, row hover uses surface-2 as the highlight. (4) Dropdowns + popovers + tooltips + toasts (dropdown-menu, assignee-dropdown, filter-dropdown, notification-dropdown, autocomplete-menu, tt-menu, toast-card) all use surface with heavier shadows (rgba(0,0,0,0.6-0.65)) since dark bg needs deeper depth cues. Items and item hover get their own treatment. (5) Modals — task/project/setup modal specifics + checklist/deliverable/message/activity items — all shift to dark surfaces. Task modal's navy bar bumps to var(--sbg-navy-2) so it still reads as an accent band. Buttons: btn base uses surface-2, btn-primary keeps sbg-red for identity, btn-navy/dark uses sbg-navy-2, btn-danger uses --red var, btn-success uses --green, btn-ghost stays transparent. Badges/pills/chips shift to surface-3 with dim text. (6) Fallback safety net — attribute selectors catch inline style='background:#fff' / style='color:#0a2540' patterns with !important. SVG icons with fill='#0a2540' get brightness(1.5) filter so they're visible on dark bg. Also fixed status-fill task cards to use the dark status-fill vars introduced in v145 so the semantic color coding survives. Full diagnostic run stayed green (68/68 + 19/19). Next iteration will surgical-fix any specific screens the user flags as still wrong."),
+    advImplemented('high-impact', 'Dark mode toggle — one-click theme switch in the header, persists across sessions + computers', "New moon/sun toggle button lives in the header next to the notification bell. Click it (or press Alt+D) to flip between light and dark. Preference persists in state.darkMode, saves via saveState, applies on load before render so there's no flash of the wrong theme, and syncs across computers on JSON merge import. Every :root CSS variable — surfaces, borders, text, status fills, semantic colors — has a dark-mode override, so cards, modals, badges, and status pills all shift together cleanly. Brand navy stays for the header, brand red + gold nudge slightly brighter for readability on dark surfaces.", "Shipped Jul 15, 2026 in response to: 'can i get dark mode option toggle on / off.' Straightforward implementation because the CSS was already organized around CSS variables in :root — nothing to refactor across 63,000 lines. Six pieces. (1) CSS body.dark-mode override block redefines every :root variable with dark-palette equivalents: --bg #0d1117, --surface #161b22, --surface-2 #1c2128, --surface-3 #21262d, --border #30363d, --border-strong #484f58, --text #e6edf3, --text-2 #c9d1d9, --text-dim #8b949e, --text-faint #6e7681, --green #3fb950, --blue #58a6ff, --red #f85149, --yellow #e5b24c, --purple #a371f7, --overlay rgba(0,0,0,0.85). Brand colors keep their identity — --sbg-navy stays exactly #0a2540, --sbg-red goes slightly brighter to #e85952 for contrast on dark backgrounds, --sbg-gold goes to #e5b24c. Status fills use deep muted versions: --fill-in-progress #0e3358 (dark blue), --fill-blocked #4a1e1a (dark red), --fill-pending #3d2b47 (dark purple), --fill-done #103b21 (dark green), and matching borders that stay visible against the fills. (2) Cross-cutting affordance overrides for form controls (inputs/textareas/selects use var(--surface-2) background + var(--text) foreground + var(--border) border with red focus outline), placeholder text using var(--text-faint) at 0.7 opacity, and modal backdrops darkening to rgba(0,0,0,0.75) for higher contrast. (3) Toggle button in the header — new <button class='dark-mode-toggle' id='darkModeToggleBtn' onclick='toggleDarkMode()' title='Toggle dark mode (Alt+D)'> with a 🌙 icon in light mode and ☀ in dark mode. Sits between the toast layer and the notification bell wrap. Styled to match the header's semi-transparent affordance idiom: rgba(255,255,255,0.08) background + 1px border ring, 38x38px, 8px radius, hover state that lifts the background + adds a subtle -8deg rotation for feedback. In dark mode the button styles shift to a warm gold-tinted glow (rgba(229,178,76,0.12) background + 0.35-opacity gold border) so it feels intentional as an accent. (4) state.darkMode boolean initialized to false on state load; toggleDarkMode() flips it, saves state, calls _applyDarkModeFromState(). _applyDarkModeFromState() toggles the .dark-mode class on document.body and swaps the icon text between 🌙 and ☀ — same code path serves both the initial-load application and every toggle click, so they never drift. Fires a small confirmation toast on every toggle ('🌙 Dark mode on' or '☀ Light mode on'). (5) Alt+D keyboard shortcut bound once at first script eval via window._sbgDarkModeShortcutBound guard so hot-reload doesn't double-bind. Uses e.preventDefault so the shortcut doesn't leak into browser default behavior. (6) Cross-computer sync via applyImport merge branch — adopts imported.darkMode === true when current is false, same pattern as toastsSilenced (v136). So flipping dark mode on your laptop and merge-importing on your desktop brings the preference with you. Verified via full diagnostic run — static 68/68 + live 19/19 both green after the changes. Some sections of the app with hardcoded #fff / near-white backgrounds may still look slightly out of place in dark mode on first pass — if any specific screen looks wrong, flag it and I'll surgically fix it in a follow-up ship."),
+    advImplemented('polish', 'Build date auto-updates on every ship (via ship.sh helper) — never stale again', "The Built date next to the version chip now updates automatically every ship. Previously it lived in a single meta tag that had to be updated by hand — and every so often that step got forgotten, leaving the chip showing an old date while the version number kept advancing. Now there's a ship.sh helper that always bumps the version chip, the sidebar footer, AND the build date meta tag in one atomic step, plus runs the JS syntax check + full diagnostic suite before copying to outputs. Bad ships never leave the tree.", "Shipped Jul 14, 2026 in response to: 'version chip changes every time but Date Built keeps remaining July 11, i need it to automatically update the current date of version everytime you ship.' Legitimate process gap. The build-date pipeline itself was correct from v122 — one meta tag as source of truth, JS reads it on load and writes to both surfaces (top header .version-built and sidebar footer .sf-built) via data-role='build-date' markers. The failure mode was purely human: on every ship I ran sed to bump the version chip but kept forgetting the parallel sed for the meta tag. Three pieces. (1) Manual fix: updated the meta tag from Jul 11 to Jul 14. (2) Automation: new /home/claude/diagnostics/ship.sh — a bash helper that takes new/old version + name and does the full ship dance atomically: bumps version chip (V<old> → V<new>), bumps sidebar footer version (v<old> · v100 → v<new> · v100), updates meta name='build-date' to $(date +'%b %-d, %Y'), extracts the largest <script> block for JS syntax check via node --check, runs both diagnostic suites (static_audit.js and live_v2.js), and copies the file to /mnt/user-data/outputs with the standard naming convention SBG_Precon_Tracker_YYYY-MM-DD__<vN>_<Name>.html. Exits non-zero on any failure so bad ships never leave the tree. (3) Documentation: the script has a big header comment explaining what it does + a clear Usage line at the top; the failure paths print the log tails so debugging is one-look. Verified end-to-end on this very ship — output line reads 'build date: name=build-date content=Jul 14, 2026' proving the meta tag was updated correctly and the diagnostics ran clean at 68/68 static + 19/19 live before the file was copied. Going forward every ship uses this helper so version + date + tests stay locked together. JS syntax clean."),
+    advImplemented('polish', 'System check: full diagnostic pass — 87 checks green + bulk-reassign notification gap closed', "Comprehensive diagnostic sweep across every task-mutation path in response to a request for a system check after a run of recurring/JSON round-trip fixes. Built two auditors: (1) a static code auditor with 68 pattern-matching checks covering delete paths, saveState invariants, notification-actor plumbing, recurrence auto-regen honors, cross-workstream stage handling, JSON export/import completeness, toast system availability, and state schema completeness — all 68 green; (2) a live jsdom round-trip suite with 19 end-to-end scenarios covering task create/delete, recurrence spawn on edit, series delete with all three scopes (this-only + skipDates, this-and-future + endDate cap, entire-series + endDate cap), auto-regen honoring both markers, cross-workstream duplicate with stage remap, JSON serialization + tombstone application + recurrence cap sync, notification actor attribution, workload avg sanity for bounded scopes, and full round-trip preservation of task IDs — all 19 green. Real bug found + fixed alongside: bulk reassignment (applyReassignment used by Team Workload → Reassign Tasks flow) was silently swapping assignees with no notification to the target user, so they only discovered new tasks by opening the app. Now emits a per-task assignment notification through the standard _notifyTaskAssignment helper on every reassignment, using getCurrentUser() as the actor. Target users now see bell notifications + toast for every task shifted to them in a bulk operation.", "Shipped Jul 14, 2026 in response to: 'Since I have been having so many recent issues with task reuploading properly with deleted, recurring etc. can you run full diagnostic to make sure all task functions are working properly when saving, copying, deleting, recurrence logics etc. System Check.' Built two diagnostic harnesses saved under /home/claude/diagnostics for future runs. static_audit.js walks the tracker source for 68 invariants across 3 broad categories: Delete-path tombstoning (5 checks — all delete sites route through _recordTaskTombstone or _recordTaskTombstonesBulk), state persistence (saveState present in every mutation function), notification actor plumbing (getCurrentUser fallback in every _notify* helper), recurrence auto-regen (endDate check via computeNextRecurrenceDate + skipDates check in generation loop), delete-scope translations (this-only→skipDates, this-and-future→endDate cap, entire-series→endDate=yesterday), spawn-on-edit for newly-recurring tasks, cross-workstream stage remap in duplicate flow, orphan rescue on Board/Table/Tabs, JSON export completeness (state:state wholesale + all 5 metadata counts), merge sync (tombstones + classifications + recurrence caps + notifications dedup+cap), Replace-mode wipe+restore, task modal Stage dropdown workstream-aware, workload avg undated-task handling for bounded scopes, toast helper availability (showToast, sendTestToast, _spawnToast), and 17-field state schema completeness. Second harness live_v2.js instantiates the tracker in jsdom and drives 19 real user scenarios via window.eval (state is let-declared so not on window; eval reaches module scope): S0 seed a project + team, S1 create task, S2 delete records tombstone, S3 add recurrence spawns 8 siblings via ensureSeriesInstancesGenerated, S4 series delete this-only adds skipDates to all survivors, S5 auto-regen respects skipDates (regen adds 0 for skipped date), S6 series delete this-and-future sets endDate cap on all survivors, S7 auto-regen respects endDate cap (regen adds 0 past cap), S8 cross-workstream duplicate remaps all 12 stages to target workstream with 0 orphans, S9 JSON.stringify(payload) succeeds at 502KB, S10 tombstone application removes matching task, S11 recurrence cap sync propagates endDate on matching id, S12 all toast functions exist, S13 notification actor honors getCurrentUser (actorName=TestUser confirmed), S14 workload avg finite + non-negative for this-week bounded scope, S15 full round-trip preserves 12 task IDs, S16 archive does NOT tombstone project (soft-delete confirmed), S17 bidding workstream returns 9 stages, S18 training/events/precon workstreams return non-empty stages. Real bug uncovered by the check-in: applyReassignment (bulk reassign from Team Workload) was silently doing task.assignee = target without emitting any _notifyTaskAssignment call. So a user could open the bulk-reassign modal, redistribute 20 tasks from Sunny to Reshma, and Reshma would never receive a bell notification, toast, or auto-post message. Only discoverable by Reshma manually browsing tasks. Fixed by adding a per-task _notifyTaskAssignment call inside the reassignment loop, computing actor = getCurrentUser() || 'System' once outside the loop, wrapping the call in try/catch defensively. Notification only fires when task.assignee actually changed (skips no-op reassigns where source name and target name happen to resolve to the same person). No other mutation paths were found to be missing notifications during the audit. Diagnostic scripts left in place so future changes can be verified with a single `node static_audit.js && node live_v2.js` run before shipping. Both audit + live tests run clean at 68/68 + 19/19 green."),
+    advImplemented('bugfix', 'Cross-workstream duplicate: cloned tasks now visible on Board + Table (stage remap + Uncategorized rescue)', "When you duplicate a Bidding project into Training / Events / Precon General, cloned tasks are now automatically remapped to the target workstream's first stage so they appear on Board and Table (which group by stage). Existing tasks stranded by earlier duplication now surface in an Uncategorized (🗂) bucket — a gold-accented column on the Board and a pill tab on the sidebar — so you can find them and re-stage manually. Table view highlights orphan stages in gold with a hover tooltip explaining what to do.", "Shipped Jul 14, 2026 in response to: 'When I duplicate an existing project that was under Bidding work sequence and then make the clone copy a training and or ops turnover for example, the task load into workload and other places but do not show on board and table views. Its because board and table views are structured around original bidding stages. Thoughts?' Great self-diagnosis. Root cause: cloned tasks retained their source stage values (e.g., takeoff, estimating) which are Bidding-specific. Board and Table group tasks by matching t.stage against a stage list — but that list came from either the global Bidding STAGES constant (Table) or was hardcoded to iterate Bidding stages (Board's renderAllStages, and the pill-tab bar in renderTabNav). Workload doesn't group by stage, so it worked fine — matching the user's exact observation. Five pieces. (1) Duplicate flow: _copyProjectWithOptions now detects when the target workstream differs from the source, calls getProjectStages(copy) to get the target's stage list, and — if that list has at least one stage — remaps every cloned task's t.stage to targetStages[0].id. So a Bidding → Training clone lands all tasks in Training's first stage (or the 'General' placeholder if the workstream has no stages defined). User can then re-file individual tasks via the task modal's now-workstream-aware Stage dropdown (v135). (2) renderAllStages (Board 'All Stages' view) rewritten to iterate getProjectStages(project) instead of the global STAGES constant. Also computes a bucket of orphan tasks (tasks whose stage isn't in the current workstream's stage list) and, if any exist, appends an Uncategorized (🗂) panel with a gold left border and the source workstream's stage IDs in the header for context, plus an italic caption telling the user to open a task and pick a new stage. Handles the retro-rescue case for projects duplicated before this fix. (3) renderTabNav (pill-tab bar at top of workspace) uses getProjectStages(project) instead of STAGES when building the stage pills. Also appends an Uncategorized pill (with gold left border) when orphans exist, wired to a new '__uncategorized__' activeStageId. (4) getFilteredTasks recognizes state.activeStageId === '__uncategorized__' and returns tasks whose stage isn't in the project's workstream stage list. Selecting the Uncategorized tab shows just those orphans on Board and Table. (5) renderTableRow looks up the stage from getProjectStages(activeProject) first, falls back to global STAGES for legacy tasks (still displays their name as before). When neither matches, sets stage.orphan=true and renders the cell with gold text/background + a tooltip 'Orphan stage — from source workstream. Open task to re-file into this project's workstream.' No more silent fallback to Bidding's first stage, which had been misleading users into thinking cloned Training tasks were correctly in 'Project Setup'. Together: forward-fix (new clones land in valid stages), backward-rescue (existing orphans surface in Uncategorized), and visual honesty (orphans marked in the Table). JS syntax clean."),
+    advImplemented('bugfix', 'Recurring: series delete now sticks after refresh + JSON reupload (endDate + skipDates)', "When you delete a recurring task (or the whole series), the deletion now survives a refresh and JSON re-import. Before: v140 tombstones removed the specific task IDs, but the 60-day auto-regenerator would immediately spawn fresh instances at the SAME dates with new UIDs — so the deletion looked like it reverted. Now the deletion also updates the series' recurrence pattern itself: 'this-only' adds the specific dueDate to a skipDates list, 'this + future' sets endDate to the day before the deleted instance, 'entire series' sets endDate to yesterday. Auto-regen respects all three, so deletions are permanent. Also syncs recurrence caps across computers via merge — so a series ended on Machine A stops auto-regen on Machine B too.", "Shipped Jul 14, 2026 in response to: 'reacuuring task when deleted and or modified hours are not reloading properly and either still remain as a task and or hour modifications do not remain during JSON reupload refresh. Other single task work fine when deleting.' Root cause of the deletion regression: ensureSeriesInstancesGenerated runs on every state load and every JSON import (via refreshAllSeriesInstances) with horizonDays=60. It walks forward from latestDated in the series and generates any missing dates in the rolling 60-day window. When the user deleted future instances, v140 recorded tombstones for those IDs — but the auto-regenerator immediately created NEW instances at the SAME dates with FRESH UIDs, bypassing the tombstones (which tie to specific IDs). Net effect: deletion visually reverted after refresh. Recurring vs single-task divergence explained: single tasks don't have an auto-regen behind them, so tombstones alone were sufficient. Six pieces. (1) _applySeriesDelete rewritten to update the recurrence pattern on surviving members, not just filter tasks out. For scope='this-only': appends existing.dueDate to m.recurrence.skipDates on every surviving series member, and dedups. For scope='this-and-future': computes cap = existing.dueDate - 1 day and sets m.recurrence.endDate = cap on every survivor (only tightens; won't extend an earlier existing cap). For scope='entire-series': sets m.recurrence.endDate = yesterday, so any surviving completed-instance can never spawn future work again. Applied to ALL survivors (not just one) so whichever ends up as template later still respects the trim. (2) _shiftDateStr(dateStr, deltaDays) new helper — YYYY-MM-DD safe date arithmetic used by the delete flow and reusable. (3) ensureSeriesInstancesGenerated auto-regen loop now honors series-level skipDates: builds a Set from all members' recurrence.skipDates on entry, and inside the generation loop skips any nextDate that lands in that set. Same behavior via the existing endDate cap in computeNextRecurrenceDate — if endDate is set and nextDate is beyond, computeNextRecurrenceDate returns null and the loop breaks. So all three delete scopes translate cleanly to auto-regen behavior. (4) _syncImportedTaskRecurrenceCaps new helper — during JSON merge import, walks tasks that exist in both current AND imported state (matched by id) and adopts the imported endDate (only if TIGHTER — earlier date wins) and unions the imported skipDates into local. Called from applyImport's merge branch right after _syncImportedProjectClassifications. So a series that was trimmed on Machine A stops auto-regen on Machine B on import — the trim survives cross-computer merge without needing to touch actual task hours or messages. (5) The hours-regression complaint is likely a side-effect of the same auto-regen bug: when v140 tombstones failed and the auto-regen re-created future instances, those new instances got templated from latestDated (whichever survivor happened to be the latest). If the user had modified hours on an EARLIER instance and picked 'this only', the newly-generated future instances used latestDated's OLD hours — making it look like the modification didn't stick. Fixing the deletion regression (auto-regen no longer creates unwanted instances) resolves this too. For explicit cross-computer hours sync — modifying hours on Machine A and wanting them to overwrite Machine B's version of the same task — Replace mode is still the right tool (Merge preserves the local machine's values on existing tasks by design so today's edits don't get clobbered by yesterday's backup). (6) All existing delete triggers already tombstone via v140; v141 just adds the recurrence-pattern updates alongside. JS syntax clean."),
+    advImplemented('high-impact', 'JSON round-trip: deletions now sync across computers (tombstone system)', "When you delete a task or project on one machine, the deletion now survives export and merge-import to another machine. Previously merge only ADDED items from the backup — it had no way to represent 'this task was intentionally deleted', so tasks removed on one device silently stayed on another. Now every hard-delete records a tombstone (id + timestamp + who deleted it) that persists through the export/import cycle. Merge mode applies imported tombstones, removing matching tasks or projects from the current state. Retention: last 1000 tombstones, prune after 180 days. The import confirmation modal shows how many items will be removed BEFORE you commit — no surprises. Replace mode is unchanged (still wipes and restores wholesale).", "Shipped Jul 14, 2026 in response to: 'JSON seems to not be accounting for deleting task and when reupload they are still there.' Root cause: merge-mode import used _mergeImportedArrays which only adds items whose ID isn't already present. Cross-computer scenario: user deletes task X on Machine A → exports → JSON has no task X → merges into Machine B (which still has X locally) → merge sees project P already exists, doesn't touch its tasks → X stays on Machine B. Same for project deletions. No way for the JSON to say 'this thing was deleted', only 'here's what exists.' Six pieces. (1) Schema — state.tombstones = { tasks: [], projects: [] }, each entry {id, deletedAt, deletedBy, plus title/name/projectId context}. Initialized on state load with 180-day prune + 1000-entry cap for both arrays. (2) Recording helpers — _recordTaskTombstone(project, task), _recordTaskTombstonesBulk(project, tasks), _recordProjectTombstone(project). Dedup by id so re-deleting a doppelganger refreshes rather than duplicates. Include getCurrentUser() as deletedBy for audit trail. (3) Wired into all four delete paths: deleteTask single-task confirm, _openSeriesDeleteDialog fallback, _applySeriesDelete (bulk series delete under this-only / this-and-future / entire-series scopes), bulk delete from Board/Table (state.bulkSelectedTaskIds), and deleteProject hard-delete after name-typed confirm. archiveProject intentionally does NOT tombstone since archive is soft-delete (project stays in state.projects with archived=true, already handled by v134 classification sync). (4) Merge-mode application — _applyImportedTombstones(target, source) called after _syncImportedProjectClassifications. Walks the source tombstones, removes matching tasks from every project in target and matching projects from target.projects. Also merges the imported tombstones into target so subsequent exports carry them forward too — this makes the deletion permanent across the mesh of devices instead of relying on a single source. Returns {taskCount, projectCount} so console + UI can surface what happened. Replace mode unchanged since it already wipes wholesale. (5) Export metadata surfaces tombstone counts — _tombstoneTaskCount and _tombstoneProjectCount added to payload metadata; export success alert now reads 'Deletion tombstones: N tasks, M projects' so users can verify at a glance. (6) Import confirmation modal — computes tombTasksWouldRemove and tombProjectsWouldRemove by intersecting imported tombstone IDs with current-state IDs (only counting tombstones that would ACTUALLY remove something present now). WHAT WILL HAPPEN panel shows a red-highlighted row 'N tasks and M projects will be REMOVED — deleted in the backup, still present here' so the user sees exactly what merge is about to erase. Only appears when there's something to remove. JS syntax clean. Note on retention math: 180 days is longer than typical backup age; 1000 entries handles even heavy pruning workflows without bloating localStorage; tombstones are lightweight (a task tombstone is ~150 bytes vs the full task at 2-8KB), so 1000 tombstones = ~150KB max which is a rounding error next to typical state size."),
     advImplemented('bugfix', 'Notifications: now credit the actual signed-in user, not the task\'s first lead', "When someone other than the primary lead acknowledged or rejected a task, the toast and bell notification credited the FIRST lead of the task (or the project\'s Lead Estimator) instead of the person who actually clicked the button. Now the actual signed-in user shows up in every notification and audit trail. Fixed in two places: acknowledgeTask fallback branch, and confirmRejectCompletion — the two spots that were baking the wrong actor name into the notification's message text.", "Shipped Jul 14, 2026 in response to: 'Toast notifications seem to only mention the first lead in lieu who actually made the change thoughts?' Investigation found two clear cases where the actor was resolved via project/task metadata instead of getCurrentUser(). Three pieces. (1) acknowledgeTask (line ~44518): the else branch that fires when the current user is NOT one of the task's leads was stamping t.acknowledgedBy = leads[0] (the primary lead's name) and passing that downstream as the notification actor. So a support member or admin clicking Acknowledge on a task appeared to the recipient as if the primary lead had done it. Fixed to prefer the signed-in user's name: t.acknowledgedBy = user || leads[0] || t.assignee || ''. Same fix for the leadAck[primary].ackedBy entry so the per-lead audit trail also credits the actual clicker. Falls back to the legacy leads[0] only if no user identity is set (which shouldn't happen once the user has been prompted to identify themselves). (2) confirmRejectCompletion: computed lead = project.leadEstimator and passed lead as the actor to postCompletionRejectionMessage AND _notifyCompletionRejected AND stamped t.completionRejectedBy = lead. So a co-lead or admin rejecting a completion sent an assignee-facing notification saying 'Sunny rejected your completion' when Trent was actually signed in and did the reject. Now computes actor = getCurrentUser() || lead — prefer the actual signed-in user, fall back to the project's designated lead only if no user is identified. That actor value is threaded through to (a) t.completionRejectedBy (audit field), (b) postCompletionRejectionMessage which prints '✗ COMPLETION REJECTED by <actor>' in the auto-post message body, and (c) _notifyCompletionRejected which builds the bell + toast notification. (3) Bonus copy fix: the rejection auto-post message body was labeled 'NOTES FROM LEAD ESTIMATOR' — hardcoded and inaccurate when the actor isn't the lead. Relabeled to 'NOTES FROM REVIEWER' to stay accurate regardless of who actually did the reject. Note: acknowledgeCompletion (sign-off flow) already prompts the user to type their name and verifies they match project.leadEstimator, so its actor attribution is intentional and correct — no change needed there. saveTask and updateTaskStatus already used getCurrentUser() correctly for their notification calls, so no change needed. JS syntax clean."),
     advImplemented('bugfix', 'Recurring: adding recurrence on edit now spawns future instances (and warns if no due date)', "When you create a task without recurrence, save it, then go back and add a weekly/monthly/etc pattern, the tracker now generates the 60-day rolling window of future instances — same treatment new tasks with recurrence-at-creation get. Previously the pattern saved silently but no siblings appeared. Also handles two related gaps: changing an existing recurring task's pattern (e.g., weekly → bi-weekly) tops up the horizon with new-cadence instances; removing recurrence leaves the seriesId intact so any existing siblings can still be managed via the propagation dialog. Success toast confirms how many instances were created; warning toast fires if the task has no due date (which blocks generation).", "Shipped Jul 14, 2026 in response to: 'reacuuring task are not upating , example - I create a task , save and then go back to make it reaccurring it does not show up as multipole current and future task dates.' Root cause: saveTask has two branches — the NEW-task branch (line ~43683) correctly detected recurrence via isRecurringTask and called ensureSeriesInstancesGenerated to seed 60 days of future instances. The EDIT branch (line ~43640) called Object.assign(existing, data) and then jumped straight to _finishSaveTaskEdit with no recurrence detection at all. So adding a recurrence pattern to an existing task saved the pattern field but never spawned siblings — the user saw one dated task and no future dates. Four pieces. (1) Post-Object.assign detection: compute wasRecurringBefore from oldSnapshot.recurrence and isRecurringNow from isRecurringTask(existing). (2) First-time recurrence branch: when transitioning from not-recurring to recurring, seed existing.seriesId = existing.id (self as series root) and call ensureSeriesInstancesGenerated with 60-day horizon. Uses try/catch defensively. Sets a justSpawnedSiblings flag. (3) Pattern-change branch: when both wasRecurringBefore and isRecurringNow are true, compare pattern/interval/daysOfWeek/endDate/skipNonBusinessDays via JSON.stringify. If any differ, top up the horizon (the anchor logic in ensureSeriesInstancesGenerated walks from the latest existing instance forward under the NEW pattern, so future dates reflect the changed cadence while completed history is untouched). Same justSpawnedSiblings flag set. (4) Recurrence-removed branch: leaves seriesId intact so siblings can still be found for propagation/delete dialogs; documents the intent. Propagation-dialog gate: v100 opens the series scope dialog when the edited task is part of a series with incomplete siblings — but that would fire wrongly after we JUST spawned freshly-cloned siblings (nothing to propagate). Added !justSpawnedSiblings guard so the dialog stays out of the way on first-time recurrence and pattern-change spawns. Also added user feedback: showToast success message with the instance count when spawning succeeds, and a warning toast when the pattern saved but no dueDate meant zero instances got created — previously that was a silent failure users had to reverse-engineer. Both toasts use setTimeout(300) so they fire after the modal closes and render completes. JS syntax clean."),
     advImplemented('bugfix', "Workload avg no longer inflates from tasks with no due date — header matches chart", "The 'This Week 46.6h/wk avg' header was including tasks with NO due date, but the daily bars sum (which shows 29.4h scheduled) only counted tasks that actually had a due date in the visible window. The 17.2h gap was undated tasks being invisible in the chart but silently added to the average. Now for any bounded window (This Week, Next Week, 2-Week, 4-Week, This/Next Month), undated tasks are excluded from openHoursInRange so the header and chart agree. Undated tasks still contribute to the 'Total Open Hours' backlog number and remain visible for All Open scope where there's no natural time bound.", "Shipped Jul 11, 2026 in response to: 'The capacity average doesnt match logic for scheduled , why is that?' User's screenshot showed My Workload card with header reading '46.6h / 40h (1 wk) 117%' but daily bars summing to '29.4h scheduled' — a 17.2h phantom gap with no explanation. Root cause: in _aggregateWorkloadByAssignee the branch handling tasks with no dueDate did `s.openHoursInRange += effectiveHrs;` unconditionally for incomplete tasks. Intent was to keep no-date tasks visible in the All Open backlog view, but for bounded windows this made the header number inconsistent with the chart the user was reading — an undated task can't legitimately be 'in this week' since it has no date placing it there. The chart correctly required a dueDate to render a bar, so undated hours were invisible there but silently inflated the header. Fix: detect unbounded scope via range.startDate==null AND range.endDate==null, and only add undated tasks to openHoursInRange when unbounded. For every other scope (This Week, Next Week, two-week, four-week, this-month, next-month) undated tasks skip openHoursInRange so header matches chart exactly. totalOpenHours is added earlier in the loop before any date-window logic, so the 'X open · Yh total · Z projects' sub-headline still shows the full backlog including undated work — nothing goes missing from view, just correctly attributed. Applies to both the Today-page My Workload card AND the Team Workload page since both use the same aggregator. Expected downstream effect: users who had 'phantom' inflated weekly averages will now see numbers matching their visible schedule, and over-capacity flags on bounded scopes will only trigger when actually scheduled work exceeds capacity. JS syntax clean."),
@@ -19113,9 +19635,9 @@ function getDefaultAdvancements() {
     advImplemented('bugfix', 'v119 fix: Training Log nav worked but self-negated; training badges now show in every list view', "Two fixes to the v119 shipment. (1) The Training Log button was firing openTrainingLogView but the page never opened — it dropped you into a random project instead. Root cause was inside the function itself: the batch pass that added state.trainingLogView=false resets across all navigation entry points accidentally added it to openTrainingLogView's own body too, so the function set the flag TRUE then FALSE two lines later before render() ran. Fixed. Audited every other openXView function; no similar self-negation exists. (2) Training tag was only visually indicated on board cards — invisible on Home Today, Look Ahead, Timeline, Alerts, Team Workload drill-down, Status Snapshot, Reassignment, and Unassigned lists. Now shows a compact gold 🎓 badge next to the task title in ALL of these list views.", "Shipped Jul 10, 2026 in response to: 'the training log doesnt do anything, just goes to a project, also i want visible badges showing that task is training, doesnt indicate it very well anywhere right but on board view.' Two pieces. FIX 1 — openTrainingLogView had 8 state-mutation lines: state.trainingLogView=true, then 6 resets of other views... plus state.trainingLogView=false at line 6 that shouldn't have been there. Removed the erroneous line. Ran an audit regex across every openXView function looking for the pattern 'sets stateXView=true AND stateXView=false in same body' — only openTrainingLogView was affected, so no other pages had the same bug. FIX 2 — added _trainingChipMiniHtml(t) helper that returns a small gold 🎓 chip (18px square, gold border, gold background, white glyph, tooltip 'Counts toward training — appears in Training Log') when t.isTraining, empty string otherwise. Splashed the helper into 8 render points across the app. Home Today: 4 hi-title occurrences (unack, pending, sign-off, done sections). Look Ahead: la-task-title. Project Timeline: ptv-task-title. Project Alerts: ai-title (after the escapeHtml title, before the seriesBadge so the two badges stack cleanly). Team Workload drill-down: wlDrill-title (after the critical-flame if present). Status Snapshot: ssv-row-title. Board table row: task-title-cell (after the newBadge and title text, before the checklist/deliverable/best-practice chips). Reassignment title: reassign-title. Unassigned workload: twv-unas-title. New CSS class .training-chip-mini — 18x18 gold square with 1px matching border, 10px glyph centered, subtle drop shadow, 4px horizontal margin so it breathes next to titles. Cursor: help so users get the tooltip on hover. Verified: all 8 replacements succeeded; JS syntax clean; regex-audited that the helper is only called on t.isTraining branches so no wasted DOM emitted for regular tasks. Now every place a task title renders shows the training tag — no more hunting for it."),
     advImplemented('high-impact', 'Training Log — tag any task as counting toward training + dedicated per-person hours page', "Two coordinated additions. (1) NEW '🎓 Count Toward Training' button on the task modal, right next to Mark as Critical. Toggle it on any task — regular day-to-day work like takeoff review, BC configuration, or client walkthroughs can all count as team development. Task stays assigned to its project as normal; this is just a metadata tag. Tagged tasks get a small gold 🎓 TRAINING chip on the board so you can see them at a glance. (2) NEW 🎓 Training Log page in the sidebar. Cross-project view showing team-wide training hours pending, completed this month, YTD, and all-time. Per-person cards break down each estimator's numbers with color-coded metric tiles (red=pending, gold=this month, navy=YTD, gray=all-time). Detailed task list at the bottom filters by person and status; click any row to jump into the task. 📋 Copy Summary button dumps a plain-text roll-up to the clipboard for reporting.", "Shipped Jul 10, 2026 in response to: 'I would like the ability to tag any task as Training in other words I would like to be able to have any normal task be tagged and tracked for assignees to reflect even though it is a task that is normal day to day business as precon manager i consider it to be apart of training as well. I would like also a separate log and or page that shows everyones current and past training hours completed, pending, etc to be used for reference. All task remain as is and assigned to each project accordingly, I just want to tag them.' Design choice: simple boolean task.isTraining flag (no sub-category or notes for v1 — the user asked for the simplest possible tag; sub-categories can be added later if needed for reporting granularity). Ten pieces. (1) Schema — task.isTraining boolean, no backfill needed since all reads use !!task.isTraining which defaults to false for legacy tasks. state.trainingLogView boolean (navigation flag), state.trainingLogFilter ('all'|'pending'|'completed'), state.trainingLogPersonFilter (name or 'all') — all persisted so filters survive reloads. (2) Task modal button — .training-btn mirrors .critical-btn pattern: 🎓 outline when off (dashed 2px gold border, gold text on transparent), filled solid gold when on. Sits inline right of the Critical button in the same form group (relabeled Critical → Critical / Training since both live there now). toggleTaskTraining / setTaskTrainingUI / getTaskTrainingUI follow the exact naming pattern of the critical helpers. Wired into openTaskModal (loads state from t.isTraining) and saveTask (writes via getTaskTrainingUI). Also wired into v118's _buildTaskCopyForDuplicate so training tag carries through Duplicate + Copy to Project. (3) Task card chip — .training-chip renders alongside .critical-chip when task.isTraining, in the standard SBG gold. Overdue-card override flips it to white-on-red matching the critical-chip pattern for legibility. (4) Sidebar button — new .snapshot-sidebar-btn with 🎓 icon, 'Training Log' label, 'Team training hours · pending & completed' subtitle. Sits right after Team Workload in the sidebar. Same button pattern as Team Workload / Project Timeline / Open Slots so it feels native. (5) Navigation wiring — openTrainingLogView sets trainingLogView=true, resets homeView/statusSnapshotView/projectTimelineView/teamWorkloadView/openSlotsView/tiView so mutual exclusion holds. exitTrainingLogView flips it back. A batch pass added state.trainingLogView=false to 15 existing view-switch entry points (selectProject, openHomeView, openStatusSnapshot, all the other openXView functions) so navigating away from Training Log always clears the flag — same pattern that fixed the v54 Team Workload navigation bug. (6) Render dispatcher — new branch after the Team Workload branch: if state.trainingLogView, hide all other views, show #trainingLogView, call renderTrainingLogView. (7) DOM structure — #trainingLogView contains a header (title + subtitle + action buttons Copy Summary / Refresh / Close), a 4-tile stat strip (Pending / This Month / YTD / All Time — each tile has a left-border accent in its section color), a per-person section with #tlvPersonGrid, and a task-detail section with status + person filter dropdowns and #tlvTaskList. (8) Data pipeline — _collectTrainingTasks walks state.projects (skipping archived) and returns {task, project} refs for every isTraining task. _buildTrainingPersonSummary aggregates per-name totals using the v94 support-hours-pro-rating pattern (primary lead gets the primary share; support members split the support percentage evenly). Bucketizes into pending, this-month completed, YTD completed, all-time completed based on task.status === 'done' and task.completedAt against month/year starts. (9) Rendering — renderTrainingLogView writes the stat strip, per-person cards (each showing 4 metric tiles color-matched to the header stats), and the task list (grid with status icon, title, project, stage, person, hours, due date). Empty states for no-training-tagged and no-matches-current-filter. Task rows click through to _openTaskFromTrainingLog which temporarily sets activeProjectId + opens the task modal so users can jump to any training task without leaving the log page context. (10) copyTrainingLogSummary — builds a plain-text summary (header + per-person block with pending / this-month / YTD / all-time hours) and copies to clipboard via navigator.clipboard. Falls back to alert() on non-clipboard environments. CSS: full .tlv-* family (~350 lines) covering header, stat strip, section wrappers, person grid + cards, metric tiles, filter dropdowns, task list rows with responsive column collapse below 1100px, empty states. Uses SBG gold as the primary accent to visually distinguish from Team Workload's blue treatment. Reports and cards use Barlow Condensed for numbers and labels matching the rest of the app's typography system. Verified: JS syntax clean; symbol references all resolve; view element registered in dispatcher; sidebar button routes correctly."),
     advImplemented('high-impact', 'Task actions: Duplicate, Copy to Project, and Save to Master Template all keep full work setup', "Three related fixes to task reuse. (1) NEW '📋 Duplicate' button on the task modal footer creates a copy of the task in the same project — same title (with '(copy)' suffix), stage, source, hours, category, priority, critical flag, checklist, deliverables, best-practice notes, recurrence rule, and role-requirement flags. Resets assignee, leads, support, due date, status, activity log, messages, acknowledgements, and completion state so the duplicate is a fresh work item. Opens the copy for editing so you can immediately assign it and set the due date. (2) NEW '📤 Copy to Project' button opens a picker of your other active projects. Pick one and the task is copied over with its due date recalculated from the target project's bid dates (via the same anchor + offset math the template loader uses). Same field-preservation rules as Duplicate. Prompts to switch to the target project and open the copy after. (3) FIX '⭐ Save to Master Template' was only saving 7 fields (title, stage, category, source, priority, offset, dateAnchor) — hours, checklist, deliverables, best-practice notes, critical flag, and role-requirement flags were silently dropped. Now saves the complete work-defining picture so loading the template into a future project brings back everything you had set up. Update-existing-template-entry path also updated to overwrite the full field set.", "Shipped Jul 10, 2026 in response to: 'I want to be able to duplicate a task within the same project as well as copy to another project if needed. Also, I noticed when saving task to template it does not carry over all the checklist, hours, information. I want to make sure when Duplicating, Copying, Saving to Master Template that it does the following: Keeps Task Name, Stage, Source, Hours, etc in place and starts fresh Assignees, Support, and Due Dates.' Seven pieces. (1) Shared helper _buildTaskCopyForDuplicate(source, targetProject) — the single source of truth for what carries over vs resets in a task clone. Keeps ~20 work-defining fields (title, stage, category, source, priority, offset, dateAnchor, critical, estimatedHours, supportHoursPct, notes, bestPracticeNotes, scopePackage, requiresSenior/Lead1/Lead2, deep-cloned checklist with new item ids + reset done state, deep-cloned deliverables with new ids + reset done state, deep-cloned recurrence rule with parentId stripped so the copy starts a fresh series). Resets ~15 per-instance fields (assignee, leads, support, supportMembers, ballInCourt='Lead', dueDate (recomputed from target project's anchor + offset), status='not-started', all completion/ack/rejection stamps, per-lead leadAck / leadCompletion / bestPracticeAck objects, seriesId=null, reschedule bookkeeping, messages=[], activityLog=[]). Fresh id and createdAt. Same helper drives Duplicate and Copy-to-Project so behavior stays consistent. (2) duplicateTask() — pulls the current editingTaskId, calls _buildTaskCopyForDuplicate with the SAME project as target, appends '(copy)' to the title, pushes to project.tasks, saves state, closes and reopens the modal on the new task so the user lands on the copy ready to edit. (3) copyTaskToProject() — filters state.projects to other non-archived projects, opens a picker modal listing them sorted by soonest bid due. Empty state alerts if there are no other projects. (4) _openCopyToProjectPicker builds the modal DOM on first use (lazy-created since most users won't hit this feature often), showing a source-task preview panel + one clickable row per project with name, task count, and days-left/days-late badge. (5) _confirmCopyToProject builds the copy against the TARGET project so due date is recomputed from the target's own startDate/dueDate/prebidDate/rfiDueDate, pushes to target.tasks, and offers a confirm to switch to the target and open the new task. (6) saveTaskToMasterTemplate now reads and captures the full field set from the modal — reading estimatedHours from taskHours input (quarter-hour rounded), critical from taskCritical checkbox, pendingChecklist and pendingDeliverables arrays (falling back to existing task values if the pending arrays aren't populated), best-practice text from taskBestPractice / taskBestPracticeNotes, requiresSenior/Lead1/Lead2 from their checkboxes. (7) doSaveTaskToTemplate builds a normalized fullFields object with the same 15+ reusable fields and uses it in BOTH the update-existing path (Object.assign onto the duplicate) and the new-entry path (tmpl.tasks.push({ ...fullFields })). Preview confirm dialog now shows an 'Extras' summary line listing what's included (hours, critical flag, checklist count, deliverable count, best-practice presence) so the user can verify. Round-trip verified: template → new project via existing _addTemplateTasksToProject already handled the rich fields (v39 / v49); the gap was purely on the save side, now closed. CSS: new .ctp-source-preview + .ctp-project-row family for the copy-to-project picker — subtle navy accent, hover lift, matches existing modal patterns. JS syntax clean."),
-    advImplemented('polish', 'Top header: milestone version chip matching the sidebar footer', "The version tag in the top-left app header used to render as a plain flat pill ('V116 · Built Jul 10, 2026') while the sidebar footer had the full milestone treatment — navy-red-gold gradient background, shimmer sweep, 🎉 celebration prefix. Now both surfaces match: the top header shows the same milestone chip ('🎉 V139'), and the build date sits next to it as a smaller monospace annotation so nothing is lost.", "Shipped Jul 10, 2026 in response to a screenshot request asking for the milestone chip style to also appear at the top of the app. Three pieces. (1) New CSS class .brand-text .version-stamp.version-stamp-milestone mirrors the sidebar footer .sf-version-milestone treatment: Barlow Condensed 12px 800-weight uppercase, 3x10px padding, 4px radius, navy→red→gold 135deg gradient background, subtle 1px white inner border ring, 2x6px navy drop shadow. Uses the shared milestone-shimmer keyframe animation (3.5s ease-in-out infinite) via a positioned ::after pseudo-element that sweeps a 40%-wide translucent white streak across every ~3s — same feel as the sidebar. (2) New paired .brand-text .version-built class for the build date so it can breathe next to the chip rather than being crammed inside it: JetBrains Mono 9.5px, 55%-opacity white, small margin-left gap. (3) Markup swap: the subtitle span was one flat 'V116 · Built Jul 10, 2026' pill; now it's two elements — the milestone chip carrying '🎉 V139' and a sibling span carrying 'Built Jul 10, 2026'. Same title attribute pattern as the sidebar footer chip. Sidebar footer chip left untouched — it was already correct. JS unchanged."),
+    advImplemented('polish', 'Top header: milestone version chip matching the sidebar footer', "The version tag in the top-left app header used to render as a plain flat pill ('V116 · Built Jul 10, 2026') while the sidebar footer had the full milestone treatment — navy-red-gold gradient background, shimmer sweep, 🎉 celebration prefix. Now both surfaces match: the top header shows the same milestone chip ('🎉 V150'), and the build date sits next to it as a smaller monospace annotation so nothing is lost.", "Shipped Jul 10, 2026 in response to a screenshot request asking for the milestone chip style to also appear at the top of the app. Three pieces. (1) New CSS class .brand-text .version-stamp.version-stamp-milestone mirrors the sidebar footer .sf-version-milestone treatment: Barlow Condensed 12px 800-weight uppercase, 3x10px padding, 4px radius, navy→red→gold 135deg gradient background, subtle 1px white inner border ring, 2x6px navy drop shadow. Uses the shared milestone-shimmer keyframe animation (3.5s ease-in-out infinite) via a positioned ::after pseudo-element that sweeps a 40%-wide translucent white streak across every ~3s — same feel as the sidebar. (2) New paired .brand-text .version-built class for the build date so it can breathe next to the chip rather than being crammed inside it: JetBrains Mono 9.5px, 55%-opacity white, small margin-left gap. (3) Markup swap: the subtitle span was one flat 'V116 · Built Jul 10, 2026' pill; now it's two elements — the milestone chip carrying '🎉 V150' and a sibling span carrying 'Built Jul 10, 2026'. Same title attribute pattern as the sidebar footer chip. Sidebar footer chip left untouched — it was already correct. JS unchanged."),
     advImplemented('bugfix', 'Today page: ✓ Acknowledge Series now actually propagates to the whole series', "Clicking ✓ Acknowledge Series on a recurring row in the Today page's Awaiting Acknowledgment section was only clearing that single instance — the other 27 siblings stayed put. The dedup display (v113) was working, but under the hood the ack was one-at-a-time. Now one click clears the entire series across all its instances, matching the behavior everywhere else in the app.", "Shipped Jul 10, 2026 in response to: 'Today Screen: When clicking Acknowledge Series it does not go away and seems to just be acknowledge recurring task one at a time. Does not work the way it does everywhere else.' Root cause: acknowledgeTaskFromHome was a duplicated stub predating v112 — it set task.acknowledged/acknowledgedBy/acknowledgedAt directly and never routed through acknowledgeTask (which is where v112 wired the _propagateAckToSiblings call). So the button label read 'Series' via v113's row-level display logic, but the click handler behaved like a per-instance ack. Two fixes. (1) acknowledgeTaskFromHome now checks task.seriesId and calls _propagateAckToSiblings(project, task) after the local ack — same pattern acknowledgeTask uses. One click → every unack'd sibling in the series flips to acknowledged with matching acknowledgedBy/acknowledgedAt. (2) acknowledgeAllMyTasksFromHome confirm dialog now uses the grouped count via getMyUnackedGroupCount so the confirm prompt matches the button label. Was 'Acknowledge all 31 new tasks across all projects?' when the button read 'Acknowledge All (4)'. Now reads 'Acknowledge all 4 items (covering 31 instances) across all projects?' when grouping actually collapsed rows, or the plain 'Acknowledge all N tasks' label when it didn't. Belt and suspenders — since each iteration still touches every task individually, propagation would be redundant for the bulk case; leaving that path alone. JS syntax clean."),
-    advImplemented('high-impact', 'Multi-fix: Schedule Calendar integration + Project Alerts dedup + center-screen assignment toast + collapsed sidebar sections + version sync', "Five coordinated fixes shipped together. (1) Recurrence now respects the Schedule Calendar's holiday list (Settings → Schedule Calendar) rather than a duplicate hardcoded federal list — so editing the master holiday list customizes recurrence skips app-wide. (2) Project Alerts UNACKNOWLEDGED tab now deduplicates recurring series into one row with a gold '🔁 N occurrences' badge and '✓ Acknowledge Series' button — matches v113's Today page behavior so users don't see 54+ individual instances of one weekly task. (3) Assignment toasts (task-assigned / task-reassigned) now pop CENTER-SCREEN with a thick red border, gold left accent, gold-red gradient shadow, subtle blur backdrop, and a 2.5s pulse animation — high-visibility 'in your face but not too much' treatment. Other toasts still stack top-right. (4) Currently Bidding sidebar section is now collapsible and defaults to collapsed (matching Past Pursuits + Archived). (5) Version sync — the stale V83 subtitle in the app header has been updated to match the sidebar chip; both now show V139 with today's build date.", "Shipped Jul 10, 2026 in response to a batch of five fixes in one message. Investigation revealed the existing Schedule Calendar system (state.holidays + isWeekend + isHoliday helpers, populated by getDefaultHolidays()) so v114's duplicate _getUsFederalHolidays / _observedHolidayDates / _nthWeekdayOfMonth / _fmtYmd / _usFederalHolidaysCache / _getHolidayName / _isBusinessDay all got deleted. New _isBusinessDay is a thin wrapper around isWeekend + isHoliday. _advanceToBusinessDay inline-formats YMD without needing the helper. The recurrence UI hint now points users to the Schedule Calendar as the authoritative holiday source rather than listing 11 hardcoded federal holidays. Project Alerts dedup: modified the render loop at line ~50164 to build a displayTasks array by iterating tierTasks, tracking seen seriesIds, and using the earliest-dated instance as the series representative. The count label reads 'N items (covers M instances)' when grouping collapsed rows. renderAlertItem now checks seriesId + sibling count for the unacknowledged tier and appends a gold .ai-series-badge next to the title (' 🔁 8 occurrences' pill) with matching v113 gradient. The ✓ Acknowledge button label switches to '✓ Acknowledge Series' when the row represents a series, with a matching tooltip. Cross-project ack works via existing v112 propagation. Sidebar collapse: renderProjectList now emits Currently Bidding wrapped in a clickable .project-section-header with chevron, gated on state.currentlyBiddingExpanded === true. Toggle handler toggleCurrentlyBidding() matches togglePastPursuits pattern (flip + save + re-render). state.currentlyBiddingExpanded added with default false, so all users see it collapsed on first load. Center-screen assignment toast: new #toastCenterLayer div fixed inset:0 z-index:10002 flex-centered with a semi-opaque navy backdrop + 1px blur; assignment toasts spawn here instead of the top-right container. New .toast-assignment-center class overrides positioning + sizing: 500px wide (max 100vw-40px), 3px red border all around with 8px gold left border, gradient background, 60px red shadow with pulse animation. Larger 30px icon, 15px title, 13.5px message. _spawnToast now branches on notif.type — assignment → center layer + add class; other → normal container. _dismissToastElement clears the .has-toast class on the center layer when it empties (fades the backdrop). dismissAllToasts sweeps both layers. Version sync: line 6 meta and line 18955 subtitle both bumped from V83 (which was multiple versions stale) to V139; sidebar footer built-date updated to Jul 10, 2026. Also the sed pass bumped all V114→V139 references throughout the file. JS syntax clean."),
+    advImplemented('high-impact', 'Multi-fix: Schedule Calendar integration + Project Alerts dedup + center-screen assignment toast + collapsed sidebar sections + version sync', "Five coordinated fixes shipped together. (1) Recurrence now respects the Schedule Calendar's holiday list (Settings → Schedule Calendar) rather than a duplicate hardcoded federal list — so editing the master holiday list customizes recurrence skips app-wide. (2) Project Alerts UNACKNOWLEDGED tab now deduplicates recurring series into one row with a gold '🔁 N occurrences' badge and '✓ Acknowledge Series' button — matches v113's Today page behavior so users don't see 54+ individual instances of one weekly task. (3) Assignment toasts (task-assigned / task-reassigned) now pop CENTER-SCREEN with a thick red border, gold left accent, gold-red gradient shadow, subtle blur backdrop, and a 2.5s pulse animation — high-visibility 'in your face but not too much' treatment. Other toasts still stack top-right. (4) Currently Bidding sidebar section is now collapsible and defaults to collapsed (matching Past Pursuits + Archived). (5) Version sync — the stale V83 subtitle in the app header has been updated to match the sidebar chip; both now show V150 with today's build date.", "Shipped Jul 10, 2026 in response to a batch of five fixes in one message. Investigation revealed the existing Schedule Calendar system (state.holidays + isWeekend + isHoliday helpers, populated by getDefaultHolidays()) so v114's duplicate _getUsFederalHolidays / _observedHolidayDates / _nthWeekdayOfMonth / _fmtYmd / _usFederalHolidaysCache / _getHolidayName / _isBusinessDay all got deleted. New _isBusinessDay is a thin wrapper around isWeekend + isHoliday. _advanceToBusinessDay inline-formats YMD without needing the helper. The recurrence UI hint now points users to the Schedule Calendar as the authoritative holiday source rather than listing 11 hardcoded federal holidays. Project Alerts dedup: modified the render loop at line ~50164 to build a displayTasks array by iterating tierTasks, tracking seen seriesIds, and using the earliest-dated instance as the series representative. The count label reads 'N items (covers M instances)' when grouping collapsed rows. renderAlertItem now checks seriesId + sibling count for the unacknowledged tier and appends a gold .ai-series-badge next to the title (' 🔁 8 occurrences' pill) with matching v113 gradient. The ✓ Acknowledge button label switches to '✓ Acknowledge Series' when the row represents a series, with a matching tooltip. Cross-project ack works via existing v112 propagation. Sidebar collapse: renderProjectList now emits Currently Bidding wrapped in a clickable .project-section-header with chevron, gated on state.currentlyBiddingExpanded === true. Toggle handler toggleCurrentlyBidding() matches togglePastPursuits pattern (flip + save + re-render). state.currentlyBiddingExpanded added with default false, so all users see it collapsed on first load. Center-screen assignment toast: new #toastCenterLayer div fixed inset:0 z-index:10002 flex-centered with a semi-opaque navy backdrop + 1px blur; assignment toasts spawn here instead of the top-right container. New .toast-assignment-center class overrides positioning + sizing: 500px wide (max 100vw-40px), 3px red border all around with 8px gold left border, gradient background, 60px red shadow with pulse animation. Larger 30px icon, 15px title, 13.5px message. _spawnToast now branches on notif.type — assignment → center layer + add class; other → normal container. _dismissToastElement clears the .has-toast class on the center layer when it empties (fades the backdrop). dismissAllToasts sweeps both layers. Version sync: line 6 meta and line 18955 subtitle both bumped from V83 (which was multiple versions stale) to V150; sidebar footer built-date updated to Jul 10, 2026. Also the sed pass bumped all V114→V150 references throughout the file. JS syntax clean."),
     advImplemented('high-impact', 'Recurring tasks: skip weekends + US federal holidays by default', "When a recurring occurrence would land on a Saturday, Sunday, or federal holiday, it now rolls forward to the next business day. So a daily task no longer spawns instances on Sat/Sun, a weekly Wednesday task that hits July 4 shifts to July 5+, etc. All 11 US federal holidays covered (New Year's Day, MLK Day, Presidents Day, Memorial Day, Juneteenth, Independence Day, Labor Day, Columbus Day, Veterans Day, Thanksgiving, Christmas) plus their federal observed dates (a Saturday holiday is observed Friday; a Sunday holiday is observed Monday — both are skipped). Behavior can be toggled off per-task via a new 'Skip weekends & US federal holidays' checkbox in the recurrence section of the task modal — default ON for all new recurring tasks, opt out for genuine 7-day rotations like site security.", "Shipped Jul 6, 2026 in response to: 'on recurring events I want to skip weekends and holidays (Example if task is Daily I don't want it for Saturday and Sunday as well).' Six pieces. (1) Federal holiday computation: _getUsFederalHolidays(year) builds a Set of YYYY-MM-DD strings for a given year, cached per-year so we only compute once per session. Uses _nthWeekdayOfMonth for the six rule-based holidays (MLK 3rd Mon Jan, Presidents 3rd Mon Feb, Memorial last Mon May, Labor 1st Mon Sep, Columbus 2nd Mon Oct, Thanksgiving 4th Thu Nov). Fixed-date holidays go through _observedHolidayDates which returns BOTH the actual date and the federal-observance shift (Saturday holiday → Friday observed; Sunday holiday → Monday observed) so pre-gen skips them both. Verified 2026 output: Jul 4 (Sat) correctly generates Jul 3 as observed; both are non-business days. (2) _isBusinessDay(dateStr): returns false when weekend or in the holidays Set. _advanceToBusinessDay(dateStr): rolls forward one day at a time up to a 14-day safety cap. Never infinite-loops even with corrupt data. (3) _getHolidayName(dateStr): reverse lookup that returns 'Independence Day', 'Thanksgiving', etc. — used for readable UI messaging when a date is skipped. (4) computeNextRecurrenceDate: at the end of the pattern-specific date math, checks rec.skipNonBusinessDays (defaults true when unset — always-on behavior for pre-v114 tasks that never had the field). If the computed date is not a business day, rolls forward via _advanceToBusinessDay and re-checks the endDate cap after the shift so a rolled date that jumps past endDate correctly returns null. (5) UI toggle: new checkbox in the recurrence form group '☑ Skip weekends & US federal holidays' with an explanatory hint listing all 11 federal holidays + observed-date rule. Shows/hides with the pattern (visible only when pattern != none). Populated from rec.skipNonBusinessDays on modal load (defaults checked when field is missing). Saved back into rec.skipNonBusinessDays on modal save. Reset to checked on new-task modal open. (6) Backward-compatible: existing pre-generated instances on weekends/holidays stay put (they were legitimately created under old behavior; user can delete/edit them). Only NEW pre-gen (rolling refresh extending the horizon, or new tasks) applies the skip logic. Because rec.skipNonBusinessDays defaults true when unset, existing recurring tasks automatically get the new behavior for future occurrences — no migration needed. JS syntax clean; verified holiday output for 2026 with a standalone Node test."),
     advImplemented('high-impact', 'Awaiting Ack list: collapsed to one row per recurring series with occurrence count badge', "v112 made acking any single instance propagate to the whole series, but the Awaiting Ack list on the Today page + sidebar badge still counted every pre-generated instance separately — so users still SAW 60 rows to work through even though clicking one would clear them all. This ships the display fix: recurring series now show as ONE row in the Awaiting Ack list with a gold '🔁 8 occurrences' badge and an '✓ Acknowledge Series' button. Sidebar badge and Home stats tile show the deduped count too. The row displays the EARLIEST upcoming instance's due date so you know when the next occurrence hits. Non-recurring tasks continue to show as individual rows.", "Shipped Jul 6, 2026 in response to: 'it still has to where a user sees all 60 task to acknowledge every time a recurring task is created (Example) I want acknowledgement for recurring new task to show up as one item and be a series acknowledgement.' Right call — v112 gave you the propagation, but the display was still flooded. Four pieces. (1) renderHomeUnack rewritten to group items by seriesId before rendering. Walks the raw list, uses a Set of seen seriesIds to dedupe, picks the earliest-dated instance as the row's visible representative (soonest due date = most actionable). Non-series tasks pass through as individual entries. Result: series → one row; standalone tasks → one row each. (2) Section header sub-text updated: shows 'N items (covers M instances)' when grouping actually collapsed anything, otherwise the plain 'N task(s)' label. So users see honest bookkeeping about how much work the shorter list actually represents. (3) Row visual: title now has a gold '🔁 N occurrences' pill badge next to it (only when N > 1). The Acknowledge button reads '✓ Acknowledge Series' instead of '✓ Acknowledge' when the row represents a series. Meta line shows 'Next due' instead of 'Due' and appends the cadence (' · weekly' etc.) from _formatRecurrenceCadence. (4) New helper getMyUnackedGroupCount(user): series-deduped version of the count, used by getHomeBadgeCount (sidebar red count badge) and by the Home stats 'Unacknowledged' tile. Both were pulling raw .length before — now they reflect the number of ACTUAL things to do, not the raw instance count. Backward-compatible: the raw getMyUnackedTasksAcrossProjects list is unchanged so any other caller keeps working; the ack Button still routes through acknowledgeTaskFromHome which triggers v112's series propagation to clear all siblings at once. CSS: .hi-series-badge uses SBG gold gradient (matching the v100 milestone badge style) so it visually reads as an SBG-branded 'this is special' pill. JS syntax clean."),
     advImplemented('high-impact', 'Recurring series: series-level acknowledgement — one ack covers the whole series', "Creating a weekly recurring task used to spawn 8+ pre-generated instances that each needed individual acknowledgement — flooding the Awaiting Ack section with '60 items to ack' for a single logical piece of work. Now, acknowledging ANY one instance in a series automatically propagates the ack state to every sibling in that series. Works from the task modal, from the ✓ Acknowledge button on toasts, from the bulk 'Acknowledge All My Tasks' flow, and from Multi-Lead per-lead ack. Also inherits ack state onto newly pre-generated instances when the rolling window extends, so users don't get re-flooded each time the window advances.", "Shipped Jul 6, 2026 in response to: 'When someone creates a recurring task, I would like for it to be a consolidated acknowledgement for that task. In other words each time a recurring task is created a user will have to acknowledge 60 or more items each time and seems flooded. I would like this single acknowledgement function to work across the system including toasts.' Four pieces. (1) New helper _propagateAckToSiblings(project, sourceTask) walks every task in the same series (by seriesId), and for each sibling that isn't already acked: copies task.acknowledged, task.acknowledgedBy, task.acknowledgedAt from the source. Also copies every task.leadAck[user] entry the source has that the sibling is missing — so if a specific co-lead has personally acked, that propagates independently of the flat flag. Never overwrites a sibling's more-recent ack state. (2) Hook in acknowledgeTask: after the existing logTaskAcknowledged + _notifyTaskAcknowledged, if the source task has a seriesId the propagation helper runs. Console logs the count of siblings updated. Notification only fires once for the source ack — no notification spam per sibling. (3) Hook in ensureSeriesInstancesGenerated: after the pre-generation loop creates new instances (either at task-create time or during the rolling refresh on load), if any pre-existing sibling in the series is already acked, its state propagates to the newly created siblings. Uses the earliest-acked source (first ack wins for the whole series). Also handles the partial-multi-lead case where leadAck entries exist without the flat flag being flipped. (4) Task modal series banner (v100): the hint text under the 'Occurrence N of M in a weekly series' banner now explicitly tells the user 'Acknowledging this instance also acknowledges all sibling occurrences in the series' so the behavior is discoverable. Backward-compatible: existing single-task acks continue to work; only series-tagged tasks trigger propagation. JS syntax clean. NOTE: only affects acknowledgement (assignee/lead accepting the work). Completion sign-off remains per-instance since each weekly instance is a separate piece of work that needs its own approval when done."),
@@ -24207,16 +24729,34 @@ function renderTabNav(project) {
   }
 
   if (state.grouping === 'stage') {
-    STAGES.forEach(s => {
+    // v142: Use project's workstream stages instead of global Bidding STAGES.
+    const projectStages = (typeof getProjectStages === 'function')
+      ? getProjectStages(project)
+      : STAGES;
+    const validStageIds = new Set(projectStages.map(s => s.id));
+    projectStages.forEach(s => {
       const tasks = project.tasks.filter(t=>t.stage===s.id);
       const done = tasks.filter(t=>t.status==='done').length;
       tabs.push(`
         <button class="pill-tab ${state.activeStageId===s.id?'active':''}" onclick="selectTab('${s.id}')">
-          <span class="icon">${(typeof renderStageIconHtml === 'function') ? renderStageIconHtml(s) : escapeHtml(s.icon || '🎯')}</span>${s.name}
+          <span class="icon">${(typeof renderStageIconHtml === 'function') ? renderStageIconHtml(s) : escapeHtml(s.icon || '🎯')}</span>${escapeHtml(s.name)}
           <span class="count"><span class="done-num">${done}</span>/${tasks.length}</span>
         </button>
       `);
     });
+    // v142: Add an Uncategorized tab if there are orphaned tasks (stage
+    // values that don't exist in this project's workstream — commonly
+    // from Bidding→Training cross-workstream duplication).
+    const orphanTasks = project.tasks.filter(t => t.stage && !validStageIds.has(t.stage));
+    if (orphanTasks.length > 0) {
+      const done = orphanTasks.filter(t => t.status === 'done').length;
+      tabs.push(`
+        <button class="pill-tab pill-tab-uncategorized ${state.activeStageId==='__uncategorized__'?'active':''}" onclick="selectTab('__uncategorized__')" title="Tasks with a stage value from a different workstream (e.g., after cloning from Bidding)" style="border-left:3px solid var(--sbg-gold, #c07f00);">
+          <span class="icon">🗂</span>Uncategorized
+          <span class="count"><span class="done-num">${done}</span>/${orphanTasks.length}</span>
+        </button>
+      `);
+    }
   } else if (state.grouping === 'assignee') {
     // Group by assignee - with progress bars + %
     const assignees = getAssigneeBuckets(project);
@@ -24652,6 +25192,14 @@ function getFilteredTasks(project) {
   let tasks;
   if (state.grouping === 'stage') {
     if (state.activeStageId === 'all') tasks = project.tasks.slice();
+    else if (state.activeStageId === '__uncategorized__') {
+      // v142: Orphan tasks — stage value doesn't exist in this project's
+      // workstream. Common after cloning a Bidding project into a
+      // different workstream.
+      const projStages = (typeof getProjectStages === 'function') ? getProjectStages(project) : STAGES;
+      const validIds = new Set(projStages.map(s => s.id));
+      tasks = project.tasks.filter(t => t.stage && !validIds.has(t.stage));
+    }
     else tasks = project.tasks.filter(t => t.stage === state.activeStageId);
   } else if (state.grouping === 'assignee') {
     if (state.activeAssignee === 'all') tasks = project.tasks.slice();
@@ -26702,6 +27250,7 @@ function bulkDelete() {
   // ACTIVITY LOG: log the bulk delete with task titles for audit trail
   const taskTitleSummary = tasks.slice(0, 3).map(t => t.title).join(', ') + (tasks.length > 3 ? ` +${tasks.length - 3} more` : '');
   logBulkOperation(project, 'delete', tasks.length, taskTitleSummary);
+  _recordTaskTombstonesBulk(project, tasks); // v140
   project.tasks = project.tasks.filter(t => !idsToDelete.has(t.id));
   state.bulkSelectedTaskIds = [];
   saveState();
@@ -27153,7 +27702,21 @@ function sortTasks(a, b) {
 
 function renderAllStages(project) {
   const container = document.getElementById('allStagesView');
-  container.innerHTML = STAGES.map(stage => {
+  // v142: Use the project's workstream stages, not the global Bidding
+  // STAGES constant. Board was invisible-for-orphaned-tasks when a project
+  // was duplicated into a different workstream — tasks kept their Bidding
+  // stage values but the Board iterated Bidding stages and filtered on ID,
+  // so orphans got dropped silently.
+  const projectStages = (typeof getProjectStages === 'function')
+    ? getProjectStages(project)
+    : STAGES;
+  // Bucket tasks: those with a stage matching one of the project's stages
+  // vs orphans (stage value doesn't exist in the project's stage list).
+  const validStageIds = new Set(projectStages.map(s => s.id));
+  const orphanTasks = (project.tasks || []).filter(t => t.stage && !validStageIds.has(t.stage));
+  const orphanStageIds = Array.from(new Set(orphanTasks.map(t => t.stage)));
+
+  let html = projectStages.map(stage => {
     const tasks = project.tasks.filter(t=>t.stage===stage.id);
     const done = tasks.filter(t=>t.status==='done').length;
     const pct = tasks.length>0 ? Math.round((done/tasks.length)*100) : 0;
@@ -27161,7 +27724,7 @@ function renderAllStages(project) {
       <div class="stage-panel">
         <div class="stage-panel-header" onclick="selectTab('${stage.id}')">
           <div class="stage-panel-title">
-            <span>${stage.icon}</span><span>${stage.name}</span>
+            <span>${stage.icon || ''}</span><span>${escapeHtml(stage.name)}</span>
             <span class="stage-count"><span class="done-num">${done}</span>/${tasks.length}</span>
           </div>
           <div class="stage-panel-stats">
@@ -27177,6 +27740,40 @@ function renderAllStages(project) {
       </div>
     `;
   }).join('');
+
+  // v142: Rescue bucket — surface any tasks whose stage isn't in the
+  // current workstream. Common when a Bidding project was cloned into
+  // Training/Events/Precon General and the source's Bidding stage
+  // values became orphans. Tasks here can still be dragged/opened; user
+  // can re-stage them via the task modal or bulk-assign.
+  if (orphanTasks.length > 0) {
+    const done = orphanTasks.filter(t => t.status === 'done').length;
+    const pct = orphanTasks.length > 0 ? Math.round((done / orphanTasks.length) * 100) : 0;
+    const orphanStageLabel = orphanStageIds.length === 1
+      ? `Original stage: ${escapeHtml(orphanStageIds[0])}`
+      : `${orphanStageIds.length} orphan stage values from source workstream`;
+    html += `
+      <div class="stage-panel stage-panel-uncategorized" style="border-left:3px solid var(--sbg-gold, #c07f00); background: linear-gradient(90deg, rgba(192,127,0,0.04) 0%, transparent 60%);">
+        <div class="stage-panel-header">
+          <div class="stage-panel-title">
+            <span>🗂</span><span>Uncategorized</span>
+            <span class="stage-count"><span class="done-num">${done}</span>/${orphanTasks.length}</span>
+            <span style="font-family:'JetBrains Mono',monospace;font-size:11px;color:var(--sbg-gold, #c07f00);font-weight:400;margin-left:8px;">${orphanStageLabel}</span>
+          </div>
+          <div class="stage-panel-stats">
+            <div class="stage-mini-progress"><div class="stage-mini-progress-fill" style="width:${pct}%"></div></div>
+            <span>${pct}%</span>
+          </div>
+        </div>
+        <div style="padding:8px 16px 12px 16px;font-size:11px;color:var(--text-dim, #6b7687);font-style:italic;">
+          These tasks came from a different workstream when the project was cloned. Open a task and pick a stage that matches this project's workstream to re-file it.
+        </div>
+        <div class="stage-task-grid">${orphanTasks.slice().sort(sortTasks).map(renderTaskCard).join('')}</div>
+      </div>
+    `;
+  }
+
+  container.innerHTML = html;
   attachDragHandlers();
 }
 
@@ -27648,7 +28245,27 @@ function getMemberTitle(name) {
 // TABLE VIEW
 // =============================================================
 function renderTableRow(t, statusLabels) {
-  const stage = STAGES.find(s=>s.id===t.stage) || STAGES[0];
+  // v142: Look up the stage from the active project's workstream stages
+  // first, then fall back to the global STAGES (for legacy tasks or
+  // Bidding). If neither has it, show an "Uncategorized" placeholder
+  // so orphaned tasks (from cross-workstream duplication) are still
+  // visible in the table instead of falling back to Bidding's first
+  // stage which would misleadingly look like "Project Setup".
+  const activeProject = (state.projects || []).find(p => p.id === state.activeProjectId);
+  const projectStages = (activeProject && typeof getProjectStages === 'function')
+    ? getProjectStages(activeProject)
+    : STAGES;
+  let stage = projectStages.find(s => s.id === t.stage);
+  if (!stage) {
+    // Check global STAGES for legacy cases where the task's stage was
+    // recognized under the old Bidding-only scheme
+    const legacyStage = STAGES.find(s => s.id === t.stage);
+    if (legacyStage) {
+      stage = { id: legacyStage.id, name: legacyStage.name, icon: legacyStage.icon, orphan: true };
+    } else {
+      stage = { id: t.stage || 'unknown', name: 'Uncategorized', icon: '🗂', orphan: true };
+    }
+  }
   const dueClass = getDueClass(t.dueDate, t.status);
   const isOverdue = isTaskOverdue(t);
   const isImminent = !isOverdue && isTaskDueImminent(t);
@@ -27813,7 +28430,7 @@ function renderTableRow(t, statusLabels) {
         ${dueInline}${signOffTable}
       </td>
       <td data-col="task" class="task-title-cell" style="font-weight:600;">${newBadgeTable}${escapeHtml(t.title)}${_trainingChipMiniHtml(t)}${clChipTable}${dlvChipTable}${bpChipTable}${isRecurringTask(t) ? `<span class="recurrence-badge" title="${escapeHtml('Recurs: ' + describeRecurrence(t.recurrence))}">🔁</span>` : ''}${buildRescheduledPastDueBadgeHtml(t)}${ackBtnTable}${overrideBtnTable}${overrideBadgeTable}</td>
-      <td data-col="stage"><span class="csi-code" style="color:var(--sbg-navy);background:var(--surface-3);">${stage.icon} ${escapeHtml(stage.name)}</span></td>
+      <td data-col="stage"><span class="csi-code" style="color:${stage.orphan ? 'var(--sbg-gold, #c07f00)' : 'var(--sbg-navy)'};background:${stage.orphan ? 'rgba(192,127,0,0.08)' : 'var(--surface-3)'};" ${stage.orphan ? 'title="Orphan stage — from source workstream. Open task to re-file into this project\'s workstream."' : ''}>${stage.icon || ''} ${escapeHtml(stage.name)}</span></td>
       <td data-col="assignee">${tblLeads.length > 0 ? `<span class="assignee">${avatarHtml}${tblLeadText}</span>` : '<span style="color:var(--text-faint);">Unassigned</span>'}</td>
       <td data-col="support">${supportCell}</td>
       <td data-col="bic">${bicCell}</td>
@@ -29188,7 +29805,21 @@ function renderCalDayCell(d, tasks, project, opts) {
       }
     }
 
-    return `<div class="${classes.join(' ')}" onclick="event.stopPropagation();openTaskModal(null,'${t.id}')" title="${tooltipParts.join(' — ')}">${calNewBadge}${calOverrideBtn}${calOverrideAudit}${calSignoffBadge}${escapeHtml(t.title)}${buildRescheduledPastDueBadgeHtml(t)}${dueFlag}${metaLine}${showMeta ? bicTag : ''}</div>`;
+    // v150: Small status picker button on the calendar event so users
+    // can change status (Done / Blocked / In Progress / Pending / Not
+    // Started) without opening the full task modal. Shown on hover so
+    // the calendar chip stays visually clean by default.
+    const statusIconMap = {
+      'not-started': '○',
+      'in-progress': '◐',
+      'blocked': '⚠',
+      'pending': '⏳',
+      'done': '✓'
+    };
+    const currentStatusIcon = statusIconMap[t.status] || '○';
+    const calStatusPicker = `<button class="cal-status-picker" onclick="event.stopPropagation();_openCalStatusMenu('${escapeAttr(t.id)}', event);" title="Change status (current: ${escapeAttr(t.status || 'not-started')})">${currentStatusIcon}</button>`;
+
+    return `<div class="${classes.join(' ')}" onclick="event.stopPropagation();openTaskModal(null,'${t.id}')" title="${tooltipParts.join(' — ')}">${calNewBadge}${calOverrideBtn}${calOverrideAudit}${calSignoffBadge}${calStatusPicker}${escapeHtml(t.title)}${buildRescheduledPastDueBadgeHtml(t)}${dueFlag}${metaLine}${showMeta ? bicTag : ''}</div>`;
   }).join('');
 
   const moreHtml = extra > 0 ? `<div class="cal-event-more">+ ${extra} more</div>` : '';
@@ -34466,6 +35097,9 @@ document.addEventListener('keydown', e => {
 })();
 
 loadState();
+// v145: Apply persisted dark-mode preference to the body class right
+// after loadState so there's no flash of light-mode UI on refresh.
+_applyDarkModeFromState();
 // Body-level attr drives CSS for the hours table column visibility on first paint
 document.body.setAttribute('data-hours-enabled', state.hoursEnabled ? 'true' : 'false');
 // v103: One-time cleanup for pre-v103 instances whose leadAck /

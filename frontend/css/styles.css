@@ -44,6 +44,418 @@
     --fill-pending-border: #bfa0d0;
     --fill-done-border: #86c9a4;
   }
+  /* v145: Dark mode — overrides the :root vars when body has .dark-mode.
+     Brand colors (navy, red, gold) stay identifiable but slightly brighter
+     for readability on dark surfaces. Every surface/text/border color
+     shifts to a GitHub-dark-inspired palette. Status fills use deep tints
+     that keep their semantic meaning (blue/red/green/purple/gold) without
+     glowing against the dark background. */
+  body.dark-mode {
+    --sbg-navy: #6ea3ff;
+    --sbg-navy-fg: #6ea3ff;
+    --sbg-navy-bg-solid: #0a2540;
+    --sbg-navy-2: #1a3a68;
+    --sbg-red: #e85952;
+    --sbg-red-dark: #c8322b;
+    --sbg-red-light: #f27871;
+    --sbg-gold: #e5b24c;
+    --bg: #0d1117;
+    --surface: #161b22;
+    --surface-2: #1c2128;
+    --surface-3: #21262d;
+    --border: #30363d;
+    --border-strong: #484f58;
+    --text: #e6edf3;
+    --text-2: #c9d1d9;
+    --text-dim: #8b949e;
+    --text-faint: #6e7681;
+    --green: #3fb950;
+    --blue: #58a6ff;
+    --red: #f85149;
+    --yellow: #e5b24c;
+    --purple: #a371f7;
+    --overlay: rgba(0, 0, 0, 0.85);
+    /* Status fill tints — deep muted versions of the light-mode tints */
+    --fill-not-started: #1c2128;
+    --fill-in-progress: #0e3358;
+    --fill-blocked: #4a1e1a;
+    --fill-pending: #3d2b47;
+    --fill-done: #103b21;
+    --fill-overdue: #a51e19;
+    --fill-overdue-border: #f85149;
+    --fill-soon: #4d3b0e;
+    --fill-soon-border: #d4a017;
+    --fill-imminent: #4a2911;
+    --fill-imminent-border: #e85d04;
+    --fill-not-started-border: #30363d;
+    --fill-in-progress-border: #1f6feb;
+    --fill-blocked-border: #a51e19;
+    --fill-pending-border: #7b4397;
+    --fill-done-border: #238636;
+  }
+  /* Nudge sitewide affordances in dark mode where hardcoded lightness slips through */
+  body.dark-mode img.brand-logo-img,
+  body.dark-mode .brand-logo img {
+    filter: none; /* keep the logo crisp */
+  }
+  body.dark-mode input,
+  body.dark-mode textarea,
+  body.dark-mode select {
+    background: var(--surface-2);
+    color: var(--text);
+    border-color: var(--border);
+  }
+  body.dark-mode input:focus,
+  body.dark-mode textarea:focus,
+  body.dark-mode select:focus {
+    outline: 2px solid var(--sbg-red);
+    outline-offset: 1px;
+  }
+  body.dark-mode ::placeholder { color: var(--text-faint); opacity: 0.7; }
+  /* Modal backdrops render darker in dark mode for stronger contrast */
+  body.dark-mode .modal-backdrop { background: rgba(0, 0, 0, 0.75); }
+  body.dark-mode .modal { background: var(--surface); color: var(--text); }
+
+  /* ==================================================================
+     v146 DARK MODE COMPENSATION LAYER
+     Broad-strokes overrides for the biggest visual containers whose
+     backgrounds were hardcoded to #fff / near-white. Keeps the light-mode
+     rules intact and just wraps them for dark. Surface hierarchy:
+       --surface     = main card surface (#161b22)
+       --surface-2   = raised affordance surface (#1c2128)
+       --surface-3   = tinted/nested surface (#21262d)
+     ================================================================== */
+
+  /* Main layout surfaces */
+  body.dark-mode .main-content,
+  body.dark-mode #mainScrollArea,
+  body.dark-mode .project-workspace,
+  body.dark-mode .workspace-scroll,
+  body.dark-mode .content-area { background: var(--bg); color: var(--text); }
+
+  /* Sidebar */
+  body.dark-mode .sidebar,
+  body.dark-mode .sidebar-nav,
+  body.dark-mode .sidebar-body { background: var(--surface); color: var(--text); }
+  body.dark-mode .project-item,
+  body.dark-mode .project-section-title,
+  body.dark-mode .home-sidebar-btn,
+  body.dark-mode .snapshot-sidebar-btn,
+  body.dark-mode .project-section { background: transparent; color: var(--text-2); }
+  body.dark-mode .project-item.active,
+  body.dark-mode .project-item:hover { background: var(--surface-2); color: var(--text); }
+  body.dark-mode .sf-version,
+  body.dark-mode .sf-built,
+  body.dark-mode .sf-tagline { color: var(--text-dim); }
+
+  /* Cards, panels, tiles — the big Board / Table / Home surfaces */
+  body.dark-mode .task-card,
+  body.dark-mode .stage-panel,
+  body.dark-mode .board-panel,
+  body.dark-mode .hi-card,
+  body.dark-mode .hi-item,
+  body.dark-mode .plv-card,
+  body.dark-mode .plv-section,
+  body.dark-mode .plv-search,
+  body.dark-mode .ctp-project-row,
+  body.dark-mode .ctp-project-card,
+  body.dark-mode .tlv-stat-tile,
+  body.dark-mode .tlv-log-row,
+  body.dark-mode .tlv-empty,
+  body.dark-mode .twv-card,
+  body.dark-mode .twv-toolbar,
+  body.dark-mode .hmw-card,
+  body.dark-mode .hmw-toolbar,
+  body.dark-mode .ptv-project-block,
+  body.dark-mode .ptv-milestone,
+  body.dark-mode .ptv-header,
+  body.dark-mode .tiv-tile,
+  body.dark-mode .tiv-body,
+  body.dark-mode .mst-card,
+  body.dark-mode .mst-body,
+  body.dark-mode .home-section,
+  body.dark-mode .home-section-body,
+  body.dark-mode .os-day-tile,
+  body.dark-mode .os-list-item { background: var(--surface); color: var(--text); border-color: var(--border); }
+
+  /* Nested / lighter surfaces */
+  body.dark-mode .task-card-body,
+  body.dark-mode .task-card-notes,
+  body.dark-mode .stage-empty,
+  body.dark-mode .hi-meta,
+  body.dark-mode .home-section-header,
+  body.dark-mode .plv-project-meta,
+  body.dark-mode .tlv-stat-strip,
+  body.dark-mode .ai-rj-desc,
+  body.dark-mode .ai-rj-notes,
+  body.dark-mode .mst-preview,
+  body.dark-mode .twv-detail-table,
+  body.dark-mode .hmw-detail-table { background: var(--surface-2); color: var(--text-2); }
+
+  /* Tables (task table, template tables, workload tables) */
+  body.dark-mode .task-table,
+  body.dark-mode .task-table thead,
+  body.dark-mode .task-table tbody,
+  body.dark-mode table.mst-table,
+  body.dark-mode table.twv-table,
+  body.dark-mode table.hmw-table { background: var(--surface); color: var(--text); }
+  body.dark-mode .task-table th,
+  body.dark-mode table.mst-table th,
+  body.dark-mode table.twv-table th,
+  body.dark-mode table.hmw-table th { background: var(--surface-2); color: var(--text-2); border-color: var(--border); }
+  body.dark-mode .task-table td,
+  body.dark-mode table.mst-table td,
+  body.dark-mode table.twv-table td,
+  body.dark-mode table.hmw-table td { background: var(--surface); color: var(--text); border-color: var(--border); }
+  body.dark-mode .task-table tr:hover td,
+  body.dark-mode table.mst-table tr:hover td,
+  body.dark-mode table.twv-table tr:hover td { background: var(--surface-2); }
+
+  /* Dropdowns, popovers, tooltips */
+  body.dark-mode .dropdown-menu,
+  body.dark-mode .dropdown-content,
+  body.dark-mode .assignee-dropdown,
+  body.dark-mode .filter-dropdown,
+  body.dark-mode .sort-dropdown,
+  body.dark-mode .status-dropdown-menu,
+  body.dark-mode .notification-dropdown,
+  body.dark-mode .notif-dropdown-body,
+  body.dark-mode .notif-dropdown-footer,
+  body.dark-mode .grouping-dropdown,
+  body.dark-mode .autocomplete-menu,
+  body.dark-mode .tt-menu,
+  body.dark-mode [class*="-popover"] { background: var(--surface); color: var(--text); border-color: var(--border); box-shadow: 0 12px 32px rgba(0, 0, 0, 0.6); }
+  body.dark-mode .dropdown-item,
+  body.dark-mode .assignee-option,
+  body.dark-mode .notif-row,
+  body.dark-mode .status-dropdown-item,
+  body.dark-mode .autocomplete-item { color: var(--text); }
+  body.dark-mode .dropdown-item:hover,
+  body.dark-mode .assignee-option:hover,
+  body.dark-mode .notif-row:hover,
+  body.dark-mode .status-dropdown-item:hover { background: var(--surface-2); }
+
+  /* Toasts — center + top-right */
+  body.dark-mode .toast-card,
+  body.dark-mode .toast-body,
+  body.dark-mode .toast-msg { background: var(--surface); color: var(--text); border-color: var(--border); }
+  body.dark-mode .toast-msg { background: transparent; }
+  body.dark-mode .toast-container .toast-card { box-shadow: 0 8px 24px rgba(0, 0, 0, 0.65); }
+
+  /* Modal internals — header bars, body, footers */
+  body.dark-mode .modal-header,
+  body.dark-mode .modal-body,
+  body.dark-mode .modal-footer,
+  body.dark-mode .modal-content,
+  body.dark-mode .modal-section,
+  body.dark-mode .form-group,
+  body.dark-mode .form-group label { background: transparent; color: var(--text); }
+  body.dark-mode .modal-body h3,
+  body.dark-mode .modal-body h4,
+  body.dark-mode .modal-body label,
+  body.dark-mode .modal-body strong { color: var(--text); }
+
+  /* Task modal specifics */
+  body.dark-mode #taskModal .modal,
+  body.dark-mode #projectModal .modal,
+  body.dark-mode #projectSetupModal .modal { background: var(--surface); color: var(--text); }
+  body.dark-mode .task-modal-navy-bar { background: var(--sbg-navy-2); }
+  body.dark-mode .checklist-item,
+  body.dark-mode .deliverable-item,
+  body.dark-mode .message-item,
+  body.dark-mode .activity-item { background: var(--surface-2); color: var(--text); border-color: var(--border); }
+  body.dark-mode .message-item .message-body,
+  body.dark-mode .message-item .message-meta { color: var(--text-2); }
+
+  /* Buttons — inherit dark palette but keep primary-color affordances */
+  body.dark-mode .btn { color: var(--text); background: var(--surface-2); border-color: var(--border); }
+  body.dark-mode .btn:hover { background: var(--surface-3); }
+  body.dark-mode .btn-primary { background: var(--sbg-red); color: #fff; border-color: var(--sbg-red-dark); }
+  body.dark-mode .btn-primary:hover { background: var(--sbg-red-light); }
+  body.dark-mode .btn-navy,
+  body.dark-mode .btn-dark { background: var(--sbg-navy-2); color: #fff; border-color: rgba(255,255,255,0.15); }
+  body.dark-mode .btn-danger { background: var(--red); color: #fff; }
+  body.dark-mode .btn-success { background: var(--green); color: #fff; }
+  body.dark-mode .btn-ghost { background: transparent; color: var(--text-2); }
+  body.dark-mode .btn-sm-outline { border-color: var(--border-strong); color: var(--text-2); }
+
+  /* Pills, badges, chips — keep semantic colors, adjust neutral */
+  body.dark-mode .badge,
+  body.dark-mode .pill,
+  body.dark-mode .chip,
+  body.dark-mode .csi-code,
+  body.dark-mode .task-card-meta-item,
+  body.dark-mode .task-meta-pill { background: var(--surface-3); color: var(--text-2); border-color: var(--border); }
+  body.dark-mode .stage-count,
+  body.dark-mode .count { color: var(--text-dim); }
+
+  /* Status fill classes — tint the whole card in dark mode using fill vars */
+  body.dark-mode .task-card.status-not-started { background: var(--fill-not-started); }
+  body.dark-mode .task-card.status-in-progress { background: var(--fill-in-progress); }
+  body.dark-mode .task-card.status-blocked { background: var(--fill-blocked); }
+  body.dark-mode .task-card.status-pending { background: var(--fill-pending); }
+  body.dark-mode .task-card.status-done { background: var(--fill-done); }
+
+  /* Text overrides for anything using hardcoded navy */
+  body.dark-mode h1, body.dark-mode h2, body.dark-mode h3, body.dark-mode h4, body.dark-mode h5,
+  body.dark-mode .modal-title,
+  body.dark-mode .stage-panel-title,
+  body.dark-mode .home-section-title,
+  body.dark-mode .plv-project-name,
+  body.dark-mode .twv-name,
+  body.dark-mode .hmw-name,
+  body.dark-mode .ptv-project-title,
+  body.dark-mode .adv-row-title,
+  body.dark-mode .tiv-tile-value { color: var(--text); }
+  body.dark-mode .modal-title { color: var(--text); }
+  body.dark-mode .subtle,
+  body.dark-mode .muted,
+  body.dark-mode .helper-text,
+  body.dark-mode small,
+  body.dark-mode .adv-row-meta,
+  body.dark-mode .adv-row-desc { color: var(--text-dim); }
+
+  /* Search / filter bars */
+  body.dark-mode .search-input,
+  body.dark-mode .filter-input,
+  body.dark-mode .plv-search input,
+  body.dark-mode .adv-filter-search input { background: var(--surface-2); color: var(--text); border-color: var(--border); }
+
+  /* Progress bars — keep the fill visible, dark the track */
+  body.dark-mode .stage-mini-progress,
+  body.dark-mode .adv-progress-bar,
+  body.dark-mode .plv-progress,
+  body.dark-mode .health-score-track { background: var(--surface-3); }
+
+  /* Task-modal specific — top navy bar sub-labels, hours strip, etc. */
+  body.dark-mode .task-blue-bar,
+  body.dark-mode .task-hours-strip { background: var(--surface-2); color: var(--text); }
+  body.dark-mode .hours-strip-block { background: var(--surface-3); }
+
+  /* Advancement modal — dark-friendly rows */
+  body.dark-mode .adv-row,
+  body.dark-mode .adv-tier-body,
+  body.dark-mode .adv-stat-row { background: var(--surface); color: var(--text); border-color: var(--border); }
+  body.dark-mode .adv-selected,
+  body.dark-mode .adv-favorited { background: var(--surface-2); }
+  body.dark-mode .adv-row-notes { background: var(--surface-2); color: var(--text-2); }
+
+  /* Milestone chip in top header — keep gradient, ensure text stays bright */
+  body.dark-mode .version-stamp-milestone { color: #fff; }
+
+  /* Header stays navy — reinforce for consistency */
+  body.dark-mode header { background: var(--sbg-navy-bg-solid); }
+  body.dark-mode .header-stats { color: rgba(255,255,255,0.9); }
+
+  /* v147: --sbg-navy was repurposed as bright text color (#6ea3ff) so
+     the 228 places using color:var(--sbg-navy) for headings/labels/etc
+     become readable on dark bg. Elements that legitimately need a NAVY
+     BACKGROUND must be explicitly re-set to --sbg-navy-bg-solid. */
+  body.dark-mode .btn-navy,
+  body.dark-mode .btn-dark,
+  body.dark-mode .btn-dark:hover,
+  body.dark-mode .pill-tab.active,
+  body.dark-mode .view-btn.active,
+  body.dark-mode .twv-seg-btn.active,
+  body.dark-mode .ssv-scope-btn.active,
+  body.dark-mode .twv-strip-bar.bar-some,
+  body.dark-mode .twv-lookahead-bar.bar-low,
+  body.dark-mode .hi-due-badge.thisweek,
+  body.dark-mode .home-sidebar-btn.active,
+  body.dark-mode .snapshot-sidebar-btn.active,
+  body.dark-mode .tlv-stat-ytd::before,
+  body.dark-mode .ssv-stat-card.ssv-stat-allopen::before,
+  body.dark-mode .task-modal-navy-bar,
+  body.dark-mode #taskModal .task-blue-bar,
+  body.dark-mode .modal-header.modal-header-navy { background: var(--sbg-navy-bg-solid); }
+  body.dark-mode .pill-tab.active,
+  body.dark-mode .view-btn.active,
+  body.dark-mode .twv-seg-btn.active,
+  body.dark-mode .ssv-scope-btn.active { color: #fff; border-color: var(--sbg-navy-bg-solid); }
+
+  /* Buttons/badges that use var(--sbg-navy-2) as background (slightly
+     lighter accent) — force the deeper accent navy from v145. */
+  body.dark-mode .btn-dark:hover,
+  body.dark-mode .modal-tab.active { background: var(--sbg-navy-2); }
+
+  /* Text-only usages of --sbg-navy now correctly render as bright blue.
+     Explicit reinforcement for common heading/label patterns. */
+  body.dark-mode .stage-panel-title,
+  body.dark-mode .home-section-title,
+  body.dark-mode .plv-project-name,
+  body.dark-mode .adv-row-title,
+  body.dark-mode .modal-title,
+  body.dark-mode .display,
+  body.dark-mode .subtitle-heading,
+  body.dark-mode .display-title { color: var(--text); }
+
+  /* Semantic --blue was already brightened to #58a6ff — force it on
+     any link/text that uses hardcoded #2563a8 or similar mid-blues. */
+  body.dark-mode a,
+  body.dark-mode a:visited { color: var(--blue); }
+  body.dark-mode a:hover { color: #79b8ff; }
+
+  /* Any remaining stubbornly-navy text from inline styles */
+  body.dark-mode [style*="color:#0a2540"],
+  body.dark-mode [style*="color: #0a2540"],
+  body.dark-mode [style*="color:#0f2d4d"],
+  body.dark-mode [style*="color: #0f2d4d"],
+  body.dark-mode [style*="color:#1a3a5c"],
+  body.dark-mode [style*="color: #1a3a5c"] { color: var(--text) !important; }
+  body.dark-mode [style*="background:#0a2540"],
+  body.dark-mode [style*="background: #0a2540"] { background: var(--sbg-navy-bg-solid) !important; }
+
+  /* Table row hover — subtle in dark */
+  body.dark-mode tr:hover td:not([data-col="stage"]):not([data-col="status"]) { background: var(--surface-2); }
+
+  /* Any bright-white boxes still remaining fall back to surface */
+  body.dark-mode [style*="background:#fff"],
+  body.dark-mode [style*="background: #fff"],
+  body.dark-mode [style*="background:#ffffff"],
+  body.dark-mode [style*="background: #ffffff"],
+  body.dark-mode [style*="background:white"],
+  body.dark-mode [style*="background: white"] { background: var(--surface) !important; }
+  body.dark-mode [style*="color:#0a2540"],
+  body.dark-mode [style*="color: #0a2540"],
+  body.dark-mode [style*="color:#1a1a1a"],
+  body.dark-mode [style*="color: #1a1a1a"] { color: var(--text) !important; }
+
+  /* SVG icons that were dark-navy stroke look wrong on dark bg — invert lightly */
+  body.dark-mode svg.icon-dark-fill,
+  body.dark-mode svg[fill="#0a2540"] { filter: brightness(1.5); }
+
+  /* Toast + notification bell dropdown live on top of the header (already navy) — leave alone */
+  /* v145: Dark mode toggle button in the header — sits between toast layer and bell */
+  .dark-mode-toggle {
+    background: rgba(255, 255, 255, 0.08);
+    border: 1px solid rgba(255, 255, 255, 0.15);
+    color: #fff;
+    width: 38px;
+    height: 38px;
+    border-radius: 8px;
+    cursor: pointer;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-size: 18px;
+    margin-right: 6px;
+    transition: background 0.2s ease, transform 0.15s ease, border-color 0.2s ease;
+    flex-shrink: 0;
+  }
+  .dark-mode-toggle:hover {
+    background: rgba(255, 255, 255, 0.16);
+    border-color: rgba(255, 255, 255, 0.3);
+    transform: rotate(-8deg);
+  }
+  .dark-mode-toggle:active { transform: rotate(-8deg) scale(0.95); }
+  body.dark-mode .dark-mode-toggle {
+    background: rgba(229, 178, 76, 0.12);
+    border-color: rgba(229, 178, 76, 0.35);
+  }
+  body.dark-mode .dark-mode-toggle:hover {
+    background: rgba(229, 178, 76, 0.22);
+    border-color: rgba(229, 178, 76, 0.55);
+  }
   * { box-sizing: border-box; margin: 0; padding: 0; }
   body {
     font-family: 'Inter', sans-serif;
@@ -1851,6 +2263,55 @@
     display: flex;
     gap: 6px;
     flex-wrap: wrap;
+  }
+
+  /* v148: Beefed-up Reschedule Past-Due button — bigger, gold-accented,
+     with a red count badge when there's work to reschedule. Draws the
+     eye without shouting. */
+  .twv-reschedule-btn {
+    display: inline-flex;
+    align-items: center;
+    gap: 8px;
+    padding: 9px 18px;
+    font-size: 14px;
+    font-weight: 700;
+    background: linear-gradient(135deg, var(--sbg-red, #c8322b) 0%, #a82820 100%);
+    color: #fff;
+    border: 1px solid rgba(0, 0, 0, 0.15);
+    border-radius: 8px;
+    box-shadow: 0 2px 8px rgba(200, 50, 43, 0.3), inset 0 1px 0 rgba(255, 255, 255, 0.15);
+    cursor: pointer;
+    transition: transform 0.15s ease, box-shadow 0.15s ease, background 0.15s ease;
+    letter-spacing: 0.3px;
+  }
+  .twv-reschedule-btn:hover {
+    transform: translateY(-1px);
+    box-shadow: 0 4px 14px rgba(200, 50, 43, 0.45), inset 0 1px 0 rgba(255, 255, 255, 0.2);
+    background: linear-gradient(135deg, #d63b34 0%, #b02922 100%);
+  }
+  .twv-reschedule-btn:active {
+    transform: translateY(0);
+    box-shadow: 0 2px 8px rgba(200, 50, 43, 0.3), inset 0 1px 0 rgba(255, 255, 255, 0.1);
+  }
+  .twv-reschedule-btn .twv-reschedule-badge {
+    background: #fff;
+    color: var(--sbg-red, #c8322b);
+    border-radius: 12px;
+    padding: 2px 8px;
+    font-size: 12px;
+    font-weight: 800;
+    min-width: 22px;
+    text-align: center;
+    line-height: 1.3;
+    box-shadow: 0 1px 3px rgba(0, 0, 0, 0.2);
+  }
+  /* Dark mode: same treatment, tuned shadows */
+  body.dark-mode .twv-reschedule-btn {
+    box-shadow: 0 2px 10px rgba(232, 89, 82, 0.35), inset 0 1px 0 rgba(255, 255, 255, 0.12);
+    border-color: rgba(255, 255, 255, 0.1);
+  }
+  body.dark-mode .twv-reschedule-btn:hover {
+    box-shadow: 0 4px 16px rgba(232, 89, 82, 0.5), inset 0 1px 0 rgba(255, 255, 255, 0.18);
   }
 
   /* Toolbar */
@@ -15944,6 +16405,125 @@
     cursor: pointer;
     font-family: 'Barlow Condensed', sans-serif;
     letter-spacing: 0.05em;
+  }
+  /* v150: Inline status picker on calendar events. Small circle glyph that
+     reveals on hover of the parent event. Click opens a floating menu. */
+  .cal-status-picker {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 18px;
+    height: 18px;
+    padding: 0;
+    margin-right: 5px;
+    background: rgba(255, 255, 255, 0.7);
+    border: 1px solid rgba(0, 0, 0, 0.12);
+    border-radius: 50%;
+    color: inherit;
+    font-size: 12px;
+    line-height: 1;
+    font-weight: 700;
+    cursor: pointer;
+    opacity: 0;
+    transform: scale(0.85);
+    transition: opacity 0.15s ease, transform 0.15s ease, background 0.15s ease, border-color 0.15s ease;
+    flex-shrink: 0;
+    vertical-align: -3px;
+  }
+  .cal-event:hover .cal-status-picker {
+    opacity: 1;
+    transform: scale(1);
+  }
+  .cal-status-picker:hover {
+    background: #fff;
+    border-color: var(--sbg-navy, #0a2540);
+    color: var(--sbg-navy, #0a2540);
+    transform: scale(1.15) !important;
+  }
+  body.dark-mode .cal-status-picker {
+    background: rgba(0, 0, 0, 0.35);
+    border-color: rgba(255, 255, 255, 0.2);
+    color: rgba(255, 255, 255, 0.85);
+  }
+  body.dark-mode .cal-status-picker:hover {
+    background: rgba(255, 255, 255, 0.15);
+    border-color: var(--sbg-gold, #e5b24c);
+    color: var(--sbg-gold, #e5b24c);
+  }
+
+  /* v150: Floating status menu triggered by cal-status-picker */
+  .cal-status-menu {
+    position: absolute;
+    z-index: 10050;
+    min-width: 200px;
+    background: var(--surface, #fff);
+    border: 1px solid var(--border, #e6e8eb);
+    border-radius: 8px;
+    box-shadow: 0 8px 28px rgba(0, 0, 0, 0.15), 0 2px 6px rgba(0, 0, 0, 0.08);
+    padding: 6px 0;
+    animation: cal-status-menu-in 0.14s ease-out;
+  }
+  body.dark-mode .cal-status-menu {
+    box-shadow: 0 8px 32px rgba(0, 0, 0, 0.7), 0 2px 8px rgba(0, 0, 0, 0.5);
+  }
+  @keyframes cal-status-menu-in {
+    from { opacity: 0; transform: translateY(-4px); }
+    to   { opacity: 1; transform: translateY(0); }
+  }
+  .cal-status-menu-hdr {
+    padding: 6px 12px 4px;
+    font-family: 'Barlow Condensed', sans-serif;
+    font-size: 11px;
+    font-weight: 700;
+    letter-spacing: 0.1em;
+    text-transform: uppercase;
+    color: var(--text-dim, #6b7687);
+    border-bottom: 1px solid var(--border, #e6e8eb);
+    margin-bottom: 4px;
+  }
+  .cal-status-menu-item {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    width: 100%;
+    padding: 8px 12px;
+    background: transparent;
+    border: none;
+    text-align: left;
+    color: var(--text, #1a1a1a);
+    font-size: 13px;
+    cursor: pointer;
+    transition: background 0.1s ease;
+  }
+  .cal-status-menu-item:hover {
+    background: var(--surface-2, #f0f2f5);
+  }
+  .cal-status-menu-item.active {
+    background: rgba(200, 50, 43, 0.06);
+    font-weight: 600;
+  }
+  body.dark-mode .cal-status-menu-item.active {
+    background: rgba(232, 89, 82, 0.12);
+  }
+  .cal-status-menu-icon {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 22px;
+    height: 22px;
+    font-size: 14px;
+    font-weight: 700;
+    flex-shrink: 0;
+  }
+  .cal-status-menu-label {
+    flex: 1;
+  }
+  .cal-status-menu-current {
+    font-size: 10px;
+    color: var(--text-dim, #6b7687);
+    text-transform: uppercase;
+    letter-spacing: 0.05em;
+    font-weight: 600;
   }
   .cal-event-meta {
     display: block; font-size: 10px; font-weight: 400;

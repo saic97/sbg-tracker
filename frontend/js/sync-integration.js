@@ -39,6 +39,11 @@
     // installNotificationRelay). notificationsLastSeenAt deliberately NOT here:
     // it's each user's own unread pointer.
     notifications: ['notifications'],
+    // v140 deletion tombstones ({tasks:[],projects:[]}, boot-pruned by the
+    // app). Created only on the DELETER's tab; syncing them means every
+    // computer's merge-import honors deletions instead of resurrecting
+    // deleted work from an old backup.
+    tombstones: ['tombstones'],
   };
 
   // If more than this many tasks changed in one project in one pass, it's
@@ -249,6 +254,7 @@
   window.scheduleApiSync = scheduleApiSync;
   window.syncStateFromServer = syncStateFromServer;
   window.performIncrementalSync = performIncrementalSync;
+  window.dedupRecurringDuplicates = function () { return dedupRecurringDuplicates(); };
 
   // ---- import override -----------------------------------------------------
   // The app's applyImport() (app.js) replaces/merges window.state, calls
@@ -390,11 +396,167 @@
       var wrappedRender = function () {
         var r = origRender.apply(this, arguments);
         try { relayFreshNotifications(); } catch (e) {}
+        try { throttledRecurringSweep(); } catch (e) {}
         return r;
       };
       wrappedRender.__sbgNotifHooked = true;
       window.render = wrappedRender;
     }
+  }
+
+  // ---- recurring-duplicate guard ---------------------------------------------
+  // V139's spawn-recurrence-on-edit creates a brand-NEW series each time a
+  // recurring task's recurrence is re-saved, instead of replacing the old one.
+  // Every series then generates its own instances, so the same task piles up
+  // N times per occurrence day (observed live: 295 groups / 849 extra tasks).
+  // Until the monolith fixes that, this boot-time pass deletes same-day copies:
+  // recurring instances only (seriesId + dueDate set), same project + same
+  // normalized title + same due date; keeps the most-progressed copy
+  // (done > in-progress > rest), tie-broken toward the OLDEST series (uids
+  // sort chronologically). Deletions go through the app's own tombstone
+  // recorder so V140 merge-imports keep them dead everywhere.
+  function dedupRecurringDuplicates() {
+    const st = window.state;
+    if (!st || !Array.isArray(st.projects)) return 0;
+    const rank = function (s) { return s === 'done' ? 3 : s === 'in-progress' ? 2 : 1; };
+
+    // Occurrence dates the user deliberately deleted: tombstones that carry a
+    // dueDate (stamped by installTombstoneDateStamp below). The app's rolling
+    // 60-day generator (refreshAllSeriesInstances / ensureSeriesInstances-
+    // Generated, runs on EVERY page load) regenerates deleted future
+    // occurrences with FRESH ids -- id-based tombstones never match, so
+    // deleted recurring tasks resurrected on refresh. Blocking by
+    // seriesId+dueDate kills the respawn no matter what id it got. Completed
+    // tasks are always spared.
+    const blocked = new Set();
+    const tombs = (st.tombstones && st.tombstones.tasks) || [];
+    for (const ts of tombs) {
+      if (ts && ts.seriesId && ts.dueDate) blocked.add(ts.seriesId + '|' + ts.dueDate);
+    }
+
+    let removed = 0;
+    for (const p of st.projects) {
+      if (!Array.isArray(p.tasks) || !p.tasks.length) continue;
+      const doomed = new Set();
+
+      // Pass 1: respawn blocker (tombstoned series+date, non-done only)
+      if (blocked.size) {
+        for (const t of p.tasks) {
+          if (!t || !t.seriesId || !t.dueDate || t.status === 'done') continue;
+          if (blocked.has(t.seriesId + '|' + t.dueDate)) doomed.add(t.id);
+        }
+      }
+
+      // Pass 2: same-day duplicate collapse (recurring instances only)
+      if (p.tasks.length > 1) {
+        const groups = {};
+        for (const t of p.tasks) {
+          if (!t || !t.seriesId || !t.dueDate || doomed.has(t.id)) continue;
+          const key = (t.title || '').trim().toLowerCase() + '|' + t.dueDate;
+          (groups[key] = groups[key] || []).push(t);
+        }
+        for (const key in groups) {
+          const g = groups[key];
+          if (g.length < 2) continue;
+          g.sort(function (a, b) {
+            return (rank(b.status) - rank(a.status)) ||
+                   String(a.seriesId).localeCompare(String(b.seriesId)) ||
+                   String(a.id).localeCompare(String(b.id));
+          });
+          for (let i = 1; i < g.length; i++) doomed.add(g[i].id);
+        }
+      }
+
+      if (!doomed.size) continue;
+      const goners = p.tasks.filter(function (t) { return doomed.has(t.id); });
+      p.tasks = p.tasks.filter(function (t) { return !doomed.has(t.id); });
+      if (typeof window._recordTaskTombstonesBulk === 'function') {
+        try { window._recordTaskTombstonesBulk(p, goners); } catch (e) {}
+      }
+      removed += goners.length;
+    }
+    return removed;
+  }
+
+  // Stamp dueDate onto every task tombstone the app records, so the respawn
+  // blocker above can match regenerated copies (which carry new ids). The
+  // app's own tombstone shape is otherwise untouched.
+  function installTombstoneDateStamp() {
+    const orig = window._recordTaskTombstone;
+    if (typeof orig !== 'function' || orig.__sbgDateStamped) return;
+    const wrapped = function (project, task) {
+      const r = orig.apply(this, arguments);
+      try {
+        if (task && task.id && task.dueDate && window.state && window.state.tombstones) {
+          const list = window.state.tombstones.tasks || [];
+          for (let i = list.length - 1; i >= 0; i--) {
+            if (list[i] && list[i].id === task.id) { list[i].dueDate = task.dueDate; break; }
+          }
+        }
+      } catch (e) {}
+      return r;
+    };
+    wrapped.__sbgDateStamped = true;
+    window._recordTaskTombstone = wrapped;
+  }
+
+  // When the user deletes "this and future" or the "entire series", the
+  // SERIES must stop generating -- otherwise the rolling 60-day generator
+  // invents occurrence dates beyond the ones that existed (and were
+  // tombstoned) at delete time. Cap every surviving member's
+  // recurrence.endDate so computeNextRecurrenceDate returns null past the
+  // cut; the app already honors endDate ("recurrence series has ended").
+  // 'this-only' deletes leave the series alive (date-block handles those).
+  function installSeriesDeleteStop() {
+    const orig = window._applySeriesDelete;
+    if (typeof orig !== 'function' || orig.__sbgSeriesStop) return;
+    const dayBefore = function (iso) {
+      try {
+        const d = new Date(iso + 'T12:00:00');
+        d.setDate(d.getDate() - 1);
+        return d.toISOString().slice(0, 10);
+      } catch (e) { return iso; }
+    };
+    const wrapped = function (project, existing, scope) {
+      const n = orig.apply(this, arguments);
+      try {
+        if (n > 0 && project && existing && (scope === 'this-and-future' || scope === 'entire-series')) {
+          const sid = existing.seriesId || existing.id;
+          const cap = (scope === 'entire-series' || !existing.dueDate)
+            ? dayBefore(new Date().toISOString().slice(0, 10))
+            : dayBefore(existing.dueDate);
+          for (const t of (project.tasks || [])) {
+            if (!t || t.seriesId !== sid || !t.recurrence) continue;
+            if (!t.recurrence.endDate || t.recurrence.endDate > cap) t.recurrence.endDate = cap;
+          }
+        }
+      } catch (e) {}
+      return n;
+    };
+    wrapped.__sbgSeriesStop = true;
+    window._applySeriesDelete = wrapped;
+  }
+
+  // Mid-session sweep: the generator also tops up when a series member is
+  // EDITED, which can resurrect deleted occurrences long after boot. Run the
+  // guard (throttled) after renders; it converges to zero removals.
+  let _lastSweep = 0;
+  function throttledRecurringSweep() {
+    const now = Date.now();
+    if (now - _lastSweep < 5000) return;
+    _lastSweep = now;
+    try {
+      const n = dedupRecurringDuplicates();
+      if (n > 0) {
+        console.log('[sync] recurring guard removed ' + n + ' resurrected/duplicate task(s)');
+        if (typeof window.saveState === 'function') window.saveState();
+        // Deferred so we never recurse into the render wrapper we're called
+        // from; the 5s throttle makes the follow-up pass a no-op.
+        setTimeout(function () {
+          try { if (typeof window.render === 'function') window.render(); } catch (e) {}
+        }, 50);
+      }
+    } catch (e) {}
   }
 
   // ---- hook saveState ------------------------------------------------------
@@ -422,6 +584,8 @@
     installSaveHook();
     installImportOverride();
     installNotificationRelay();
+    installTombstoneDateStamp();
+    installSeriesDeleteStop();
     if (typeof window.state === 'undefined') return;
     if (!window.api || !window.api.enabled) {
       if (window.router && typeof window.router.afterStateLoad === 'function') window.router.afterStateLoad();
@@ -438,6 +602,16 @@
         if (typeof render === 'function') render();
       }
       if (window.router && typeof window.router.afterStateLoad === 'function') window.router.afterStateLoad();
+      // Recurring-duplicate guard: runs once the server copy IS the sync
+      // baseline, so the removals diff-sync as ordinary deletions.
+      try {
+        const n = dedupRecurringDuplicates();
+        if (n > 0) {
+          console.log('[sync] recurring-duplicate guard removed ' + n + ' same-day duplicate task(s)');
+          if (typeof window.saveState === 'function') window.saveState();
+          if (typeof render === 'function') render();
+        }
+      } catch (e) { console.warn('[sync] dedup guard failed:', e && e.message); }
     });
   }
 
