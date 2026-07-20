@@ -3,7 +3,7 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <meta name="application-name" content="SBG Preconstruction Bid Tracker">
-<meta name="version" content="V144">
+<meta name="version" content="V150">
 <!--
   =============================================================================
   BUILD DATE — SINGLE SOURCE OF TRUTH
@@ -13,10 +13,10 @@
   (.sf-built) so they never drift apart again. Format: "MMM D, YYYY".
   =============================================================================
 -->
-<meta name="build-date" content="Jul 14, 2026">
+<meta name="build-date" content="Jul 20, 2026">
 <meta name="created" content="2026-04-18">
 <meta name="built" content="2026-04-19T23:56:18Z">
-<title>SBG Preconstruction Bid Tracker · V144</title>
+<title>SBG Preconstruction Bid Tracker · V150</title>
 <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;600;700&amp;family=Barlow+Condensed:wght@500;600;700;800&amp;family=Inter:wght@300;400;500;600;700;800&amp;display=swap" rel="stylesheet">
 
 <meta name="api-base" content="">
@@ -30,7 +30,7 @@
     <div class="brand-logo" id="brandLogo" onclick="openSettingsModal()" title="Click to edit company logo"><img src="data:image/gif;base64,R0lGODlhAQABAAAAACH5BAEKAAEALAAAAAABAAEAAAICTAEAOw==" alt="Company Logo" style="width:100%;height:100%;object-fit:contain;border-radius:4px;background:#fff;"></div>
     <div class="brand-text">
       <h1>SOURCE BUILDING GR<span class="accent">O</span>UP</h1>
-      <div class="subtitle">Preconstruction · Bid Pursuit Tracker <span class="version-stamp version-stamp-milestone" title="v144 · v100 milestone Recurring Series Overhaul + polish">🎉 V144</span><span class="version-built" data-role="build-date"></span></div>
+      <div class="subtitle">Preconstruction · Bid Pursuit Tracker <span class="version-stamp version-stamp-milestone" title="v150 · v100 milestone Recurring Series Overhaul + polish">🎉 V150</span><span class="version-built" data-role="build-date"></span></div>
     </div>
   </div>
   <div class="header-stats">
@@ -40,6 +40,10 @@
     <div class="toast-container" id="toastContainer"></div>
     <!-- v115: Center-screen layer for assignment toasts — pops center of screen -->
     <div id="toastCenterLayer"></div>
+    <!-- v145: Dark mode toggle — click to flip theme. State persisted. -->
+    <button class="dark-mode-toggle" id="darkModeToggleBtn" onclick="toggleDarkMode()" title="Toggle dark mode (Alt+D)">
+      <span class="dm-icon" id="darkModeIcon">🌙</span>
+    </button>
     <!-- v90: Notification bell — click to open dropdown of recent events. -->
     <div class="notification-bell-wrap">
       <button class="notification-bell-btn" id="notificationBellBtn" onclick="toggleNotificationDropdown()" title="Recent activity">
@@ -320,7 +324,7 @@
     <!-- File creation/version footer — stays pinned to the bottom of the sidebar -->
     <div class="sidebar-footer" id="sidebarFooter">
       <div class="sf-brand">SBG Precon Tracker</div>
-      <div class="sf-version sf-version-milestone" title="v144 · v100 milestone Recurring Series Overhaul + polish">🎉 V144</div>
+      <div class="sf-version sf-version-milestone" title="v150 · v100 milestone Recurring Series Overhaul + polish">🎉 V150</div>
       <div class="sf-created">Created April 18, 2026</div>
       <div class="sf-built" data-role="build-date" title="Exact timestamp when this HTML file was generated"></div>
       <div class="sf-org">Source Building Group · Mansfield, TX</div>
@@ -512,7 +516,7 @@
           </div>
           <div class="twv-actions">
             <button class="btn btn-sm" onclick="openTeamCapacityModal()" title="Set per-estimator capacity ceilings, PTO/vacation days, and team holidays">⚙ Capacity & PTO</button>
-            <button class="btn btn-sm" onclick="openReschedulePastDueModal()" title="Find past-due work from before the current window and push it into upcoming open capacity">🔁 Reschedule Past-Due</button>
+            <button class="btn twv-reschedule-btn" onclick="openReschedulePastDueModal()" title="Find past-due work from before today and push it into upcoming open capacity" id="twvRescheduleBtn">🔁 Reschedule Past-Due<span id="twvRescheduleBadge" class="twv-reschedule-badge" style="display:none;">0</span></button>
             <button class="btn btn-sm" onclick="copyTeamStandupSummary()" title="Copy a stand-up summary to clipboard">📋 Stand-up Summary</button>
             <button class="btn btn-sm" onclick="refreshTeamWorkloadView()" title="Refresh data">↻ Refresh</button>
             <button class="btn btn-sm" onclick="exitTeamWorkloadView()" title="Return to previous view">✕ Close</button>
