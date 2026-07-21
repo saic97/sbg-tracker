@@ -218,7 +218,11 @@
       if (typeof payload.version === 'number') lastVersion = payload.version;
     }
     window.lastSyncedState = JSON.parse(JSON.stringify(window.state));
-    try { localStorage.setItem('sbg_precon_tracker_v3', JSON.stringify(window.state)); } catch(e) {}
+    // Quota-safe (see api.js): failed cache write purges cache + version.
+    try { localStorage.setItem('sbg_precon_tracker_v3', JSON.stringify(window.state)); }
+    catch(e) {
+      try { localStorage.removeItem('sbg_precon_tracker_v3'); localStorage.removeItem('sbg_state_version'); } catch(e2) {}
+    }
     // Track the server's monotonic state version so the next saveState() PUTs
     // the right `expectedVersion` and doesn't trip the optimistic-concurrency
     // guard (which would otherwise treat a fresh post-broadcast save as stale).
