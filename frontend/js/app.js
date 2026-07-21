@@ -1092,6 +1092,35 @@ function _confirmAndApplyImport(importedState, metadata, filename) {
       if (importedTaskTombIds.has(t.id)) tombTasksWouldRemove++;
     });
   });
+  // v154: Preview count of tasks whose editable fields (leads, support,
+  // hours, dueDate, etc.) will be overwritten because the backup has a
+  // newer lastEditedAt. Only counts tasks where a difference actually
+  // exists and the backup is fresher.
+  let fieldsWouldSync = 0;
+  {
+    const importedTaskById = new Map();
+    (importedState.projects || []).forEach(p => {
+      (p.tasks || []).forEach(t => { if (t && t.id) importedTaskById.set(t.id, t); });
+    });
+    (state.projects || []).forEach(p => {
+      (p.tasks || []).forEach(t => {
+        const imp = importedTaskById.get(t.id);
+        if (!imp) return;
+        const localTs = (typeof t.lastEditedAt === 'number') ? t.lastEditedAt : 0;
+        const importTs = (typeof imp.lastEditedAt === 'number') ? imp.lastEditedAt : 0;
+        if (importTs === 0 || localTs >= importTs) return;
+        // Quick difference check on the highest-signal fields
+        const fields = ['leads', 'supportMembers', 'assignee', 'support', 'estimatedHours', 'dueDate', 'title'];
+        const hasDiff = fields.some(f => {
+          const iv = imp[f], lv = t[f];
+          return (typeof iv === 'object' || typeof lv === 'object')
+            ? (JSON.stringify(iv || null) !== JSON.stringify(lv || null))
+            : (iv !== lv);
+        });
+        if (hasDiff) fieldsWouldSync++;
+      });
+    });
+  }
 
   const modalId = 'importConfirmModal';
   const existing = document.getElementById(modalId);
@@ -1120,6 +1149,7 @@ function _confirmAndApplyImport(importedState, metadata, filename) {
             <div><strong style="color:var(--sbg-navy, #0a2540);">${inBothCount}</strong> project${inBothCount === 1 ? '' : 's'} already exist${stateDifferCount > 0 ? ` — <strong style="color:var(--sbg-red, #c8322b);">${stateDifferCount}</strong> ha${stateDifferCount === 1 ? 's' : 've'} different archive/workstream state (will be synced)` : ' (no changes)'}</div>
             <div><strong style="color:#166534;">${newNotifsFromImport}</strong> notification${newNotifsFromImport === 1 ? '' : 's'} added to your bell history</div>
             ${(tombTasksWouldRemove > 0 || tombProjectsWouldRemove > 0) ? `<div><strong style="color:var(--sbg-red, #c8322b);">${tombTasksWouldRemove}</strong> task${tombTasksWouldRemove === 1 ? '' : 's'} and <strong style="color:var(--sbg-red, #c8322b);">${tombProjectsWouldRemove}</strong> project${tombProjectsWouldRemove === 1 ? '' : 's'} will be REMOVED — deleted in the backup, still present here</div>` : ''}
+            ${fieldsWouldSync > 0 ? `<div><strong style="color:var(--sbg-navy, #0a2540);">${fieldsWouldSync}</strong> task${fieldsWouldSync === 1 ? '' : 's'} will have edits ADOPTED (leads / support / hours / dates / title) — backup is fresher</div>` : ''}
             <div><strong style="color:var(--sbg-gold, #c07f00);">User preferences</strong> — signed-in user, toast mute, notification scope, and section-collapse state come from the backup where the current device is at its default</div>
           </div>
         </div>
@@ -1182,6 +1212,14 @@ function applyImport(mode) {
       const recSynced = _syncImportedTaskRecurrenceCaps(state, imported);
       if (recSynced > 0) {
         console.log(`[v141] Synced recurrence caps on ${recSynced} task${recSynced === 1 ? '' : 's'}`);
+      }
+      // v154: Sync task-level edits (leads, support, hours, dueDate,
+      // title, notes, etc.) from imported to local when imported's
+      // lastEditedAt is newer. Closes the gap where lead/support
+      // changes on existing tasks were completely ignored by merge.
+      const fieldsSynced = _syncImportedTaskFields(state, imported);
+      if (fieldsSynced > 0) {
+        console.log(`[v154] Synced field edits on ${fieldsSynced} task${fieldsSynced === 1 ? '' : 's'}`);
       }
       // v140: Apply deletion tombstones from the backup — remove tasks and
       // projects that were deleted on the source machine so cross-computer
@@ -1304,6 +1342,85 @@ function applyImport(mode) {
 // their old recurrence pattern with no endDate, and auto-regen would
 // happily spawn new future instances on B. Syncing the recurrence cap
 // tells B's auto-regen to stop where A stopped.
+// v154: Sync task-level user-editable fields (leads, support, hours,
+// dueDate, title, notes, stage, category, source, scopePackage,
+// ballInCourt, priority, critical) from imported tasks onto existing
+// tasks with matching IDs — using lastEditedAt as the tiebreaker to
+// avoid clobbering fresher local edits. Without this, opening a task
+// on Machine A to swap a lead never propagated to Machine B via merge —
+// merge only added new tasks and left existing ones untouched. The
+// timestamp lets each machine make informed decisions instead of
+// blanket-preserving one side.
+function _syncImportedTaskFields(target, source) {
+  if (!Array.isArray(target.projects) || !Array.isArray(source.projects)) return 0;
+  const importedTaskById = new Map();
+  source.projects.forEach(p => {
+    if (Array.isArray(p.tasks)) {
+      p.tasks.forEach(t => { if (t && t.id) importedTaskById.set(t.id, t); });
+    }
+  });
+  // Fields we sync when imported is fresher. Assignment-type fields lead
+  // the list since they're the most common cross-computer edits; scalars
+  // and small structured fields follow. Fields with their own semantics
+  // (status, acknowledged, completedAt, seriesId, tombstones, recurrence,
+  // rescheduledFromPastDue*) are NOT synced here — they're either owned
+  // by other pipelines or would be dangerous to overwrite.
+  const syncFields = [
+    'leads', 'supportMembers', 'assignee', 'support',
+    'estimatedHours', 'supportHoursPct', 'dueDate', 'dayOffset', 'dateAnchor',
+    'title', 'notes', 'stage', 'category', 'source', 'scopePackage',
+    'ballInCourt', 'priority', 'critical',
+    'requiresSenior', 'requiresLead1', 'requiresLead2',
+    'checklist', 'deliverables'
+  ];
+  let synced = 0;
+  target.projects.forEach(p => {
+    if (!Array.isArray(p.tasks)) return;
+    p.tasks.forEach(t => {
+      if (!t || !t.id) return;
+      const imported = importedTaskById.get(t.id);
+      if (!imported) return;
+      const localTs = (typeof t.lastEditedAt === 'number') ? t.lastEditedAt : 0;
+      const importTs = (typeof imported.lastEditedAt === 'number') ? imported.lastEditedAt : 0;
+      // Skip if we have no signal at all. If neither side has a timestamp,
+      // we can't tell who's fresher — preserve local (safest default).
+      if (importTs === 0) return;
+      // Skip if local is fresher than or equal to import — protect
+      // recent local edits from stale-backup clobber.
+      if (localTs >= importTs) return;
+      // Import is fresher — adopt the tracked fields. Use JSON deep-copy
+      // for arrays/objects so the imported source can't mutate live state.
+      let changed = false;
+      syncFields.forEach(f => {
+        const iv = imported[f];
+        const lv = t[f];
+        // Deep equality via JSON stringify for arrays/objects; direct
+        // compare for primitives. Both handle undefined vs null cleanly.
+        const isSame = (typeof iv === 'object' || typeof lv === 'object')
+          ? (JSON.stringify(iv || null) === JSON.stringify(lv || null))
+          : (iv === lv);
+        if (!isSame) {
+          if (iv === undefined) {
+            // Imported doesn't have the field — skip rather than delete
+            // (imported may just be a partial from an older schema).
+            return;
+          }
+          t[f] = (iv !== null && typeof iv === 'object')
+            ? JSON.parse(JSON.stringify(iv))
+            : iv;
+          changed = true;
+        }
+      });
+      if (changed) {
+        t.lastEditedAt = importTs;
+        t.lastEditedBy = imported.lastEditedBy || t.lastEditedBy || '';
+        synced++;
+      }
+    });
+  });
+  return synced;
+}
+
 function _syncImportedTaskRecurrenceCaps(target, source) {
   if (!Array.isArray(target.projects) || !Array.isArray(source.projects)) return 0;
   // Build a fast lookup: taskId → imported task
@@ -5243,12 +5360,20 @@ function _aggregateWorkloadByAssignee() {
     (project.tasks || []).forEach(task => {
       // Identify all assignees: lead + support members
       const assignees = new Set();
-      // Multi-Lead: t.leads is the authoritative list (added in v24)
-      if (Array.isArray(task.leads)) {
-        task.leads.forEach(n => { if (n && n.trim()) assignees.add(n.trim()); });
-      } else if (task.assignee && task.assignee.trim()) {
-        assignees.add(task.assignee.trim());
-      }
+      // v153: Use getTaskLeads() which handles the empty-array case
+      // correctly. The old inline check `if (Array.isArray(task.leads))`
+      // fell through to add nothing when task.leads was [] (empty array),
+      // and its else-if for task.assignee never fired — so freshly-created
+      // tasks with an assignee set but no leads array populated were
+      // completely absent from the workload aggregator. Missing tasks
+      // fell into the v152 Unassigned bucket instead of appearing under
+      // their assignee. Same pattern as the v95 support-side fix.
+      const leadsArr = (typeof getTaskLeads === 'function')
+        ? getTaskLeads(task)
+        : (Array.isArray(task.leads) && task.leads.length > 0
+            ? task.leads
+            : (task.assignee ? [task.assignee] : []));
+      leadsArr.forEach(n => { if (n && String(n).trim()) assignees.add(String(n).trim()); });
       // Support members — include BOTH the legacy primary (task.support)
       // AND any additional members in task.supportMembers. These are
       // ADDITIVE (a single-support task stores the person in task.support
@@ -5266,11 +5391,25 @@ function _aggregateWorkloadByAssignee() {
         task.supportMembers.forEach(n => { if (n && n.trim()) assignees.add(n.trim()); });
       }
 
+      // v152: Fallback — tasks with no leads AND no support (freshly
+      // created tasks on new projects, or tasks whose assignees got
+      // cleared) previously fell through this whole block with an empty
+      // Set, making them silently invisible in workload. Route them
+      // into a synthetic 'Unassigned' bucket so the user can see the
+      // work exists and needs to be assigned. Skips done tasks (no
+      // reason to surface completed unassigned work).
+      if (assignees.size === 0 && task.status !== 'done') {
+        assignees.add('Unassigned');
+      }
+
       assignees.forEach(name => {
         const s = ensure(name);
         const isLead = (Array.isArray(task.leads) && task.leads.includes(name)) || task.assignee === name;
         if (isLead) s.projectsLead.add(project.id);
         else s.projectsSupport.add(project.id);
+        // v152: Mark the Unassigned bucket so downstream views can style/
+        // filter it distinctly.
+        if (name === 'Unassigned') s.isUnassignedBucket = true;
 
         // Project breakdown
         if (!s.byProject[project.name]) {
@@ -5413,14 +5552,19 @@ function _aggregateWorkloadByAssignee() {
 function _sortWorkloadList(statsArr) {
   const sort = state.workloadSort || 'load-desc';
   const sorted = [...statsArr];
+  // v152: Always pin the Unassigned bucket to the TOP regardless of the
+  // active sort so unassigned work is impossible to miss when scanning
+  // the workload page. Real people sort per user preference beneath it.
+  const unassigned = sorted.filter(s => s.isUnassignedBucket);
+  const rest = sorted.filter(s => !s.isUnassignedBucket);
   // v76: scale capacity by window's week-count so the comparison is honest
   const weeks = (typeof _workloadDateRange === 'function') ? _workloadDateRange().weeks : 1;
   if (sort === 'load-desc') {
-    sorted.sort((a, b) => b.totalOpenHours - a.totalOpenHours || b.totalOpen - a.totalOpen);
+    rest.sort((a, b) => b.totalOpenHours - a.totalOpenHours || b.totalOpen - a.totalOpen);
   } else if (sort === 'name') {
-    sorted.sort((a, b) => a.name.localeCompare(b.name));
+    rest.sort((a, b) => a.name.localeCompare(b.name));
   } else if (sort === 'capacity-pct') {
-    sorted.sort((a, b) => {
+    rest.sort((a, b) => {
       const capA = (a.capacityHrs || 0) * weeks;
       const capB = (b.capacityHrs || 0) * weeks;
       const pctA = capA > 0 ? (a.openHoursInRange / capA) : -1;
@@ -5428,9 +5572,9 @@ function _sortWorkloadList(statsArr) {
       return pctB - pctA;
     });
   } else if (sort === 'overdue') {
-    sorted.sort((a, b) => b.overdue - a.overdue);
+    rest.sort((a, b) => b.overdue - a.overdue);
   }
-  return sorted;
+  return [...unassigned, ...rest];
 }
 
 // Compute load color class — green/yellow/red based on capacity %.
@@ -6351,14 +6495,16 @@ function _buildEstimatorCardHtml(s) {
     ? `${s.openHoursInRange}h scheduled vs ${s.capacityHrs}h/wk × ${weeks} ${weeks === 1 ? 'wk' : 'wks'} = ${effectiveCap}h capacity (${windowLabel})`
     : '';
   return `
-    <div class="twv-card ${loadClass}" data-assignee="${escapeAttr(s.name)}">
+    <div class="twv-card ${loadClass}${s.isUnassignedBucket ? ' twv-card-unassigned' : ''}" data-assignee="${escapeAttr(s.name)}">
       <div class="twv-card-header">
-        <div class="twv-card-avatar" style="background:${avatarColor(s.name)};">${escapeHtml(initials)}</div>
+        <div class="twv-card-avatar" style="background:${s.isUnassignedBucket ? 'var(--sbg-red, #c8322b)' : avatarColor(s.name)};">${s.isUnassignedBucket ? '?' : escapeHtml(initials)}</div>
         <div class="twv-card-name-row">
-          <div class="twv-card-name">${escapeHtml(s.name)}</div>
-          <div class="twv-card-role">${s.role === 'lead' ? 'Lead only' : (s.role === 'support' ? 'Support only' : 'Lead + Support')}</div>
+          <div class="twv-card-name">${escapeHtml(s.name)}${s.isUnassignedBucket ? '<span class="twv-unassigned-flag" title="Tasks with no lead or support member set">needs assignment</span>' : ''}</div>
+          <div class="twv-card-role">${s.isUnassignedBucket ? `${s.totalOpen} task${s.totalOpen === 1 ? '' : 's'} without an assignee` : (s.role === 'lead' ? 'Lead only' : (s.role === 'support' ? 'Support only' : 'Lead + Support'))}</div>
         </div>
-        <button class="btn btn-sm twv-card-reassign" onclick="openReassignModal('${escapeAttr(s.name)}')" title="Reassign tasks from ${escapeAttr(s.name)} to another estimator">↪ Reassign</button>
+        ${s.isUnassignedBucket
+          ? `<button class="btn btn-sm twv-card-reassign" onclick="openReassignModal('${escapeAttr(s.name)}')" title="Bulk-assign these tasks to an estimator">👥 Assign</button>`
+          : `<button class="btn btn-sm twv-card-reassign" onclick="openReassignModal('${escapeAttr(s.name)}')" title="Reassign tasks from ${escapeAttr(s.name)} to another estimator">↪ Reassign</button>`}
       </div>
 
       ${s.capacityHrs > 0 ? `
@@ -7747,11 +7893,19 @@ function _getReassignTaskList() {
   (state.projects || []).filter(p => !p.archived).forEach(project => {
     (project.tasks || []).forEach(task => {
       if (task.status === 'done') return;
+      // v152: Special "Unassigned" bucket matches tasks with NO leads
+      // and NO support members set. Lets the user bulk-assign fresh
+      // tasks to a real person from the same modal.
+      const isUnassignedTask = (!Array.isArray(task.leads) || task.leads.length === 0)
+        && (!task.assignee || !task.assignee.trim())
+        && (!Array.isArray(task.supportMembers) || task.supportMembers.length === 0)
+        && (!task.support || !task.support.trim());
       const isLead = (Array.isArray(task.leads) && task.leads.includes(sourceAssignee)) ||
                      task.assignee === sourceAssignee;
       const isSupport = (Array.isArray(task.supportMembers) && task.supportMembers.includes(sourceAssignee)) ||
                         task.support === sourceAssignee;
-      if (!isLead && !isSupport) return;
+      const matchesUnassigned = sourceAssignee === 'Unassigned' && isUnassignedTask;
+      if (!isLead && !isSupport && !matchesUnassigned) return;
       if (search) {
         const hay = (task.title + ' ' + project.name).toLowerCase();
         if (!hay.includes(search)) return;
@@ -7850,27 +8004,54 @@ function applyReassignment() {
     (project.tasks || []).forEach(task => {
       if (!_reassignSelected.has(task.id)) return;
       const oldAssignee = task.assignee || '';
-      // Update lead chips
-      if (Array.isArray(task.leads)) {
-        const idx = task.leads.indexOf(sourceAssignee);
-        if (idx !== -1) {
-          task.leads[idx] = target;
-          // Dedupe in case target was already a lead
-          task.leads = Array.from(new Set(task.leads));
-          task.assignee = task.leads[0] || '';
+      // v152: Unassigned bucket handling — when reassigning from the
+      // synthetic 'Unassigned' bucket, we're ADDING a lead to a task
+      // that had no assignee, not swapping one for another.
+      if (sourceAssignee === 'Unassigned') {
+        if (Array.isArray(task.leads)) {
+          if (task.leads.indexOf(target) === -1) task.leads.push(target);
+        } else {
+          task.leads = [target];
         }
-      } else if (task.assignee === sourceAssignee) {
-        task.assignee = target;
-      }
-      // Update support
-      if (Array.isArray(task.supportMembers)) {
-        const idx = task.supportMembers.indexOf(sourceAssignee);
-        if (idx !== -1) {
-          task.supportMembers[idx] = target;
-          task.supportMembers = Array.from(new Set(task.supportMembers));
+        task.assignee = task.leads[0];
+      } else {
+        // v153: Same empty-array bug pattern as v152 aggregator. The old
+        // logic used `if (Array.isArray(task.leads)) { ... } else if
+        // (task.assignee === sourceAssignee) { ... }` — if task.leads was
+        // an empty array, the truthy branch ran but indexOf returned -1
+        // (nothing to swap), then the else-if never fired, and
+        // task.assignee never got updated. Same fix: run both blocks
+        // unconditionally, so both leads[] and task.assignee stay in
+        // sync when a task has one but not the other.
+        // Update lead chips
+        if (Array.isArray(task.leads) && task.leads.length > 0) {
+          const idx = task.leads.indexOf(sourceAssignee);
+          if (idx !== -1) {
+            task.leads[idx] = target;
+            // Dedupe in case target was already a lead
+            task.leads = Array.from(new Set(task.leads));
+            task.assignee = task.leads[0] || '';
+          }
         }
-      } else if (task.support === sourceAssignee) {
-        task.support = target;
+        // Legacy / fallback — swap assignee scalar too if it matches
+        if (task.assignee === sourceAssignee) {
+          task.assignee = target;
+          // Keep leads array in sync if it exists but was empty
+          if (Array.isArray(task.leads) && task.leads.length === 0) {
+            task.leads = [target];
+          }
+        }
+        // Update support
+        if (Array.isArray(task.supportMembers) && task.supportMembers.length > 0) {
+          const idx = task.supportMembers.indexOf(sourceAssignee);
+          if (idx !== -1) {
+            task.supportMembers[idx] = target;
+            task.supportMembers = Array.from(new Set(task.supportMembers));
+          }
+        }
+        if (task.support === sourceAssignee) {
+          task.support = target;
+        }
       }
       // v143: emit an assignment notification per reassigned task so the
       // new assignee actually finds out. Previously bulk reassign silently
@@ -7879,6 +8060,11 @@ function applyReassignment() {
       if (oldAssignee !== task.assignee && typeof _notifyTaskAssignment === 'function') {
         try { _notifyTaskAssignment(project, task, oldAssignee, task.assignee, actor); } catch (_) {}
       }
+      // v154: Stamp edit timestamp so this reassignment shows up as
+      // a fresher edit than any older backup that had the previous
+      // assignee — merge sync will adopt this side.
+      task.lastEditedAt = Date.now();
+      task.lastEditedBy = actor;
       count++;
     });
   });
@@ -11376,28 +11562,55 @@ function renderProjectHoursRollup() {
     }
   });
 
-  // v77: Per-person breakdown — multi-Lead aware (split equally between
-  // co-Leads). Tracks total / done / remaining separately so the rollup
-  // shows the full accounting, not just remaining.
+  // v151: Per-person breakdown now correctly pro-rates hours between
+  // leads and support members. Previously only leads showed up — support
+  // members were invisible in the Projected Hours rollup — and leads
+  // carried the FULL task hours even when a support member was helping.
+  // Now: leads get (hours × (1 − supportPct/100)) split evenly across
+  // co-leads, and each support member gets (hours × supportPct/100) /
+  // supportCount. When there's no support member, leads carry full hours
+  // (100%) as before. Sum across everyone equals the task's total hours.
   const assigneeMap = {};
   function ensureAssignee(key) {
-    if (!assigneeMap[key]) assigneeMap[key] = { total: 0, done: 0, remaining: 0 };
+    if (!assigneeMap[key]) assigneeMap[key] = { total: 0, done: 0, remaining: 0, role: null };
     return assigneeMap[key];
   }
   project.tasks.forEach(t => {
     if (!t) return;
     if (typeof t.estimatedHours !== 'number' || t.estimatedHours <= 0) return;
+    const hrs = t.estimatedHours;
     const leads = (typeof getTaskLeads === 'function') ? getTaskLeads(t) : (t.assignee ? [t.assignee] : []);
+    // Collect support members from both legacy .support and .supportMembers
+    const supportSet = new Set();
+    if (t.support && typeof t.support === 'string' && t.support.trim()) supportSet.add(t.support.trim());
+    if (Array.isArray(t.supportMembers)) t.supportMembers.forEach(m => { if (m && m.trim()) supportSet.add(m.trim()); });
+    const supportMembers = Array.from(supportSet);
+    const hasSupport = supportMembers.length > 0;
+    const supportPct = (typeof t.supportHoursPct === 'number' && t.supportHoursPct >= 0 && t.supportHoursPct <= 100)
+      ? t.supportHoursPct
+      : (typeof state.supportHoursDefaultPct === 'number' ? state.supportHoursDefaultPct : 25);
+    // Leads share the (1 - supportPct/100) fraction; support members
+    // share the supportPct/100 fraction. If there are no support members,
+    // leads carry everything.
+    const leadTotalHours = hasSupport ? (hrs * (1 - supportPct / 100)) : hrs;
+    const eachLeadHours = leads.length > 0 ? leadTotalHours / leads.length : 0;
+    const eachSupportHours = hasSupport ? (hrs * supportPct / 100) / supportMembers.length : 0;
     const targets = leads.length > 0 ? leads : ['__unassigned'];
-    const share = t.estimatedHours / targets.length;
+    const done = t.status === 'done';
     targets.forEach(name => {
       const a = ensureAssignee(name);
-      a.total += share;
-      if (t.status === 'done') {
-        a.done += share;
-      } else {
-        a.remaining += share;
-      }
+      a.total += eachLeadHours;
+      if (done) a.done += eachLeadHours;
+      else a.remaining += eachLeadHours;
+      if (a.role !== 'lead') a.role = 'lead';
+    });
+    supportMembers.forEach(name => {
+      const a = ensureAssignee(name);
+      a.total += eachSupportHours;
+      if (done) a.done += eachSupportHours;
+      else a.remaining += eachSupportHours;
+      // Only mark as support-only if we haven't already flagged them as lead
+      if (!a.role) a.role = 'support';
     });
   });
 
@@ -11465,6 +11678,7 @@ function renderProjectHoursRollup() {
       total: assigneeMap[k].total,
       done: assigneeMap[k].done,
       remaining: assigneeMap[k].remaining,
+      role: assigneeMap[k].role,
       isUnassigned: k === '__unassigned'
     }))
     .filter(e => e.total > 0)
@@ -11474,10 +11688,10 @@ function renderProjectHoursRollup() {
   const maxAssigneeTotal = assigneeEntries.length > 0 ? assigneeEntries[0].total : 1;
   const assigneeHeaderHtml = assigneeEntries.length > 0
     ? `<div class="hours-person-header">
-         <div>Lead</div>
+         <div>Person</div>
          <div>Progress</div>
          <div>
-           <span class="hours-person-header-num" title="Total hours assigned to this person on this project">Total</span>
+           <span class="hours-person-header-num" title="Total hours assigned to this person on this project (leads carry the primary share, support gets pro-rated)">Total</span>
            <span class="hours-person-header-num" title="Hours already completed (tasks marked done)">Done</span>
            <span class="hours-person-header-num" title="Hours still ahead (open tasks)">Left</span>
          </div>
@@ -11485,17 +11699,19 @@ function renderProjectHoursRollup() {
     : '';
   const assigneeRowsHtml = assigneeEntries.length > 0
     ? assigneeEntries.map(e => {
-        // Bar widths: total fill = e.total / maxTotal; remaining fill = e.remaining / maxTotal.
-        // This means the dark "remaining" portion is a subset of the lighter "total" portion,
-        // so a person who's done 50% of their work shows a half-filled dark portion.
         const totalPct = Math.round((e.total / maxAssigneeTotal) * 100);
         const remainingPct = Math.round((e.remaining / maxAssigneeTotal) * 100);
         const cls = e.isUnassigned ? 'hours-person-row hours-bar-unassigned' : 'hours-person-row';
         const remFillCls = e.isUnassigned ? 'hours-person-fill-remaining hours-fill-unassigned' : 'hours-person-fill-remaining';
-        const tipText = `${e.name}: ${formatHours(e.total)} total assigned · ${formatHours(e.done)} done · ${formatHours(e.remaining)} remaining`;
+        // v151: Show role indicator so it's clear whether this person's
+        // total reflects lead attribution (larger share) or support (pro-rated).
+        const roleBadge = e.role === 'support'
+          ? `<span class="hours-person-role hours-role-support" title="Support member — hours pro-rated at the support percentage">support</span>`
+          : (e.role === 'lead' ? `<span class="hours-person-role hours-role-lead" title="Task lead">lead</span>` : '');
+        const tipText = `${e.name}${e.role ? ' (' + e.role + ')' : ''}: ${formatHours(e.total)} total assigned · ${formatHours(e.done)} done · ${formatHours(e.remaining)} remaining`;
         return `
           <div class="${cls}" title="${escapeAttr(tipText)}">
-            <div class="hours-person-label">${escapeHtml(e.name)}</div>
+            <div class="hours-person-label">${escapeHtml(e.name)}${roleBadge}</div>
             <div class="hours-person-track">
               <div class="hours-person-fill-total" style="width:${totalPct}%;"></div>
               <div class="${remFillCls}" style="width:${remainingPct}%;"></div>
@@ -15733,6 +15949,13 @@ function saveTask() {
       data.completionAcknowledgedBy = '';
       data.completionAcknowledgedAt = null;
     }
+    // v154: Stamp lastEditedAt so JSON round-trips can tell which side
+    // has fresher edits when merging. Merge sync uses this timestamp to
+    // decide whether to adopt imported assignment fields (leads,
+    // supportMembers, assignee, support, estimatedHours, dueDate) over
+    // the local version. See _syncImportedTaskFields.
+    data.lastEditedAt = Date.now();
+    data.lastEditedBy = (typeof getCurrentUser === 'function' && getCurrentUser()) || '';
     Object.assign(existing, data);
     // v138: If this edit is what NEWLY made the task recurring (was not
     // recurring before, is now), seed the series and pre-generate 60-day
@@ -15824,6 +16047,11 @@ function saveTask() {
     // New tasks: unacknowledged if assigned, auto-ack if unassigned (nothing to ack)
     const isAssigned = data.assignee && data.assignee.trim();
     const isCreatedDone = data.status === 'done';
+    // v154: Stamp lastEditedAt so the very first version of a task is
+    // dateable for merge-sync — otherwise brand-new tasks would look
+    // "unedited" and lose to older backup versions in the sync race.
+    data.lastEditedAt = Date.now();
+    data.lastEditedBy = (typeof getCurrentUser === 'function' && getCurrentUser()) || '';
     const newTask = {
       id: uid(),
       ...data,
@@ -19602,6 +19830,10 @@ function getDefaultAdvancements() {
 
   return [
     // ---------- High-impact ----------
+    advImplemented('high-impact', 'JSON round-trip: task-level edits (leads / support / hours / dueDate / title) now sync across computers on merge', "Previously merge-import only added new tasks and applied deletions/recurrence caps/archive-classification. Edits to existing tasks — swapping a lead, adding support, adjusting hours, moving a due date, changing the title — were completely ignored. Now every task edit stamps a lastEditedAt timestamp, and merge import compares timestamps: if the backup's version is newer than the local version, the tracked fields (leads, supportMembers, assignee, support, estimatedHours, supportHoursPct, dueDate, dayOffset, dateAnchor, title, notes, stage, category, source, scopePackage, ballInCourt, priority, critical, requiresSenior/Lead1/Lead2, checklist, deliverables) get adopted from the backup. Local fresher edits are preserved automatically — the timestamp is the tiebreaker so no manual conflict resolution needed. Preview modal shows how many tasks will have edits adopted before you commit.", "Shipped Jul 21, 2026 in response to: 'when im exporting and reimporting JSON is it capturing when i go into an already created task and delete and add a new lead and or support?' Real gap that pre-dated this ship. Export always captured every field (state serialized wholesale), but Merge-mode import was intentionally conservative — it added new items but left existing items alone to protect today's local edits from stale-backup clobber. That protection had no escape hatch, so genuine cross-computer edits to lead/support on already-created tasks silently didn't propagate. Four pieces. (1) Timestamp stamping: saveTask now sets data.lastEditedAt = Date.now() and data.lastEditedBy = getCurrentUser() before Object.assign(existing, data) in the edit branch, and before spreading into newTask in the new-task branch. Also stamped in applyReassignment (bulk reassign flow) so cross-computer reassignments are dateable. Not stamped in status-only paths (updateTaskStatus, acknowledgeTask, etc.) since those have their own semantics — could add if the user reports a specific need. (2) New _syncImportedTaskFields(target, source): builds a Map of imported tasks by id, walks target tasks, matches by id, compares lastEditedAt (0 if unset), skips if importTs is 0 or localTs >= importTs (protecting fresher local), and adopts a whitelist of user-editable fields when import is newer. Deep-copies arrays/objects via JSON round-trip so imported source can't mutate live state. Skips fields with their own pipelines (status, acknowledged, completedAt, seriesId, tombstones, recurrence, rescheduledFromPastDue) — those would be dangerous to overwrite. Returns count of tasks changed. On successful adopt, target task's lastEditedAt is bumped to importTs so subsequent syncs from other machines correctly compare against the freshest source. (3) Wired into applyImport merge branch right after _syncImportedTaskRecurrenceCaps. Console logs count for debugging. (4) Preview modal count: before showing the confirm dialog, iterates target vs imported computing how many tasks would have a difference on the high-signal fields (leads / supportMembers / assignee / support / estimatedHours / dueDate / title) with importTs > localTs. Renders a navy row 'N tasks will have edits ADOPTED (leads / support / hours / dates / title) — backup is fresher' — separate from the red REMOVED row for tombstones so users can distinguish adds/removes/updates before clicking Import. Only shows when count > 0. Backward compatible: tasks without lastEditedAt (created before this ship) don't sync — safest default until they get a natural edit that stamps them. Replace-mode remains unchanged (still wipes wholesale). JS syntax clean; full diagnostic run stayed green (68/68 static + 19/19 live). Follow-up ideas: could add per-field granular preview showing WHICH fields changed on each task; could add a manual conflict-resolution modal for cases where local + imported both edited the same task in overlapping ways."),
+    advImplemented('bugfix', 'Team Workload: empty-leads array no longer hides tasks (mirror of v95 support fix)', "When a task had task.leads = [] (empty array) AND task.assignee set to a person's name — a common shape for fresh tasks on new projects — the workload aggregator saw the empty array, iterated it (adding nothing), then SKIPPED checking task.assignee because it was inside an else-if. Tasks fell through into the v152 Unassigned bucket instead of appearing under their true assignee. Verified via user screenshots: Reshma's Today page showed 10 tasks for 7/21 but her workload drill-down showed only 6 — the missing 4 were fresh tasks from a new BID INVITATION & SOLICITATION REVIEW project. Fix: swap the raw Array.isArray check for the canonical getTaskLeads() helper which handles the empty-array case correctly and falls back to task.assignee. Same else-if pattern fixed in applyReassignment for the reassign flow.", "Shipped Jul 21, 2026 in response to two screenshots showing the mismatch. Root cause: exact same bug pattern as v95 (which fixed the support side) but on the leads side. The aggregator had 'if (Array.isArray(task.leads)) { task.leads.forEach(...) } else if (task.assignee && task.assignee.trim()) { assignees.add(task.assignee.trim()) }'. When task.leads was [] (empty array — often the case on freshly created tasks where the multi-lead array was initialized but nobody's been added yet), Array.isArray was true, the forEach ran on zero elements adding nothing, and the else-if never fired. Task.assignee = 'Reshma' was completely ignored. Task then had no home in any assignee's bucket, so it wouldn't appear on Reshma's workload card, her drill-down, her capacity math, or her openTasks list. v152's Unassigned bucket masked half the problem — the tasks appeared SOMEWHERE, but under 'Unassigned' instead of under the correct person. Three pieces. (1) Aggregator fix: replaced the inline Array.isArray check with a call to getTaskLeads(task), which was the canonical helper all along — it checks task.leads.length > 0 and falls back to task.assignee for legacy/edge cases. Added a defensive inline fallback in case getTaskLeads isn't defined at aggregation time (early load, hot reload). Comment now explicitly calls out the v95 precedent so nobody drifts back into the else-if pattern. (2) applyReassignment fix: same pattern lurking in the bulk-reassign flow. If a user tried to reassign tasks FROM 'Reshma' TO someone else, the swap logic used the same buggy 'if (Array.isArray(task.leads)) { indexOf/swap } else if (task.assignee === source) { swap }' pattern. Empty leads array meant no swap happened AND task.assignee was skipped. Rewrote as two independent unconditional blocks: swap leads[idx] if the source appears in leads AND leads is non-empty; separately swap task.assignee if it matches source; sync task.leads = [target] if leads was empty and assignee matched. Both stay coherent regardless of which shape the task was in. Same treatment for supportMembers vs support. (3) Verified: full diagnostic run stayed green (68/68 static + 19/19 live). JS syntax clean. Post-ship the user should see missing tasks appear under Reshma (or whoever the assignee is) in the workload drill-down; Unassigned bucket should shrink accordingly to only tasks that are truly unassigned."),
+    advImplemented('bugfix', 'Team Workload: new Unassigned bucket surfaces tasks with no lead/support (no more invisible new-project work)', "Tasks with no leads AND no support members set were previously invisible in Team Workload — they had no home in any assignee card. Fresh tasks on new projects (created before assignees were picked) fell into this trap. Now there's an Unassigned bucket at the TOP of the workload page with a red left border and 'needs assignment' flag, showing every unassigned open task across all projects. Click the 👥 Assign button to bulk-route them to a real estimator via the same reassign modal — the modal knows how to convert the synthetic Unassigned bucket into real lead assignments.", "Shipped Jul 21, 2026 in response to: 'workload doesnt seem to be working properly, several missing task from a recent new project created.' Root cause: _aggregateWorkloadByAssignee built an assignees Set from t.leads / t.assignee / t.support / t.supportMembers, then iterated it. When all four sources were empty (fresh task on a new project, or task whose assignees got cleared), the Set was empty and the whole task fell through the entire aggregation block silently. No card would show the task, no drill-down would find it, no capacity math would include it. The task existed in state but was invisible on the workload page. Six pieces. (1) Aggregator fallback: after the Set is built, if assignees.size === 0 AND task.status !== 'done', add 'Unassigned' to the Set. That routes the task through the same aggregation pipeline as everyone else — counts, hours, per-project rollup, openTasks drill-down all populate under the 'Unassigned' key. Skips done tasks since surfacing completed unassigned work is noise. Also stamps s.isUnassignedBucket = true on the stats entry so downstream views can style/filter it distinctly. (2) Card render: added .twv-card-unassigned modifier class that draws a red left border and a subtle red-tint gradient background so the bucket is impossible to miss when scanning the page. Avatar uses '?' on a red circle instead of initials. Name row includes a 'needs assignment' red pill flag. Role sub-label shows '<N> task(s) without an assignee' instead of 'Lead + Support'. Button relabeled from '↪ Reassign' to '👥 Assign' with a matching tooltip. (3) Sort pinning: _sortWorkloadList now splits the list into unassigned + rest at the top, runs the user's chosen sort (load-desc / name / capacity-pct / overdue) on rest only, and returns [...unassigned, ...rest] so Unassigned is always FIRST regardless of preference. Impossible to miss. (4) Reassign modal filter: _getReassignTaskList now recognizes sourceAssignee === 'Unassigned' as a special case that matches tasks with NO leads (or empty t.leads array) AND no t.assignee AND no supportMembers AND no legacy t.support. Same list becomes selectable, same target dropdown works. (5) applyReassignment handling: when sourceAssignee === 'Unassigned', instead of swapping lead[idx] we PUSH the target onto task.leads (creating the array if missing) and set task.assignee = task.leads[0]. Effectively: converting an unassigned task into an assigned one with the picked target as primary lead. Existing swap logic for real people preserved. Notification via _notifyTaskAssignment still fires per task (v143 pattern). (6) CSS: new .twv-card.twv-card-unassigned rules (border-left 4px sbg-red + gradient), .twv-unassigned-flag pill styling (small red uppercase badge), dark-mode variant for the tint. Full diagnostic run stayed green (68/68 static + 19/19 live). JS syntax clean. Follow-up thought: could also route through a workspace-level 'Show unassigned' filter, but the pinned bucket is discoverable enough for now — will iterate if user reports it's still hard to find."),
+    advImplemented('bugfix', 'Project hours rollup: correctly pro-rates leads vs support (no more full-hours double-count)', "When a task has both leads AND support members, the Projected Hours rollup on each project now correctly splits hours instead of giving leads the full amount and hiding support members entirely. New math: if support percentage is 25% on an 8h task with 1 lead + 1 support, the lead gets 6h and the support gets 2h (sum = 8h, matches task total). Support members now appear as rows in the rollup with a gold 'support' badge; leads show a navy 'lead' badge so it's obvious why numbers differ across roles. Everyone associated with a task by any role is visible — no more invisible support work.", "Shipped Jul 20, 2026 in response to: 'Project hours for projects does not seem to show difference between assigned and support hours. In other words if I am assigned support hours of 2, it still showing 8 hours because the leads are assigned 8 hours in the task. Show does not show properly and or accurate number of hours for each assignee on a project.' Root cause: renderProjectedHoursRollup (project workspace card) used a naive assignment map — for each task with an hours estimate, it split the FULL task hours evenly among getTaskLeads and stopped there. Support members were never added to assigneeMap, and lead hours weren't reduced when a support member was also on the task. Result: lead showed the full 8h even though a support member was carrying 25% of the work. Three pieces. (1) Rewrote the aggregator loop to mirror the training log's pro-rating pattern from v94: read supportPct from task.supportHoursPct or fall back to state.supportHoursDefaultPct (25 by default); collect support members from BOTH task.support (legacy single-support field) AND task.supportMembers (v94 multi-support array) into a deduped Set; if there are support members, compute leadTotalHours = hours × (1 - supportPct/100) split evenly across leads, and eachSupportHours = (hours × supportPct/100) / supportCount for each support member. If no support members, leads still carry the full hours as before (backward-compatible). Also tracks role on each entry so we can display it. (2) Row display: added a compact role badge next to each name — navy 'lead' pill for lead-primary entries, gold 'support' pill for support-only entries — with hover tooltip explaining the pro-rating. If someone appears as both lead on some tasks AND support on others in the same project, they keep the 'lead' role tag (larger contribution) but their total hours reflect the correct blend of both roles' shares. Column header changed from 'Lead' to 'Person' since we now show non-leads too. Tooltip on the row also includes the role. (3) CSS: .hours-person-role base + .hours-role-lead (rgba navy tint) + .hours-role-support (rgba gold tint), with dark-mode variants that swap the tints for readability on dark surface. .hours-person-label switches to flex layout so the badge sits inline. Team Workload aggregator was intentionally NOT changed — it uses a different attribution model (shows 'hours of involvement per person' which allows lead full + support pro-rated, sums to more than task total by design) for capacity planning purposes. Only the project rollup was buggy. Verified: static audit 68/68 green, live tests 19/19 green, JS syntax clean."),
     advImplemented('polish', 'Calendar view: inline status picker on each event (no more opening the full task modal to mark Complete)', "Every task chip on the calendar now has a small status circle glyph that appears on hover. Click it → compact floating menu opens with the five statuses (Not Started, In Progress, Blocked/RFI, Pending, Complete) — pick one and the task updates. Current status is highlighted with a red tint and 'current' label. Menu closes on outside click. Fastest way to mark a task Done or Blocked without leaving the calendar.", "Shipped Jul 20, 2026 in response to: 'calendar view, can you make so that I can select status? Complete, blocked etc?' Three pieces. (1) Calendar event rendering: each cal-event now includes a <button class='cal-status-picker'> element before the task title, showing the current status as a compact glyph (○ not-started, ◐ in-progress, ⚠ blocked, ⏳ pending, ✓ done). onclick calls _openCalStatusMenu(taskId, event) with stopPropagation so it doesn't also open the full task modal. Styled as a 18px circle with opacity:0 by default so the calendar chip stays visually clean — reveals on parent .cal-event:hover with a subtle scale animation. Dark-mode variant swaps the background to a semi-transparent black with white/gold accent on hover. (2) _openCalStatusMenu function: closes any existing menu first, reads the task's current status for highlighting, builds a floating popup with the 5 options (each showing colored icon + label + 'current' badge on the active one), inserts into document.body with position:absolute, computes placement based on the click target's bounding rect (nudges left if it would clip off screen right, flips above if it would clip off bottom). Sets up an outside-click handler via document.addEventListener with a setTimeout(0) guard so the current click event doesn't immediately close the menu it just spawned. Handler removes itself when the menu closes. (3) _pickCalStatus: closes the menu and routes through the existing updateTaskStatus(taskId, newStatus) function so all downstream behavior (activity log, notifications, completion guardrails on transitions into 'done', recurrence spawn on complete, save + render) fires normally. CSS: new .cal-status-menu class with 200px min-width, 8px radius, box-shadow scaled for both light and dark modes, cal-status-menu-in keyframe animation for the slide-in reveal, and .cal-status-menu-item hover + .active states. Full diagnostic run stayed green (68/68 + 19/19). JS syntax clean."),
     advImplemented('bugfix', 'Toast dedup: no more triple-firing of the same notification (Lead Manager Mode fix)', "Root cause: when Lead Manager Mode is on (state.notificationScope == team), a single event like a task's hours changing emits ONE notification per associated recipient — assignee + all leads + project lead + support members can be 3-5 distinct notifications for one action. Each fires its own toast because the scope='mine' recipient filter is bypassed in team mode. All the toasts have the same message text since none of the change-notification helpers include a per-recipient customization. Fix: added a fingerprint-based dedup at the toast layer — if a live toast with the same (type + taskId + actor) is already visible, skip spawning another one for the same event.", "Shipped Jul 20, 2026 in response to: 'toast notifications seem to be tripled of the same notification everytime.' Investigation traced through the notification pipeline. _emitNotification has a 5-second dedup keyed on (type + taskId + actor + recipient) — different recipients bypass it, which is correct at the notifications-log level (each recipient gets their own bell entry). But _spawnToast fires from inside _emitNotification for state.notifications[0] on every call. In personal scope (Mine), the toast is suppressed unless the recipient is the current user, so only 1 toast for any event that names you. In team scope (Lead Manager Mode), the recipient filter is bypassed to show all activity — but that means N emissions to N recipients spawn N toasts for the same underlying event, and _notifyTaskHoursChanged / _notifyTaskDueDateChanged / _notifyTaskStatusChange / _notifyTaskAcknowledged all use the shared _getTaskAssociatedPeople set which is typically 2-4 people, so the same-looking toast triples/quadruples up. Two pieces. (1) Compute fingerprint = type + '|' + taskId + '|' + actorName inside _spawnToast. Scan targetLayer (either toastCenterLayer or toastContainer) for existing .toast-card elements whose data-toast-fingerprint attribute matches; if found, return early — no duplicate spawn. Runs before the concurrent-cap check so we don't evict a legitimate older toast just to spawn a duplicate. (2) Stamp the fingerprint on the just-inserted DOM node via document.getElementById(toastId).dataset.toastFingerprint = fingerprint right after insertAdjacentHTML. Together this means the FIRST recipient's notification for a given event spawns a visible toast, and all subsequent same-fingerprint notifications for that event (whether from the same emit sequence or from a later re-emit within the toast lifetime) are silently deduped in the DOM. When the toast is dismissed or ages out, a genuine new event with the same actor+task would legitimately fire again — that's correct behavior. Fingerprint does NOT include recipient name, since the whole point is that per-recipient duplicates should collapse. Personal-scope users see no change (they only ever spawned 1 toast per event anyway). Team-scope / Lead Manager users now see 1 toast per event instead of N. JS syntax clean; full diagnostic run stayed green (68/68 + 19/19)."),
     advImplemented('high-impact', 'Reschedule Past-Due: strictly before today + prominent workload button + push-slot preview with manual date', "Three connected fixes. (1) Reschedule Past-Due modal now filters strictly to tasks due before today — no more upcoming or current-day tasks showing as past-due when the workload window is scoped to Next Week or later. (2) The Reschedule Past-Due button on the Team Workload toolbar is now big, gold-red gradient, with a white count badge showing exactly how many tasks need attention — visually calls to the eye instead of hiding among the other sm buttons. (3) Push to Next Slot now opens a preview modal showing the auto-suggested next open date AND a manual date picker — you can accept the suggestion, override with a hand-picked date, or cancel. No more one-click surprises.", "Shipped Jul 20, 2026 in response to: 'Reschedule Past Due seems to show also upcoming and current day task, I just need to reflect past due from todays date backward. Also on workload page i want button to be bigger and stand out. Also, i want push to next slot to give preview of what that next slot day is as well as option to hand select date if needed.' Three fixes bundled since they all live on the Team Workload page and share the Reschedule flow. (1) _collectPastDueTasks: cutoff was range.startDate (workload window's start date). When user scoped to This Week, cutoff was Monday — so past-due showed only Mon-through-yesterday. When scoped to Next Week, cutoff was next Monday — so tasks due TODAY or LATER THIS WEEK appeared as past-due. Fixed to hardcode cutoff = todayStr = formatDateForInput(new Date()). Now anything with dueDate < today is past-due, period. Header rollup label updated from 'Active window: <label>' to 'Only true past-due — nothing current or upcoming.' Empty state copy updated to 'Every incomplete task is either due today or later.' totals.windowLabel repurposed to constant 'Today' since it's no longer window-derived. (2) Toolbar button: was <button class='btn btn-sm'> — indistinguishable from Capacity & PTO, Stand-up Summary, Refresh, Close beside it. Replaced with new .twv-reschedule-btn class: 9px 18px padding, 14px bold text, linear-gradient(135deg, var(--sbg-red) 0%, #a82820 100%) background, 8px border-radius, sbg-red-tinted shadow that lifts on hover (translateY -1px + stronger shadow + slightly brighter gradient), inset-highlight ring for depth. Adds a .twv-reschedule-badge span (white pill, sbg-red text, 22px min-width) that shows the count. renderTeamWorkloadView() opens with a _collectPastDueTasks() call, reads totals.uniqueTaskCount into the badge, hides the badge when count is 0. Dark-mode variant tunes the shadow rgba(232,89,82,0.35). (3) pushTaskToNextOpenSlot refactored: previously computed _findNextOpenSlotDate and immediately did the push with an alert on failure. Now opens pushToSlotPreviewModal (max-width 560px, ID pushToSlotPreviewModal) showing: task title + current due date + days-late chip + lead + hours meta, a 🎯 Suggested Next Slot card (green-tinted panel with the big auto-picked date + explanation 'First day within the next 4 weeks where <lead> is at or below 75% capacity') OR a red-tinted 'No Auto-Slot Available' card explaining why (no capacity set / fully booked / unassigned), and a 📅 Or Hand-Pick a Date section with <input type='date' min='today'> pre-filled to the suggested date (or tomorrow if none) and helper caption 'Any date from today forward. Overrides the auto-suggestion.' Footer has three buttons: Cancel, 🎯 Use Suggested (if there is one), and ✓ Push to Selected Date (uses whatever's in the date input). Both success paths route through _confirmPushTaskToDate(taskId, leadName, nextDate, source) which does the actual mutation (dueDate + rescheduledFromPastDueMeta with new source: 'auto' | 'manual' field for later telemetry), notifies, and re-renders the reschedule modal + workload view. closePushToSlotPreview() and _pushTaskToManualDate() are the modal helpers. Full diagnostic run stayed green (68/68 static + 19/19 live). JS syntax clean."),
@@ -19635,9 +19867,9 @@ function getDefaultAdvancements() {
     advImplemented('bugfix', 'v119 fix: Training Log nav worked but self-negated; training badges now show in every list view', "Two fixes to the v119 shipment. (1) The Training Log button was firing openTrainingLogView but the page never opened — it dropped you into a random project instead. Root cause was inside the function itself: the batch pass that added state.trainingLogView=false resets across all navigation entry points accidentally added it to openTrainingLogView's own body too, so the function set the flag TRUE then FALSE two lines later before render() ran. Fixed. Audited every other openXView function; no similar self-negation exists. (2) Training tag was only visually indicated on board cards — invisible on Home Today, Look Ahead, Timeline, Alerts, Team Workload drill-down, Status Snapshot, Reassignment, and Unassigned lists. Now shows a compact gold 🎓 badge next to the task title in ALL of these list views.", "Shipped Jul 10, 2026 in response to: 'the training log doesnt do anything, just goes to a project, also i want visible badges showing that task is training, doesnt indicate it very well anywhere right but on board view.' Two pieces. FIX 1 — openTrainingLogView had 8 state-mutation lines: state.trainingLogView=true, then 6 resets of other views... plus state.trainingLogView=false at line 6 that shouldn't have been there. Removed the erroneous line. Ran an audit regex across every openXView function looking for the pattern 'sets stateXView=true AND stateXView=false in same body' — only openTrainingLogView was affected, so no other pages had the same bug. FIX 2 — added _trainingChipMiniHtml(t) helper that returns a small gold 🎓 chip (18px square, gold border, gold background, white glyph, tooltip 'Counts toward training — appears in Training Log') when t.isTraining, empty string otherwise. Splashed the helper into 8 render points across the app. Home Today: 4 hi-title occurrences (unack, pending, sign-off, done sections). Look Ahead: la-task-title. Project Timeline: ptv-task-title. Project Alerts: ai-title (after the escapeHtml title, before the seriesBadge so the two badges stack cleanly). Team Workload drill-down: wlDrill-title (after the critical-flame if present). Status Snapshot: ssv-row-title. Board table row: task-title-cell (after the newBadge and title text, before the checklist/deliverable/best-practice chips). Reassignment title: reassign-title. Unassigned workload: twv-unas-title. New CSS class .training-chip-mini — 18x18 gold square with 1px matching border, 10px glyph centered, subtle drop shadow, 4px horizontal margin so it breathes next to titles. Cursor: help so users get the tooltip on hover. Verified: all 8 replacements succeeded; JS syntax clean; regex-audited that the helper is only called on t.isTraining branches so no wasted DOM emitted for regular tasks. Now every place a task title renders shows the training tag — no more hunting for it."),
     advImplemented('high-impact', 'Training Log — tag any task as counting toward training + dedicated per-person hours page', "Two coordinated additions. (1) NEW '🎓 Count Toward Training' button on the task modal, right next to Mark as Critical. Toggle it on any task — regular day-to-day work like takeoff review, BC configuration, or client walkthroughs can all count as team development. Task stays assigned to its project as normal; this is just a metadata tag. Tagged tasks get a small gold 🎓 TRAINING chip on the board so you can see them at a glance. (2) NEW 🎓 Training Log page in the sidebar. Cross-project view showing team-wide training hours pending, completed this month, YTD, and all-time. Per-person cards break down each estimator's numbers with color-coded metric tiles (red=pending, gold=this month, navy=YTD, gray=all-time). Detailed task list at the bottom filters by person and status; click any row to jump into the task. 📋 Copy Summary button dumps a plain-text roll-up to the clipboard for reporting.", "Shipped Jul 10, 2026 in response to: 'I would like the ability to tag any task as Training in other words I would like to be able to have any normal task be tagged and tracked for assignees to reflect even though it is a task that is normal day to day business as precon manager i consider it to be apart of training as well. I would like also a separate log and or page that shows everyones current and past training hours completed, pending, etc to be used for reference. All task remain as is and assigned to each project accordingly, I just want to tag them.' Design choice: simple boolean task.isTraining flag (no sub-category or notes for v1 — the user asked for the simplest possible tag; sub-categories can be added later if needed for reporting granularity). Ten pieces. (1) Schema — task.isTraining boolean, no backfill needed since all reads use !!task.isTraining which defaults to false for legacy tasks. state.trainingLogView boolean (navigation flag), state.trainingLogFilter ('all'|'pending'|'completed'), state.trainingLogPersonFilter (name or 'all') — all persisted so filters survive reloads. (2) Task modal button — .training-btn mirrors .critical-btn pattern: 🎓 outline when off (dashed 2px gold border, gold text on transparent), filled solid gold when on. Sits inline right of the Critical button in the same form group (relabeled Critical → Critical / Training since both live there now). toggleTaskTraining / setTaskTrainingUI / getTaskTrainingUI follow the exact naming pattern of the critical helpers. Wired into openTaskModal (loads state from t.isTraining) and saveTask (writes via getTaskTrainingUI). Also wired into v118's _buildTaskCopyForDuplicate so training tag carries through Duplicate + Copy to Project. (3) Task card chip — .training-chip renders alongside .critical-chip when task.isTraining, in the standard SBG gold. Overdue-card override flips it to white-on-red matching the critical-chip pattern for legibility. (4) Sidebar button — new .snapshot-sidebar-btn with 🎓 icon, 'Training Log' label, 'Team training hours · pending & completed' subtitle. Sits right after Team Workload in the sidebar. Same button pattern as Team Workload / Project Timeline / Open Slots so it feels native. (5) Navigation wiring — openTrainingLogView sets trainingLogView=true, resets homeView/statusSnapshotView/projectTimelineView/teamWorkloadView/openSlotsView/tiView so mutual exclusion holds. exitTrainingLogView flips it back. A batch pass added state.trainingLogView=false to 15 existing view-switch entry points (selectProject, openHomeView, openStatusSnapshot, all the other openXView functions) so navigating away from Training Log always clears the flag — same pattern that fixed the v54 Team Workload navigation bug. (6) Render dispatcher — new branch after the Team Workload branch: if state.trainingLogView, hide all other views, show #trainingLogView, call renderTrainingLogView. (7) DOM structure — #trainingLogView contains a header (title + subtitle + action buttons Copy Summary / Refresh / Close), a 4-tile stat strip (Pending / This Month / YTD / All Time — each tile has a left-border accent in its section color), a per-person section with #tlvPersonGrid, and a task-detail section with status + person filter dropdowns and #tlvTaskList. (8) Data pipeline — _collectTrainingTasks walks state.projects (skipping archived) and returns {task, project} refs for every isTraining task. _buildTrainingPersonSummary aggregates per-name totals using the v94 support-hours-pro-rating pattern (primary lead gets the primary share; support members split the support percentage evenly). Bucketizes into pending, this-month completed, YTD completed, all-time completed based on task.status === 'done' and task.completedAt against month/year starts. (9) Rendering — renderTrainingLogView writes the stat strip, per-person cards (each showing 4 metric tiles color-matched to the header stats), and the task list (grid with status icon, title, project, stage, person, hours, due date). Empty states for no-training-tagged and no-matches-current-filter. Task rows click through to _openTaskFromTrainingLog which temporarily sets activeProjectId + opens the task modal so users can jump to any training task without leaving the log page context. (10) copyTrainingLogSummary — builds a plain-text summary (header + per-person block with pending / this-month / YTD / all-time hours) and copies to clipboard via navigator.clipboard. Falls back to alert() on non-clipboard environments. CSS: full .tlv-* family (~350 lines) covering header, stat strip, section wrappers, person grid + cards, metric tiles, filter dropdowns, task list rows with responsive column collapse below 1100px, empty states. Uses SBG gold as the primary accent to visually distinguish from Team Workload's blue treatment. Reports and cards use Barlow Condensed for numbers and labels matching the rest of the app's typography system. Verified: JS syntax clean; symbol references all resolve; view element registered in dispatcher; sidebar button routes correctly."),
     advImplemented('high-impact', 'Task actions: Duplicate, Copy to Project, and Save to Master Template all keep full work setup', "Three related fixes to task reuse. (1) NEW '📋 Duplicate' button on the task modal footer creates a copy of the task in the same project — same title (with '(copy)' suffix), stage, source, hours, category, priority, critical flag, checklist, deliverables, best-practice notes, recurrence rule, and role-requirement flags. Resets assignee, leads, support, due date, status, activity log, messages, acknowledgements, and completion state so the duplicate is a fresh work item. Opens the copy for editing so you can immediately assign it and set the due date. (2) NEW '📤 Copy to Project' button opens a picker of your other active projects. Pick one and the task is copied over with its due date recalculated from the target project's bid dates (via the same anchor + offset math the template loader uses). Same field-preservation rules as Duplicate. Prompts to switch to the target project and open the copy after. (3) FIX '⭐ Save to Master Template' was only saving 7 fields (title, stage, category, source, priority, offset, dateAnchor) — hours, checklist, deliverables, best-practice notes, critical flag, and role-requirement flags were silently dropped. Now saves the complete work-defining picture so loading the template into a future project brings back everything you had set up. Update-existing-template-entry path also updated to overwrite the full field set.", "Shipped Jul 10, 2026 in response to: 'I want to be able to duplicate a task within the same project as well as copy to another project if needed. Also, I noticed when saving task to template it does not carry over all the checklist, hours, information. I want to make sure when Duplicating, Copying, Saving to Master Template that it does the following: Keeps Task Name, Stage, Source, Hours, etc in place and starts fresh Assignees, Support, and Due Dates.' Seven pieces. (1) Shared helper _buildTaskCopyForDuplicate(source, targetProject) — the single source of truth for what carries over vs resets in a task clone. Keeps ~20 work-defining fields (title, stage, category, source, priority, offset, dateAnchor, critical, estimatedHours, supportHoursPct, notes, bestPracticeNotes, scopePackage, requiresSenior/Lead1/Lead2, deep-cloned checklist with new item ids + reset done state, deep-cloned deliverables with new ids + reset done state, deep-cloned recurrence rule with parentId stripped so the copy starts a fresh series). Resets ~15 per-instance fields (assignee, leads, support, supportMembers, ballInCourt='Lead', dueDate (recomputed from target project's anchor + offset), status='not-started', all completion/ack/rejection stamps, per-lead leadAck / leadCompletion / bestPracticeAck objects, seriesId=null, reschedule bookkeeping, messages=[], activityLog=[]). Fresh id and createdAt. Same helper drives Duplicate and Copy-to-Project so behavior stays consistent. (2) duplicateTask() — pulls the current editingTaskId, calls _buildTaskCopyForDuplicate with the SAME project as target, appends '(copy)' to the title, pushes to project.tasks, saves state, closes and reopens the modal on the new task so the user lands on the copy ready to edit. (3) copyTaskToProject() — filters state.projects to other non-archived projects, opens a picker modal listing them sorted by soonest bid due. Empty state alerts if there are no other projects. (4) _openCopyToProjectPicker builds the modal DOM on first use (lazy-created since most users won't hit this feature often), showing a source-task preview panel + one clickable row per project with name, task count, and days-left/days-late badge. (5) _confirmCopyToProject builds the copy against the TARGET project so due date is recomputed from the target's own startDate/dueDate/prebidDate/rfiDueDate, pushes to target.tasks, and offers a confirm to switch to the target and open the new task. (6) saveTaskToMasterTemplate now reads and captures the full field set from the modal — reading estimatedHours from taskHours input (quarter-hour rounded), critical from taskCritical checkbox, pendingChecklist and pendingDeliverables arrays (falling back to existing task values if the pending arrays aren't populated), best-practice text from taskBestPractice / taskBestPracticeNotes, requiresSenior/Lead1/Lead2 from their checkboxes. (7) doSaveTaskToTemplate builds a normalized fullFields object with the same 15+ reusable fields and uses it in BOTH the update-existing path (Object.assign onto the duplicate) and the new-entry path (tmpl.tasks.push({ ...fullFields })). Preview confirm dialog now shows an 'Extras' summary line listing what's included (hours, critical flag, checklist count, deliverable count, best-practice presence) so the user can verify. Round-trip verified: template → new project via existing _addTemplateTasksToProject already handled the rich fields (v39 / v49); the gap was purely on the save side, now closed. CSS: new .ctp-source-preview + .ctp-project-row family for the copy-to-project picker — subtle navy accent, hover lift, matches existing modal patterns. JS syntax clean."),
-    advImplemented('polish', 'Top header: milestone version chip matching the sidebar footer', "The version tag in the top-left app header used to render as a plain flat pill ('V116 · Built Jul 10, 2026') while the sidebar footer had the full milestone treatment — navy-red-gold gradient background, shimmer sweep, 🎉 celebration prefix. Now both surfaces match: the top header shows the same milestone chip ('🎉 V150'), and the build date sits next to it as a smaller monospace annotation so nothing is lost.", "Shipped Jul 10, 2026 in response to a screenshot request asking for the milestone chip style to also appear at the top of the app. Three pieces. (1) New CSS class .brand-text .version-stamp.version-stamp-milestone mirrors the sidebar footer .sf-version-milestone treatment: Barlow Condensed 12px 800-weight uppercase, 3x10px padding, 4px radius, navy→red→gold 135deg gradient background, subtle 1px white inner border ring, 2x6px navy drop shadow. Uses the shared milestone-shimmer keyframe animation (3.5s ease-in-out infinite) via a positioned ::after pseudo-element that sweeps a 40%-wide translucent white streak across every ~3s — same feel as the sidebar. (2) New paired .brand-text .version-built class for the build date so it can breathe next to the chip rather than being crammed inside it: JetBrains Mono 9.5px, 55%-opacity white, small margin-left gap. (3) Markup swap: the subtitle span was one flat 'V116 · Built Jul 10, 2026' pill; now it's two elements — the milestone chip carrying '🎉 V150' and a sibling span carrying 'Built Jul 10, 2026'. Same title attribute pattern as the sidebar footer chip. Sidebar footer chip left untouched — it was already correct. JS unchanged."),
+    advImplemented('polish', 'Top header: milestone version chip matching the sidebar footer', "The version tag in the top-left app header used to render as a plain flat pill ('V116 · Built Jul 10, 2026') while the sidebar footer had the full milestone treatment — navy-red-gold gradient background, shimmer sweep, 🎉 celebration prefix. Now both surfaces match: the top header shows the same milestone chip ('🎉 V154'), and the build date sits next to it as a smaller monospace annotation so nothing is lost.", "Shipped Jul 10, 2026 in response to a screenshot request asking for the milestone chip style to also appear at the top of the app. Three pieces. (1) New CSS class .brand-text .version-stamp.version-stamp-milestone mirrors the sidebar footer .sf-version-milestone treatment: Barlow Condensed 12px 800-weight uppercase, 3x10px padding, 4px radius, navy→red→gold 135deg gradient background, subtle 1px white inner border ring, 2x6px navy drop shadow. Uses the shared milestone-shimmer keyframe animation (3.5s ease-in-out infinite) via a positioned ::after pseudo-element that sweeps a 40%-wide translucent white streak across every ~3s — same feel as the sidebar. (2) New paired .brand-text .version-built class for the build date so it can breathe next to the chip rather than being crammed inside it: JetBrains Mono 9.5px, 55%-opacity white, small margin-left gap. (3) Markup swap: the subtitle span was one flat 'V116 · Built Jul 10, 2026' pill; now it's two elements — the milestone chip carrying '🎉 V154' and a sibling span carrying 'Built Jul 10, 2026'. Same title attribute pattern as the sidebar footer chip. Sidebar footer chip left untouched — it was already correct. JS unchanged."),
     advImplemented('bugfix', 'Today page: ✓ Acknowledge Series now actually propagates to the whole series', "Clicking ✓ Acknowledge Series on a recurring row in the Today page's Awaiting Acknowledgment section was only clearing that single instance — the other 27 siblings stayed put. The dedup display (v113) was working, but under the hood the ack was one-at-a-time. Now one click clears the entire series across all its instances, matching the behavior everywhere else in the app.", "Shipped Jul 10, 2026 in response to: 'Today Screen: When clicking Acknowledge Series it does not go away and seems to just be acknowledge recurring task one at a time. Does not work the way it does everywhere else.' Root cause: acknowledgeTaskFromHome was a duplicated stub predating v112 — it set task.acknowledged/acknowledgedBy/acknowledgedAt directly and never routed through acknowledgeTask (which is where v112 wired the _propagateAckToSiblings call). So the button label read 'Series' via v113's row-level display logic, but the click handler behaved like a per-instance ack. Two fixes. (1) acknowledgeTaskFromHome now checks task.seriesId and calls _propagateAckToSiblings(project, task) after the local ack — same pattern acknowledgeTask uses. One click → every unack'd sibling in the series flips to acknowledged with matching acknowledgedBy/acknowledgedAt. (2) acknowledgeAllMyTasksFromHome confirm dialog now uses the grouped count via getMyUnackedGroupCount so the confirm prompt matches the button label. Was 'Acknowledge all 31 new tasks across all projects?' when the button read 'Acknowledge All (4)'. Now reads 'Acknowledge all 4 items (covering 31 instances) across all projects?' when grouping actually collapsed rows, or the plain 'Acknowledge all N tasks' label when it didn't. Belt and suspenders — since each iteration still touches every task individually, propagation would be redundant for the bulk case; leaving that path alone. JS syntax clean."),
-    advImplemented('high-impact', 'Multi-fix: Schedule Calendar integration + Project Alerts dedup + center-screen assignment toast + collapsed sidebar sections + version sync', "Five coordinated fixes shipped together. (1) Recurrence now respects the Schedule Calendar's holiday list (Settings → Schedule Calendar) rather than a duplicate hardcoded federal list — so editing the master holiday list customizes recurrence skips app-wide. (2) Project Alerts UNACKNOWLEDGED tab now deduplicates recurring series into one row with a gold '🔁 N occurrences' badge and '✓ Acknowledge Series' button — matches v113's Today page behavior so users don't see 54+ individual instances of one weekly task. (3) Assignment toasts (task-assigned / task-reassigned) now pop CENTER-SCREEN with a thick red border, gold left accent, gold-red gradient shadow, subtle blur backdrop, and a 2.5s pulse animation — high-visibility 'in your face but not too much' treatment. Other toasts still stack top-right. (4) Currently Bidding sidebar section is now collapsible and defaults to collapsed (matching Past Pursuits + Archived). (5) Version sync — the stale V83 subtitle in the app header has been updated to match the sidebar chip; both now show V150 with today's build date.", "Shipped Jul 10, 2026 in response to a batch of five fixes in one message. Investigation revealed the existing Schedule Calendar system (state.holidays + isWeekend + isHoliday helpers, populated by getDefaultHolidays()) so v114's duplicate _getUsFederalHolidays / _observedHolidayDates / _nthWeekdayOfMonth / _fmtYmd / _usFederalHolidaysCache / _getHolidayName / _isBusinessDay all got deleted. New _isBusinessDay is a thin wrapper around isWeekend + isHoliday. _advanceToBusinessDay inline-formats YMD without needing the helper. The recurrence UI hint now points users to the Schedule Calendar as the authoritative holiday source rather than listing 11 hardcoded federal holidays. Project Alerts dedup: modified the render loop at line ~50164 to build a displayTasks array by iterating tierTasks, tracking seen seriesIds, and using the earliest-dated instance as the series representative. The count label reads 'N items (covers M instances)' when grouping collapsed rows. renderAlertItem now checks seriesId + sibling count for the unacknowledged tier and appends a gold .ai-series-badge next to the title (' 🔁 8 occurrences' pill) with matching v113 gradient. The ✓ Acknowledge button label switches to '✓ Acknowledge Series' when the row represents a series, with a matching tooltip. Cross-project ack works via existing v112 propagation. Sidebar collapse: renderProjectList now emits Currently Bidding wrapped in a clickable .project-section-header with chevron, gated on state.currentlyBiddingExpanded === true. Toggle handler toggleCurrentlyBidding() matches togglePastPursuits pattern (flip + save + re-render). state.currentlyBiddingExpanded added with default false, so all users see it collapsed on first load. Center-screen assignment toast: new #toastCenterLayer div fixed inset:0 z-index:10002 flex-centered with a semi-opaque navy backdrop + 1px blur; assignment toasts spawn here instead of the top-right container. New .toast-assignment-center class overrides positioning + sizing: 500px wide (max 100vw-40px), 3px red border all around with 8px gold left border, gradient background, 60px red shadow with pulse animation. Larger 30px icon, 15px title, 13.5px message. _spawnToast now branches on notif.type — assignment → center layer + add class; other → normal container. _dismissToastElement clears the .has-toast class on the center layer when it empties (fades the backdrop). dismissAllToasts sweeps both layers. Version sync: line 6 meta and line 18955 subtitle both bumped from V83 (which was multiple versions stale) to V150; sidebar footer built-date updated to Jul 10, 2026. Also the sed pass bumped all V114→V150 references throughout the file. JS syntax clean."),
+    advImplemented('high-impact', 'Multi-fix: Schedule Calendar integration + Project Alerts dedup + center-screen assignment toast + collapsed sidebar sections + version sync', "Five coordinated fixes shipped together. (1) Recurrence now respects the Schedule Calendar's holiday list (Settings → Schedule Calendar) rather than a duplicate hardcoded federal list — so editing the master holiday list customizes recurrence skips app-wide. (2) Project Alerts UNACKNOWLEDGED tab now deduplicates recurring series into one row with a gold '🔁 N occurrences' badge and '✓ Acknowledge Series' button — matches v113's Today page behavior so users don't see 54+ individual instances of one weekly task. (3) Assignment toasts (task-assigned / task-reassigned) now pop CENTER-SCREEN with a thick red border, gold left accent, gold-red gradient shadow, subtle blur backdrop, and a 2.5s pulse animation — high-visibility 'in your face but not too much' treatment. Other toasts still stack top-right. (4) Currently Bidding sidebar section is now collapsible and defaults to collapsed (matching Past Pursuits + Archived). (5) Version sync — the stale V83 subtitle in the app header has been updated to match the sidebar chip; both now show V154 with today's build date.", "Shipped Jul 10, 2026 in response to a batch of five fixes in one message. Investigation revealed the existing Schedule Calendar system (state.holidays + isWeekend + isHoliday helpers, populated by getDefaultHolidays()) so v114's duplicate _getUsFederalHolidays / _observedHolidayDates / _nthWeekdayOfMonth / _fmtYmd / _usFederalHolidaysCache / _getHolidayName / _isBusinessDay all got deleted. New _isBusinessDay is a thin wrapper around isWeekend + isHoliday. _advanceToBusinessDay inline-formats YMD without needing the helper. The recurrence UI hint now points users to the Schedule Calendar as the authoritative holiday source rather than listing 11 hardcoded federal holidays. Project Alerts dedup: modified the render loop at line ~50164 to build a displayTasks array by iterating tierTasks, tracking seen seriesIds, and using the earliest-dated instance as the series representative. The count label reads 'N items (covers M instances)' when grouping collapsed rows. renderAlertItem now checks seriesId + sibling count for the unacknowledged tier and appends a gold .ai-series-badge next to the title (' 🔁 8 occurrences' pill) with matching v113 gradient. The ✓ Acknowledge button label switches to '✓ Acknowledge Series' when the row represents a series, with a matching tooltip. Cross-project ack works via existing v112 propagation. Sidebar collapse: renderProjectList now emits Currently Bidding wrapped in a clickable .project-section-header with chevron, gated on state.currentlyBiddingExpanded === true. Toggle handler toggleCurrentlyBidding() matches togglePastPursuits pattern (flip + save + re-render). state.currentlyBiddingExpanded added with default false, so all users see it collapsed on first load. Center-screen assignment toast: new #toastCenterLayer div fixed inset:0 z-index:10002 flex-centered with a semi-opaque navy backdrop + 1px blur; assignment toasts spawn here instead of the top-right container. New .toast-assignment-center class overrides positioning + sizing: 500px wide (max 100vw-40px), 3px red border all around with 8px gold left border, gradient background, 60px red shadow with pulse animation. Larger 30px icon, 15px title, 13.5px message. _spawnToast now branches on notif.type — assignment → center layer + add class; other → normal container. _dismissToastElement clears the .has-toast class on the center layer when it empties (fades the backdrop). dismissAllToasts sweeps both layers. Version sync: line 6 meta and line 18955 subtitle both bumped from V83 (which was multiple versions stale) to V154; sidebar footer built-date updated to Jul 10, 2026. Also the sed pass bumped all V114→V154 references throughout the file. JS syntax clean."),
     advImplemented('high-impact', 'Recurring tasks: skip weekends + US federal holidays by default', "When a recurring occurrence would land on a Saturday, Sunday, or federal holiday, it now rolls forward to the next business day. So a daily task no longer spawns instances on Sat/Sun, a weekly Wednesday task that hits July 4 shifts to July 5+, etc. All 11 US federal holidays covered (New Year's Day, MLK Day, Presidents Day, Memorial Day, Juneteenth, Independence Day, Labor Day, Columbus Day, Veterans Day, Thanksgiving, Christmas) plus their federal observed dates (a Saturday holiday is observed Friday; a Sunday holiday is observed Monday — both are skipped). Behavior can be toggled off per-task via a new 'Skip weekends & US federal holidays' checkbox in the recurrence section of the task modal — default ON for all new recurring tasks, opt out for genuine 7-day rotations like site security.", "Shipped Jul 6, 2026 in response to: 'on recurring events I want to skip weekends and holidays (Example if task is Daily I don't want it for Saturday and Sunday as well).' Six pieces. (1) Federal holiday computation: _getUsFederalHolidays(year) builds a Set of YYYY-MM-DD strings for a given year, cached per-year so we only compute once per session. Uses _nthWeekdayOfMonth for the six rule-based holidays (MLK 3rd Mon Jan, Presidents 3rd Mon Feb, Memorial last Mon May, Labor 1st Mon Sep, Columbus 2nd Mon Oct, Thanksgiving 4th Thu Nov). Fixed-date holidays go through _observedHolidayDates which returns BOTH the actual date and the federal-observance shift (Saturday holiday → Friday observed; Sunday holiday → Monday observed) so pre-gen skips them both. Verified 2026 output: Jul 4 (Sat) correctly generates Jul 3 as observed; both are non-business days. (2) _isBusinessDay(dateStr): returns false when weekend or in the holidays Set. _advanceToBusinessDay(dateStr): rolls forward one day at a time up to a 14-day safety cap. Never infinite-loops even with corrupt data. (3) _getHolidayName(dateStr): reverse lookup that returns 'Independence Day', 'Thanksgiving', etc. — used for readable UI messaging when a date is skipped. (4) computeNextRecurrenceDate: at the end of the pattern-specific date math, checks rec.skipNonBusinessDays (defaults true when unset — always-on behavior for pre-v114 tasks that never had the field). If the computed date is not a business day, rolls forward via _advanceToBusinessDay and re-checks the endDate cap after the shift so a rolled date that jumps past endDate correctly returns null. (5) UI toggle: new checkbox in the recurrence form group '☑ Skip weekends & US federal holidays' with an explanatory hint listing all 11 federal holidays + observed-date rule. Shows/hides with the pattern (visible only when pattern != none). Populated from rec.skipNonBusinessDays on modal load (defaults checked when field is missing). Saved back into rec.skipNonBusinessDays on modal save. Reset to checked on new-task modal open. (6) Backward-compatible: existing pre-generated instances on weekends/holidays stay put (they were legitimately created under old behavior; user can delete/edit them). Only NEW pre-gen (rolling refresh extending the horizon, or new tasks) applies the skip logic. Because rec.skipNonBusinessDays defaults true when unset, existing recurring tasks automatically get the new behavior for future occurrences — no migration needed. JS syntax clean; verified holiday output for 2026 with a standalone Node test."),
     advImplemented('high-impact', 'Awaiting Ack list: collapsed to one row per recurring series with occurrence count badge', "v112 made acking any single instance propagate to the whole series, but the Awaiting Ack list on the Today page + sidebar badge still counted every pre-generated instance separately — so users still SAW 60 rows to work through even though clicking one would clear them all. This ships the display fix: recurring series now show as ONE row in the Awaiting Ack list with a gold '🔁 8 occurrences' badge and an '✓ Acknowledge Series' button. Sidebar badge and Home stats tile show the deduped count too. The row displays the EARLIEST upcoming instance's due date so you know when the next occurrence hits. Non-recurring tasks continue to show as individual rows.", "Shipped Jul 6, 2026 in response to: 'it still has to where a user sees all 60 task to acknowledge every time a recurring task is created (Example) I want acknowledgement for recurring new task to show up as one item and be a series acknowledgement.' Right call — v112 gave you the propagation, but the display was still flooded. Four pieces. (1) renderHomeUnack rewritten to group items by seriesId before rendering. Walks the raw list, uses a Set of seen seriesIds to dedupe, picks the earliest-dated instance as the row's visible representative (soonest due date = most actionable). Non-series tasks pass through as individual entries. Result: series → one row; standalone tasks → one row each. (2) Section header sub-text updated: shows 'N items (covers M instances)' when grouping actually collapsed anything, otherwise the plain 'N task(s)' label. So users see honest bookkeeping about how much work the shorter list actually represents. (3) Row visual: title now has a gold '🔁 N occurrences' pill badge next to it (only when N > 1). The Acknowledge button reads '✓ Acknowledge Series' instead of '✓ Acknowledge' when the row represents a series. Meta line shows 'Next due' instead of 'Due' and appends the cadence (' · weekly' etc.) from _formatRecurrenceCadence. (4) New helper getMyUnackedGroupCount(user): series-deduped version of the count, used by getHomeBadgeCount (sidebar red count badge) and by the Home stats 'Unacknowledged' tile. Both were pulling raw .length before — now they reflect the number of ACTUAL things to do, not the raw instance count. Backward-compatible: the raw getMyUnackedTasksAcrossProjects list is unchanged so any other caller keeps working; the ack Button still routes through acknowledgeTaskFromHome which triggers v112's series propagation to clear all siblings at once. CSS: .hi-series-badge uses SBG gold gradient (matching the v100 milestone badge style) so it visually reads as an SBG-branded 'this is special' pill. JS syntax clean."),
     advImplemented('high-impact', 'Recurring series: series-level acknowledgement — one ack covers the whole series', "Creating a weekly recurring task used to spawn 8+ pre-generated instances that each needed individual acknowledgement — flooding the Awaiting Ack section with '60 items to ack' for a single logical piece of work. Now, acknowledging ANY one instance in a series automatically propagates the ack state to every sibling in that series. Works from the task modal, from the ✓ Acknowledge button on toasts, from the bulk 'Acknowledge All My Tasks' flow, and from Multi-Lead per-lead ack. Also inherits ack state onto newly pre-generated instances when the rolling window extends, so users don't get re-flooded each time the window advances.", "Shipped Jul 6, 2026 in response to: 'When someone creates a recurring task, I would like for it to be a consolidated acknowledgement for that task. In other words each time a recurring task is created a user will have to acknowledge 60 or more items each time and seems flooded. I would like this single acknowledgement function to work across the system including toasts.' Four pieces. (1) New helper _propagateAckToSiblings(project, sourceTask) walks every task in the same series (by seriesId), and for each sibling that isn't already acked: copies task.acknowledged, task.acknowledgedBy, task.acknowledgedAt from the source. Also copies every task.leadAck[user] entry the source has that the sibling is missing — so if a specific co-lead has personally acked, that propagates independently of the flat flag. Never overwrites a sibling's more-recent ack state. (2) Hook in acknowledgeTask: after the existing logTaskAcknowledged + _notifyTaskAcknowledged, if the source task has a seriesId the propagation helper runs. Console logs the count of siblings updated. Notification only fires once for the source ack — no notification spam per sibling. (3) Hook in ensureSeriesInstancesGenerated: after the pre-generation loop creates new instances (either at task-create time or during the rolling refresh on load), if any pre-existing sibling in the series is already acked, its state propagates to the newly created siblings. Uses the earliest-acked source (first ack wins for the whole series). Also handles the partial-multi-lead case where leadAck entries exist without the flat flag being flipped. (4) Task modal series banner (v100): the hint text under the 'Occurrence N of M in a weekly series' banner now explicitly tells the user 'Acknowledging this instance also acknowledges all sibling occurrences in the series' so the behavior is discoverable. Backward-compatible: existing single-task acks continue to work; only series-tagged tasks trigger propagation. JS syntax clean. NOTE: only affects acknowledgement (assignee/lead accepting the work). Completion sign-off remains per-instance since each weekly instance is a separate piece of work that needs its own approval when done."),
