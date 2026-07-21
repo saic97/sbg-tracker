@@ -2473,6 +2473,31 @@
     overflow: hidden;
     text-overflow: ellipsis;
   }
+  /* v152: Unassigned bucket — visually distinct so users notice
+     unassigned work at a glance. Left border in SBG red, subtle red
+     tint background, and a small "needs assignment" flag next to the
+     name. */
+  .twv-card.twv-card-unassigned {
+    border-left: 4px solid var(--sbg-red, #c8322b);
+    background: linear-gradient(90deg, rgba(200, 50, 43, 0.05) 0%, transparent 40%);
+  }
+  body.dark-mode .twv-card.twv-card-unassigned {
+    background: linear-gradient(90deg, rgba(232, 89, 82, 0.10) 0%, transparent 40%);
+  }
+  .twv-unassigned-flag {
+    display: inline-block;
+    margin-left: 8px;
+    padding: 2px 7px;
+    background: var(--sbg-red, #c8322b);
+    color: #fff;
+    font-size: 9px;
+    font-weight: 700;
+    text-transform: uppercase;
+    letter-spacing: 0.05em;
+    border-radius: 3px;
+    font-family: 'JetBrains Mono', monospace;
+    vertical-align: middle;
+  }
   .twv-card-role {
     font-size: 10.5px;
     color: var(--text-dim);
@@ -5830,6 +5855,43 @@
     overflow: hidden;
     text-overflow: ellipsis;
     white-space: nowrap;
+    display: flex;
+    align-items: center;
+    gap: 6px;
+  }
+  /* v151: Lead vs support badge on the project hours rollup so users can
+     see WHY someone's hours look smaller — they're a support member on
+     some tasks and pro-rated accordingly. */
+  .hours-person-role {
+    display: inline-block;
+    font-size: 9px;
+    font-weight: 700;
+    letter-spacing: 0.06em;
+    text-transform: uppercase;
+    padding: 1px 5px;
+    border-radius: 3px;
+    font-family: 'JetBrains Mono', monospace;
+    flex-shrink: 0;
+  }
+  .hours-role-lead {
+    background: rgba(10, 37, 64, 0.08);
+    color: var(--sbg-navy);
+    border: 1px solid rgba(10, 37, 64, 0.15);
+  }
+  body.dark-mode .hours-role-lead {
+    background: rgba(110, 163, 255, 0.15);
+    color: var(--sbg-navy);
+    border-color: rgba(110, 163, 255, 0.3);
+  }
+  .hours-role-support {
+    background: rgba(192, 127, 0, 0.1);
+    color: var(--sbg-gold);
+    border: 1px solid rgba(192, 127, 0, 0.25);
+  }
+  body.dark-mode .hours-role-support {
+    background: rgba(229, 178, 76, 0.15);
+    color: var(--sbg-gold);
+    border-color: rgba(229, 178, 76, 0.35);
   }
   .hours-person-row.hours-bar-unassigned .hours-person-label {
     color: var(--sbg-red);
