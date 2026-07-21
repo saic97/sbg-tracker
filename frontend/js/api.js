@@ -171,7 +171,15 @@
     // this, the next incremental pass would diff against a stale baseline and
     // re-PUT (and potentially resurrect) data the server just told us about.
     try { window.lastSyncedState = JSON.parse(JSON.stringify(window.state)); } catch (e) {}
-    try { localStorage.setItem(STORAGE_KEY, JSON.stringify(window.state)); } catch (e) {}
+    // Quota-safe: if the big cache write fails, PURGE the stale cache + the
+    // version stamp. A stale cache left beside a fresh version made the next
+    // boot render old data and get a 304 that "confirmed" it (users saw
+    // missing/old data while the server was fine). No cache -> clean full
+    // fetch next boot.
+    try { localStorage.setItem(STORAGE_KEY, JSON.stringify(window.state)); }
+    catch (e) {
+      try { localStorage.removeItem(STORAGE_KEY); localStorage.removeItem(VERSION_KEY); } catch (e2) {}
+    }
     if (typeof window.render === 'function') window.render();
   }
 

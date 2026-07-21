@@ -27,8 +27,25 @@
     setSession({ token, user }) {
       this.token = token;
       this.user = user;
-      localStorage.setItem(TOKEN_KEY, token);
-      localStorage.setItem(USER_KEY, JSON.stringify(user));
+      // localStorage can be FULL (the ~multi-MB state cache leaves little
+      // headroom; some browsers cap the origin at 5MB). A raw setItem throw
+      // here broke login AFTER the server accepted the credentials. If the
+      // token won't fit, evict the big state cache + its version stamp (the
+      // next boot simply does a clean full fetch) and retry; worst case the
+      // session lives in memory for this tab.
+      try {
+        localStorage.setItem(TOKEN_KEY, token);
+        localStorage.setItem(USER_KEY, JSON.stringify(user));
+      } catch (e) {
+        try {
+          localStorage.removeItem('sbg_precon_tracker_v3');
+          localStorage.removeItem('sbg_state_version');
+          localStorage.setItem(TOKEN_KEY, token);
+          localStorage.setItem(USER_KEY, JSON.stringify(user));
+        } catch (e2) {
+          console.warn('[auth] session could not be persisted (storage full); continuing in-memory');
+        }
+      }
     },
     clearSession() {
       this.token = null;

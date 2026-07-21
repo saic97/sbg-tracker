@@ -169,7 +169,12 @@
       } catch (err) { handleSyncError(err); }
     }
 
-    try { localStorage.setItem(STORAGE_KEY, JSON.stringify(state)); } catch (e) {}
+    // Quota-safe (see api.js): failed cache write purges cache + version so a
+    // stale copy can never pair with a fresh version stamp.
+    try { localStorage.setItem(STORAGE_KEY, JSON.stringify(state)); }
+    catch (e) {
+      try { localStorage.removeItem(STORAGE_KEY); localStorage.removeItem('sbg_state_version'); } catch (e2) {}
+    }
   }
 
   async function syncProjectIncrementally(cp, sp) {
@@ -303,7 +308,10 @@
       try {
         window.state.bulkSelectionMode = false;
         window.state.bulkSelectedTaskIds = [];
-        try { localStorage.setItem(STORAGE_KEY, JSON.stringify(window.state)); } catch (e) {}
+        try { localStorage.setItem(STORAGE_KEY, JSON.stringify(window.state)); }
+        catch (e) {
+          try { localStorage.removeItem(STORAGE_KEY); localStorage.removeItem('sbg_state_version'); } catch (e2) {}
+        }
 
         // Push the whole state and WAIT. getState() first so expectedVersion
         // matches the server (the version guard is NOT bypassed by
