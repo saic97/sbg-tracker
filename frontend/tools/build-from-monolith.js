@@ -86,6 +86,16 @@ const FIXUPS = [
     find: /\brenderAvatarHtml\s*\?\s*renderAvatarHtml\(/g,
     replace: "(typeof renderAvatarHtml === 'function') ? renderAvatarHtml(",
   },
+  {
+    // Workload aggregator: `if (Array.isArray(task.leads))` treats an EMPTY
+    // leads array as authoritative, so `leads: [] + assignee: "X"` (the shape
+    // newer saves/clones write) attributes the task to NOBODY -- it vanishes
+    // from every workload card. The past-due collector already checks
+    // `.length > 0`; mirror that here. Source fix belongs in the monolith.
+    name: 'workload aggregator: empty leads[] must fall back to assignee',
+    find: /if \(Array\.isArray\(task\.leads\)\) \{\n(\s*)task\.leads\.forEach\(n => \{ if \(n && n\.trim\(\)\) assignees\.add\(n\.trim\(\)\); \}\);/g,
+    replace: 'if (Array.isArray(task.leads) && task.leads.length > 0) {\n$1task.leads.forEach(n => { if (n && n.trim()) assignees.add(n.trim()); });',
+  },
 ];
 for (const f of FIXUPS) {
   const n = (js.match(f.find) || []).length;

@@ -5244,7 +5244,7 @@ function _aggregateWorkloadByAssignee() {
       // Identify all assignees: lead + support members
       const assignees = new Set();
       // Multi-Lead: t.leads is the authoritative list (added in v24)
-      if (Array.isArray(task.leads)) {
+      if (Array.isArray(task.leads) && task.leads.length > 0) {
         task.leads.forEach(n => { if (n && n.trim()) assignees.add(n.trim()); });
       } else if (task.assignee && task.assignee.trim()) {
         assignees.add(task.assignee.trim());

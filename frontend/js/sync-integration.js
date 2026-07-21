@@ -614,12 +614,25 @@
       // baseline, so the removals diff-sync as ordinary deletions.
       try {
         const n = dedupRecurringDuplicates();
-        if (n > 0) {
-          console.log('[sync] recurring-duplicate guard removed ' + n + ' same-day duplicate task(s)');
+        // Empty-leads normalizer: newer saves/clones write `leads: []`, which
+        // several aggregators treat as authoritative ("this task has no
+        // people") instead of falling back to task.assignee -- the task then
+        // vanishes from workload cards, insights, etc. An empty array is
+        // semantically identical to an absent field everywhere the fallback
+        // exists, so drop the key and every consumer heals at once.
+        let normalized = 0;
+        for (const p of (window.state.projects || [])) {
+          for (const t of (p.tasks || [])) {
+            if (t && Array.isArray(t.leads) && t.leads.length === 0) { delete t.leads; normalized++; }
+          }
+        }
+        if (n > 0 || normalized > 0) {
+          if (n > 0) console.log('[sync] recurring-duplicate guard removed ' + n + ' same-day duplicate task(s)');
+          if (normalized > 0) console.log('[sync] normalized ' + normalized + ' empty leads[] arrays (workload attribution fix)');
           if (typeof window.saveState === 'function') window.saveState();
           if (typeof render === 'function') render();
         }
-      } catch (e) { console.warn('[sync] dedup guard failed:', e && e.message); }
+      } catch (e) { console.warn('[sync] boot guard failed:', e && e.message); }
     });
   }
 
