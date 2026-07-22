@@ -410,6 +410,11 @@
     var origRender = window.render;
     if (typeof origRender === 'function' && !origRender.__sbgNotifHooked) {
       var wrappedRender = function () {
+        // Before painting: make sure the runtime stage list matches
+        // state.stages. Covers realtime merges + imports that swap the stage
+        // list mid-session, not just boot. Cheap -- returns immediately when
+        // the two already agree.
+        try { resyncRuntimeStages(); } catch (e) {}
         var r = origRender.apply(this, arguments);
         try { relayFreshNotifications(); } catch (e) {}
         try { throttledRecurringSweep(); } catch (e) {}
@@ -418,6 +423,38 @@
       wrappedRender.__sbgNotifHooked = true;
       window.render = wrappedRender;
     }
+  }
+
+  // ---- runtime stage-list resync ---------------------------------------------
+  // app.js keeps a module-scoped runtime array (STAGES) that every stage-driven
+  // view reads through getProjectStages(): the board columns, the pill-tab
+  // strip, the table's stage cells, the task modal's stage dropdown. loadState()
+  // syncs it from state.stages ONCE, in place. But this layer replaces
+  // window.state wholesale when the server copy arrives, so state.stages
+  // becomes the server's list (e.g. 20 customized stages) while the runtime
+  // array still holds whatever loadState() saw -- on a cold boot with no cache,
+  // that's the 9 DEFAULT_STAGES. Result: custom stages silently disappear from
+  // the board and their tasks have no column. Cold boots are now COMMON because
+  // the poisoned-cache guard heals by clearing the cache and full-fetching.
+  //
+  // getProjectStages({workstream:'bidding'}) returns that very array, which is
+  // how we get a reference to mutate in place (keeping every existing closure
+  // over it valid) without app.js exposing it.
+  function resyncRuntimeStages() {
+    const st = window.state;
+    if (!st || !Array.isArray(st.stages) || st.stages.length === 0) return false;
+    if (typeof window.getProjectStages !== 'function') return false;
+    let ref;
+    try { ref = window.getProjectStages({ workstream: 'bidding' }); } catch (e) { return false; }
+    if (!Array.isArray(ref) || ref === st.stages) return false;
+    const same = ref.length === st.stages.length &&
+                 ref.every((s, i) => s && st.stages[i] && s.id === st.stages[i].id && s.name === st.stages[i].name);
+    if (same) return false;
+    const was = ref.length;
+    ref.length = 0;
+    st.stages.forEach(s => ref.push(s));
+    console.log('[sync] resynced runtime stage list: ' + was + ' -> ' + ref.length + ' stages');
+    return true;
   }
 
   // ---- recurring-duplicate guard ---------------------------------------------
@@ -614,6 +651,10 @@
       if (updated) {
         try { document.body.setAttribute('data-hours-enabled', window.state.hoursEnabled ? 'true' : 'false'); } catch (e) {}
         window.state.sidebarCollapsed = true;
+        // MUST run before the first render: the server's stage list just
+        // replaced state.stages, and every stage-driven view reads the runtime
+        // array instead (see resyncRuntimeStages).
+        try { resyncRuntimeStages(); } catch (e) {}
         if (typeof renderCompanyLogo === 'function') renderCompanyLogo();
         if (typeof render === 'function') render();
       }
