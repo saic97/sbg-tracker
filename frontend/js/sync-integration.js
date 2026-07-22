@@ -169,11 +169,15 @@
       } catch (err) { handleSyncError(err); }
     }
 
-    // Quota-safe (see api.js): failed cache write purges cache + version so a
-    // stale copy can never pair with a fresh version stamp.
-    try { localStorage.setItem(STORAGE_KEY, JSON.stringify(state)); }
-    catch (e) {
-      try { localStorage.removeItem(STORAGE_KEY); localStorage.removeItem('sbg_state_version'); } catch (e2) {}
+    // Guarded write (see api.cacheState): quota-safe AND refuses to persist an
+    // empty workspace beside a version stamp (the 304 "empty forever" trap).
+    if (window.api && typeof window.api.cacheState === 'function') {
+      window.api.cacheState(state);
+    } else {
+      try { localStorage.setItem(STORAGE_KEY, JSON.stringify(state)); }
+      catch (e) {
+        try { localStorage.removeItem(STORAGE_KEY); localStorage.removeItem('sbg_state_version'); } catch (e2) {}
+      }
     }
   }
 
@@ -308,9 +312,13 @@
       try {
         window.state.bulkSelectionMode = false;
         window.state.bulkSelectedTaskIds = [];
-        try { localStorage.setItem(STORAGE_KEY, JSON.stringify(window.state)); }
-        catch (e) {
-          try { localStorage.removeItem(STORAGE_KEY); localStorage.removeItem('sbg_state_version'); } catch (e2) {}
+        if (window.api && typeof window.api.cacheState === 'function') {
+          window.api.cacheState(window.state);
+        } else {
+          try { localStorage.setItem(STORAGE_KEY, JSON.stringify(window.state)); }
+          catch (e) {
+            try { localStorage.removeItem(STORAGE_KEY); localStorage.removeItem('sbg_state_version'); } catch (e2) {}
+          }
         }
 
         // Push the whole state and WAIT. getState() first so expectedVersion

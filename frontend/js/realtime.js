@@ -218,10 +218,15 @@
       if (typeof payload.version === 'number') lastVersion = payload.version;
     }
     window.lastSyncedState = JSON.parse(JSON.stringify(window.state));
-    // Quota-safe (see api.js): failed cache write purges cache + version.
-    try { localStorage.setItem('sbg_precon_tracker_v3', JSON.stringify(window.state)); }
-    catch(e) {
-      try { localStorage.removeItem('sbg_precon_tracker_v3'); localStorage.removeItem('sbg_state_version'); } catch(e2) {}
+    // Guarded write (see api.cacheState): quota-safe AND refuses to persist an
+    // empty workspace beside a version stamp (the 304 "empty forever" trap).
+    if (window.api && typeof window.api.cacheState === 'function') {
+      window.api.cacheState(window.state);
+    } else {
+      try { localStorage.setItem('sbg_precon_tracker_v3', JSON.stringify(window.state)); }
+      catch(e) {
+        try { localStorage.removeItem('sbg_precon_tracker_v3'); localStorage.removeItem('sbg_state_version'); } catch(e2) {}
+      }
     }
     // Track the server's monotonic state version so the next saveState() PUTs
     // the right `expectedVersion` and doesn't trip the optimistic-concurrency
