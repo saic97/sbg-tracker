@@ -212,7 +212,12 @@ function loadState() {
     // Workload page view-state. Persisted so the user's filter/sort returns next visit.
     if (typeof state.teamWorkloadView !== 'boolean') state.teamWorkloadView = false;
     // v119: Training Log page — cross-project view of all tasks tagged as isTraining
-    if (typeof state.trainingLogView !== 'boolean') state.trainingLogView = false;
+    if (typeof state.trainingLogView !== 'boolean') state.trainingLogView = false; state.earlyLogView = false;
+    // v163: Completed Early Log — cross-project recognition view
+    if (typeof state.earlyLogView !== 'boolean') state.earlyLogView = false;
+    if (typeof state.earlyLogWindowFilter !== 'string') state.earlyLogWindowFilter = 'all';
+    if (typeof state.earlyLogPersonFilter !== 'string') state.earlyLogPersonFilter = 'all';
+    if (typeof state.earlyLogSort !== 'string') state.earlyLogSort = 'daysDesc';
     // v125: Projects list view — cross-workstream browsing page
     if (typeof state.projectsListView !== 'boolean') state.projectsListView = false;
     if (typeof state.projectsListSearch !== 'string') state.projectsListSearch = '';
@@ -858,7 +863,24 @@ function loadState() {
       if (typeof p.rfiDueDate === 'undefined') p.rfiDueDate = '';
 
       p.tasks.forEach(t => {
-        if (!t.stage) t.stage = 'project-setup';
+        if (!t.stage) {
+          // v162: Retro-rescue for tasks whose stage got wiped to empty
+          // string by the pre-v162 saveTask bug (dropdown returned empty
+          // when the current stage wasn't among the options). Empty-stage
+          // tasks disappear from Board + Table Group by Stage since the
+          // filters key on t.stage matching a stageId, and the orphan
+          // detector gates on t.stage being truthy. Restore to the
+          // project's workstream first stage so the task is visible
+          // again — Bidding gets 'project-setup', Training/Events/Precon
+          // General get their first custom stage (or 'general' if the
+          // workstream hasn't defined any).
+          try {
+            const stages = (typeof getProjectStages === 'function') ? getProjectStages(p) : STAGES;
+            t.stage = (stages && stages[0] && stages[0].id) || 'project-setup';
+          } catch (_) {
+            t.stage = 'project-setup';
+          }
+        }
         if (typeof t.dayOffset === 'undefined') t.dayOffset = null;
         if (typeof t.source === 'undefined') t.source = '';
         if (typeof t.support === 'undefined') t.support = '';
@@ -906,6 +928,19 @@ function loadState() {
         // Sync the legacy assignee field to leads[0] so legacy code paths
         // see a consistent value. Empty leads → empty assignee.
         t.assignee = t.leads[0] || '';
+        // v158: Backfill completion-metadata fields introduced in this
+        // ship. Tasks marked done before v158 have completedAt but no
+        // early/late flags — leave them as-is (untracked). Not-required
+        // is entirely new, so no backfill needed. Just guard against
+        // undefined so any consumer that reads these fields sees a stable
+        // shape.
+        if (typeof t.completedEarly === 'undefined') t.completedEarly = false;
+        if (typeof t.completedDaysBefore === 'undefined') t.completedDaysBefore = 0;
+        if (typeof t.completedLate === 'undefined') t.completedLate = false;
+        if (typeof t.completedDaysAfter === 'undefined') t.completedDaysAfter = 0;
+        if (typeof t.completedOnTime === 'undefined') t.completedOnTime = false;
+        if (typeof t.notRequiredAt === 'undefined') t.notRequiredAt = null;
+        if (typeof t.notRequiredBy === 'undefined') t.notRequiredBy = '';
         // Per-Lead ack state — each co-Lead has their own acknowledgment
         if (!t.leadAck || typeof t.leadAck !== 'object') t.leadAck = {};
         // Per-Lead completion state — each co-Lead can independently mark
@@ -1135,6 +1170,36 @@ function _confirmAndApplyImport(importedState, metadata, filename) {
       });
     });
   }
+  // v157: Preview counts for master lists that will get new items added
+  // during merge (custom Bidding stages, project templates, ball-in-court
+  // options, CSI, source, milestone types) — helps users understand what
+  // customizations will propagate from the backup they're about to merge.
+  function _countNewInList(arrName, keyField) {
+    if (!Array.isArray(importedState[arrName])) return 0;
+    if (!Array.isArray(state[arrName])) return importedState[arrName].filter(x => x && x[keyField]).length;
+    const localKeys = new Set(state[arrName].map(x => x && x[keyField]).filter(Boolean));
+    return importedState[arrName].filter(x => x && x[keyField] && !localKeys.has(x[keyField])).length;
+  }
+  const stagesNew = _countNewInList('stages', 'id');
+  const templatesNew = _countNewInList('templates', 'id');
+  const bicNew = _countNewInList('ballInCourtOptions', 'id');
+  const csiNew = _countNewInList('csiDivisions', 'id');
+  const sourcesNew = _countNewInList('sourceOptions', 'id');
+  const milestonesNew = _countNewInList('milestoneTypes', 'id');
+  let templateTasksNew = 0;
+  if (Array.isArray(state.taskTemplates) && Array.isArray(importedState.taskTemplates)) {
+    const importedTmplById = new Map();
+    importedState.taskTemplates.forEach(t => { if (t && t.id) importedTmplById.set(t.id, t); });
+    state.taskTemplates.forEach(local => {
+      const imp = importedTmplById.get(local && local.id);
+      if (!imp) return;
+      const localTaskIds = new Set((local.tasks || []).map(t => t && t.id).filter(Boolean));
+      (imp.tasks || []).forEach(t => {
+        if (t && t.id && !localTaskIds.has(t.id)) templateTasksNew++;
+      });
+    });
+  }
+  const masterListsTotal = stagesNew + templatesNew + bicNew + csiNew + sourcesNew + milestonesNew;
 
   const modalId = 'importConfirmModal';
   const existing = document.getElementById(modalId);
@@ -1164,6 +1229,15 @@ function _confirmAndApplyImport(importedState, metadata, filename) {
             <div><strong style="color:#166534;">${newNotifsFromImport}</strong> notification${newNotifsFromImport === 1 ? '' : 's'} added to your bell history</div>
             ${(tombTasksWouldRemove > 0 || tombProjectsWouldRemove > 0) ? `<div><strong style="color:var(--sbg-red, #c8322b);">${tombTasksWouldRemove}</strong> task${tombTasksWouldRemove === 1 ? '' : 's'} and <strong style="color:var(--sbg-red, #c8322b);">${tombProjectsWouldRemove}</strong> project${tombProjectsWouldRemove === 1 ? '' : 's'} will be REMOVED — deleted in the backup, still present here</div>` : ''}
             ${fieldsWouldSync > 0 ? `<div><strong style="color:var(--sbg-navy, #0a2540);">${fieldsWouldSync}</strong> task${fieldsWouldSync === 1 ? '' : 's'} will have edits ADOPTED (leads / support / hours / dates / title) — backup is fresher</div>` : ''}
+            ${masterListsTotal > 0 ? `<div><strong style="color:var(--sbg-navy, #0a2540);">${masterListsTotal}</strong> master-list items will be ADDED: ${[
+              stagesNew > 0 ? `${stagesNew} Bidding stage${stagesNew === 1 ? '' : 's'}` : '',
+              templatesNew > 0 ? `${templatesNew} project template${templatesNew === 1 ? '' : 's'}` : '',
+              bicNew > 0 ? `${bicNew} Ball-in-Court option${bicNew === 1 ? '' : 's'}` : '',
+              csiNew > 0 ? `${csiNew} CSI division${csiNew === 1 ? '' : 's'}` : '',
+              sourcesNew > 0 ? `${sourcesNew} bid source${sourcesNew === 1 ? '' : 's'}` : '',
+              milestonesNew > 0 ? `${milestonesNew} milestone type${milestonesNew === 1 ? '' : 's'}` : ''
+            ].filter(Boolean).join(', ')}</div>` : ''}
+            ${templateTasksNew > 0 ? `<div><strong style="color:var(--sbg-navy, #0a2540);">${templateTasksNew}</strong> task${templateTasksNew === 1 ? '' : 's'} will be ADDED to existing templates (edits Machine A made to shared templates)</div>` : ''}
             <div><strong style="color:var(--sbg-gold, #c07f00);">User preferences</strong> — signed-in user, toast mute, notification scope, and section-collapse state come from the backup where the current device is at its default</div>
           </div>
         </div>
@@ -1215,6 +1289,32 @@ function applyImport(mode) {
       _mergeImportedArrays(state, imported, 'projects', 'id');
       _mergeImportedArrays(state, imported, 'taskTemplates', 'id'); // v134 fix (was masterTaskTemplates typo)
       _mergeImportedArrays(state, imported, 'teamMembers', 'name');
+      // v157: Master lists that were never synced by merge, leaving custom
+      // items stranded on the machine that created them. Any task
+      // referencing a custom item (custom Bidding stage, project template,
+      // Ball-in-Court option, CSI code, source, milestone type) would
+      // orphan on the receiving machine — tasks with stage='post-award'
+      // showed as Uncategorized when 'post-award' didn't exist locally.
+      // Union by id for arrays with id fields, by name for the rest.
+      // Custom stages / options on the receiving machine are preserved.
+      _mergeImportedArrays(state, imported, 'stages', 'id');
+      _mergeImportedArrays(state, imported, 'templates', 'id');
+      _mergeImportedArrays(state, imported, 'ballInCourtOptions', 'id');
+      _mergeImportedArrays(state, imported, 'csiDivisions', 'id');
+      _mergeImportedArrays(state, imported, 'sourceOptions', 'id');
+      _mergeImportedArrays(state, imported, 'milestoneTypes', 'id');
+      // Runtime STAGES array is derived from state.stages — resync after merge
+      if (Array.isArray(state.stages)) {
+        STAGES.length = 0;
+        state.stages.forEach(s => STAGES.push(s));
+      }
+      // Sync tasks WITHIN existing task templates so edits to a template's
+      // task list (added / modified tasks in an existing template on
+      // Machine A) propagate. Template ID matched → union tasks by id.
+      const templateTasksSynced = _syncImportedTemplateTasks(state, imported);
+      if (templateTasksSynced > 0) {
+        console.log(`[v157] Synced ${templateTasksSynced} task${templateTasksSynced === 1 ? '' : 's'} inside existing templates`);
+      }
       // Pass 2: for projects that exist in BOTH, sync the classification /
       // lifecycle flags. This is the key fix that makes round-trips
       // preserve clone + archive state. We only sync fields that describe
@@ -1388,6 +1488,39 @@ function applyImport(mode) {
 // merge only added new tasks and left existing ones untouched. The
 // timestamp lets each machine make informed decisions instead of
 // blanket-preserving one side.
+// v157: For task templates that exist in BOTH the imported JSON and the
+// current state (matched by template id), union the tasks array so edits
+// to a template on Machine A (adding a new task, tweaking hours on an
+// existing one) propagate to Machine B. Without this, template task
+// additions were completely invisible on the receiving machine — Machine
+// A's 21st task in the SBG Standard template never showed up on Machine
+// B because merge's array-add-by-id only saw the template ID matched and
+// stopped there. Tasks matched by id inside the template; new imported
+// tasks pushed onto local, existing tasks left as-is (safe default —
+// user can always Replace-import if they want authoritative overwrites).
+function _syncImportedTemplateTasks(target, source) {
+  if (!Array.isArray(target.taskTemplates) || !Array.isArray(source.taskTemplates)) return 0;
+  const importedById = new Map();
+  source.taskTemplates.forEach(t => { if (t && t.id) importedById.set(t.id, t); });
+  let added = 0;
+  target.taskTemplates.forEach(local => {
+    if (!local || !local.id) return;
+    const imp = importedById.get(local.id);
+    if (!imp) return;
+    if (!Array.isArray(local.tasks)) local.tasks = [];
+    if (!Array.isArray(imp.tasks) || imp.tasks.length === 0) return;
+    const localTaskIds = new Set(local.tasks.map(t => t && t.id).filter(Boolean));
+    imp.tasks.forEach(t => {
+      if (t && t.id && !localTaskIds.has(t.id)) {
+        local.tasks.push(t);
+        localTaskIds.add(t.id);
+        added++;
+      }
+    });
+  });
+  return added;
+}
+
 function _syncImportedTaskFields(target, source) {
   if (!Array.isArray(target.projects) || !Array.isArray(source.projects)) return 0;
   const importedTaskById = new Map();
@@ -4027,7 +4160,7 @@ function selectProject(id) {
   state.activeAssignee = 'all';
   state.homeView = false;
   state.teamWorkloadView = false;
-  state.trainingLogView = false;
+  state.trainingLogView = false; state.earlyLogView = false;
   state.projectsListView = false;
   state.projectTimelineView = false;
   state.openSlotsView = false;
@@ -4043,7 +4176,7 @@ function openHomeView() {
   state.homeView = true;
   state.statusSnapshotView = false;
   state.teamWorkloadView = false;
-  state.trainingLogView = false;
+  state.trainingLogView = false; state.earlyLogView = false;
   state.projectsListView = false;
   state.projectTimelineView = false;
   state.openSlotsView = false;
@@ -4060,7 +4193,7 @@ function openHomeView() {
 function exitHomeView() {
   state.homeView = false;
   state.teamWorkloadView = false;
-  state.trainingLogView = false;
+  state.trainingLogView = false; state.earlyLogView = false;
   state.projectsListView = false;
   state.projectTimelineView = false;
   state.openSlotsView = false;
@@ -4084,7 +4217,7 @@ function openStatusSnapshot() {
   state.statusSnapshotView = true;
   state.homeView = false;
   state.teamWorkloadView = false;
-  state.trainingLogView = false;
+  state.trainingLogView = false; state.earlyLogView = false;
   state.projectsListView = false;
   state.projectTimelineView = false;
   state.openSlotsView = false;
@@ -4101,7 +4234,7 @@ function openStatusSnapshot() {
 function exitStatusSnapshot() {
   state.statusSnapshotView = false;
   state.teamWorkloadView = false;
-  state.trainingLogView = false;
+  state.trainingLogView = false; state.earlyLogView = false;
   state.projectsListView = false;
   state.projectTimelineView = false;
   state.openSlotsView = false;
@@ -4125,7 +4258,7 @@ function openTeamWorkloadView() {
   state.homeView = false;
   state.statusSnapshotView = false;
   state.projectTimelineView = false; // v75: ensure mutually exclusive
-  state.trainingLogView = false; // v119
+  state.trainingLogView = false; state.earlyLogView = false; // v119
   state.projectsListView = false;
   state.openSlotsView = false; // v126.1 fix
   state.tiView = false;        // v126.1 fix
@@ -4148,7 +4281,7 @@ function openProjectsListView() {
   state.statusSnapshotView = false;
   state.projectTimelineView = false;
   state.teamWorkloadView = false;
-  state.trainingLogView = false;
+  state.trainingLogView = false; state.earlyLogView = false;
   state.openSlotsView = false;
   state.tiView = false;
   const bar = document.getElementById('stickyCountdownBar');
@@ -4404,15 +4537,41 @@ function openTrainingLogView() {
 }
 
 function exitTrainingLogView() {
+  state.trainingLogView = false; state.earlyLogView = false;
+  state.projectsListView = false;
+  saveState();
+  render();
+}
+
+// v163: Completed Early Log view — cross-project recognition of tasks
+// pulled forward. Same navigation pattern as training log.
+function openEarlyLogView() {
+  state.earlyLogView = true;
+  state.homeView = false;
+  state.statusSnapshotView = false;
+  state.projectTimelineView = false;
+  state.teamWorkloadView = false;
+  state.openSlotsView = false;
+  state.tiView = false;
   state.trainingLogView = false;
   state.projectsListView = false;
+  const bar = document.getElementById('stickyCountdownBar');
+  const main = document.querySelector('.main');
+  if (bar) bar.style.display = 'none';
+  if (main) main.classList.remove('has-sticky-countdown');
+  saveState();
+  render();
+}
+
+function exitEarlyLogView() {
+  state.earlyLogView = false;
   saveState();
   render();
 }
 
 function exitTeamWorkloadView() {
   state.teamWorkloadView = false;
-  state.trainingLogView = false;
+  state.trainingLogView = false; state.earlyLogView = false;
   state.projectsListView = false;
   state.projectTimelineView = false;
   state.openSlotsView = false;
@@ -4436,7 +4595,7 @@ function refreshTeamWorkloadView() {
 function openProjectTimelineView() {
   state.projectTimelineView = true;
   state.teamWorkloadView = false;
-  state.trainingLogView = false;
+  state.trainingLogView = false; state.earlyLogView = false;
   state.projectsListView = false;
   state.openSlotsView = false;
   state.tiView = false;
@@ -4473,7 +4632,7 @@ function refreshProjectTimelineView() {
 function openOpenSlotsView() {
   state.openSlotsView = true;
   state.teamWorkloadView = false;
-  state.trainingLogView = false;
+  state.trainingLogView = false; state.earlyLogView = false;
   state.projectsListView = false;
   state.projectTimelineView = false;
   state.tiView = false;
@@ -4699,7 +4858,7 @@ function runFindAvailability() {
 function openTeamInsightsView() {
   state.tiView = true;
   state.teamWorkloadView = false;
-  state.trainingLogView = false;
+  state.trainingLogView = false; state.earlyLogView = false;
   state.projectsListView = false;
   state.projectTimelineView = false;
   state.openSlotsView = false;
@@ -5220,7 +5379,8 @@ function _renderPtvTaskRow(item, groupKey, todayKey) {
     'in-progress': 'In Progress',
     'blocked': 'Blocked',
     'pending': 'Pending',
-    'done': 'Done'
+    'done': 'Done',
+    'not-required': 'Not Required'
   };
   const statusLabel = statusLabelMap[status] || status;
   const rowClasses = ['ptv-task-row', `status-${status}`];
@@ -5231,7 +5391,7 @@ function _renderPtvTaskRow(item, groupKey, todayKey) {
     <div class="${rowClasses.join(' ')}" onclick="openTaskModal(null, '${escapeAttr(t.id)}')">
       <div class="ptv-task-status-dot status-${status}"></div>
       <div>
-        <span class="ptv-task-title">${escapeHtml(t.title || '(untitled)')}${_trainingChipMiniHtml(t)}</span>
+        <span class="ptv-task-title">${escapeHtml(t.title || '(untitled)')}${_trainingChipMiniHtml(t)}${_buildCompletionSideBadgeHtml(t)}</span>
         ${t.stage ? `<span class="ptv-task-stage">${escapeHtml(stageLabel)}</span>` : ''}
       </div>
       <div class="ptv-task-assignee">${escapeHtml(assignee)}</div>
@@ -5456,9 +5616,9 @@ function _aggregateWorkloadByAssignee() {
       // cleared) previously fell through this whole block with an empty
       // Set, making them silently invisible in workload. Route them
       // into a synthetic 'Unassigned' bucket so the user can see the
-      // work exists and needs to be assigned. Skips done tasks (no
-      // reason to surface completed unassigned work).
-      if (assignees.size === 0 && task.status !== 'done') {
+      // work exists and needs to be assigned. Skips terminal tasks
+      // (done or not-required) — no reason to surface completed unassigned work.
+      if (assignees.size === 0 && task.status !== 'done' && task.status !== 'not-required') {
         assignees.add('Unassigned');
       }
 
@@ -5483,11 +5643,16 @@ function _aggregateWorkloadByAssignee() {
         // The open-count metrics (totalOpen, overdue, etc) stay tied to status
         // because those are about "what's left", not "what was planned".
         const isPlanned = state.workloadMode === 'planned';
-        const includeForHours = isPlanned ? true : (task.status !== 'done');
-        const isDone = task.status === 'done';
+        // v158: not-required tasks are terminal like done — they're off the
+        // capacity clock and out of open counts. In Planned view (which
+        // shows what was scheduled regardless of outcome), we still
+        // include them; in Current view they're skipped for hours.
+        const isTerm = task.status === 'done' || task.status === 'not-required';
+        const includeForHours = isPlanned ? true : !isTerm;
+        const isDone = isTerm;
 
-        // Open tasks (anything not done) — track everything for drill-down
-        if (task.status !== 'done') {
+        // Open tasks (anything not terminal) — track everything for drill-down
+        if (!isTerm) {
           s.totalOpen++;
           s.byProject[project.name].tasks++;
           if (task.status === 'not-started') s.notStarted++;
@@ -6025,8 +6190,8 @@ function _aggregateTeamInsights() {
             }
           }
         }
-        // Overdue (currently past-due and not done)
-        if (task.status !== 'done' && task.dueDate && task.dueDate < todayStr) {
+        // Overdue (currently past-due and not terminal — done or not-required both close it out)
+        if (task.status !== 'done' && task.status !== 'not-required' && task.dueDate && task.dueDate < todayStr) {
           s.overdueCount++;
           if (s.recentOverdueTasks.length < 25) {
             s.recentOverdueTasks.push({
@@ -6215,6 +6380,257 @@ function _fmtHours(n) {
 function _fmtTrainingHours(n) {
   // v119 legacy alias — kept so existing callers keep working
   return _fmtHours(n);
+}
+
+// v163: Collect every task across all non-archived projects that has
+// completedEarly=true (and completedDaysBefore>0). Returns a flat array
+// with the task + project + timing metadata attached for downstream
+// rendering + filtering.
+function _collectEarlyCompletions() {
+  const items = [];
+  (state.projects || []).forEach(project => {
+    if (project.archived) return;
+    (project.tasks || []).forEach(task => {
+      if (task.status !== 'done') return;
+      if (!task.completedEarly) return;
+      if (!(task.completedDaysBefore > 0)) return;
+      // Pick the primary lead as the "credited" person for the row.
+      // If multiple leads, we attribute the win to each of them for
+      // stat purposes below; for the row display we show the primary.
+      const leads = (typeof getTaskLeads === 'function') ? getTaskLeads(task) : (task.assignee ? [task.assignee] : []);
+      items.push({
+        task,
+        project,
+        leads,
+        daysEarly: task.completedDaysBefore || 0,
+        completedAt: task.completedAt || 0,
+        dueDate: task.dueDate || ''
+      });
+    });
+  });
+  return items;
+}
+
+// Aggregate per-person stats from an early-completions item list. Each
+// lead on a task gets credited for the pull-forward — if two co-leads
+// finished a task 3 days early, both leaderboards show a +3.
+function _buildEarlyPersonSummary(items) {
+  const byPerson = {};
+  items.forEach(it => {
+    (it.leads.length > 0 ? it.leads : ['Unassigned']).forEach(name => {
+      if (!byPerson[name]) byPerson[name] = { name, count: 0, totalDaysEarly: 0, avgDaysEarly: 0, best: 0 };
+      byPerson[name].count++;
+      byPerson[name].totalDaysEarly += it.daysEarly;
+      if (it.daysEarly > byPerson[name].best) byPerson[name].best = it.daysEarly;
+    });
+  });
+  Object.values(byPerson).forEach(p => {
+    p.avgDaysEarly = p.count > 0 ? (p.totalDaysEarly / p.count) : 0;
+  });
+  return byPerson;
+}
+
+// Apply the active window / person filters to the item list.
+function _filterEarlyCompletions(items) {
+  const window = state.earlyLogWindowFilter || 'all';
+  const person = state.earlyLogPersonFilter || 'all';
+  const now = new Date();
+  let cutoff = 0;
+  if (window === 'week') {
+    const d = new Date(now); d.setDate(d.getDate() - 7); cutoff = d.getTime();
+  } else if (window === 'month') {
+    cutoff = new Date(now.getFullYear(), now.getMonth(), 1).getTime();
+  } else if (window === 'quarter') {
+    const q = Math.floor(now.getMonth() / 3) * 3;
+    cutoff = new Date(now.getFullYear(), q, 1).getTime();
+  } else if (window === 'year') {
+    cutoff = new Date(now.getFullYear(), 0, 1).getTime();
+  }
+  return items.filter(it => {
+    if (cutoff > 0 && it.completedAt < cutoff) return false;
+    if (person !== 'all' && !it.leads.includes(person)) return false;
+    return true;
+  });
+}
+
+function renderEarlyLogView() {
+  const allItems = _collectEarlyCompletions();
+  const filtered = _filterEarlyCompletions(allItems);
+
+  // ===== Stat tiles =====
+  const now = new Date();
+  const monthStart = new Date(now.getFullYear(), now.getMonth(), 1).getTime();
+  const yearStart = new Date(now.getFullYear(), 0, 1).getTime();
+  const teamTotal = allItems.length;
+  const teamMonth = allItems.filter(it => it.completedAt >= monthStart).length;
+  const teamYtd = allItems.filter(it => it.completedAt >= yearStart).length;
+  const totalDaysPulledForward = allItems.reduce((s, it) => s + it.daysEarly, 0);
+  const strip = document.getElementById('earlyStatStrip');
+  if (strip) {
+    strip.innerHTML = `
+      <div class="tlv-stat-tile">
+        <div class="tlv-stat-label">Total Pull-Forwards</div>
+        <div class="tlv-stat-value" style="color:#2e7d52;">${teamTotal}</div>
+        <div class="tlv-stat-sub">across the whole team</div>
+      </div>
+      <div class="tlv-stat-tile">
+        <div class="tlv-stat-label">This Month</div>
+        <div class="tlv-stat-value" style="color:#2e7d52;">${teamMonth}</div>
+        <div class="tlv-stat-sub">early completions since ${new Date(monthStart).toLocaleDateString('en-US', {month:'short', day:'numeric'})}</div>
+      </div>
+      <div class="tlv-stat-tile">
+        <div class="tlv-stat-label">Year to Date</div>
+        <div class="tlv-stat-value" style="color:#2e7d52;">${teamYtd}</div>
+        <div class="tlv-stat-sub">early since Jan 1</div>
+      </div>
+      <div class="tlv-stat-tile">
+        <div class="tlv-stat-label">Total Days Pulled Forward</div>
+        <div class="tlv-stat-value" style="color:var(--sbg-gold);">${totalDaysPulledForward}</div>
+        <div class="tlv-stat-sub">cumulative lead time across all tasks</div>
+      </div>
+    `;
+  }
+
+  // ===== Per-person leaderboard cards =====
+  const perPersonAll = _buildEarlyPersonSummary(allItems);
+  const sortedPeople = Object.values(perPersonAll).sort((a, b) => b.count - a.count || b.totalDaysEarly - a.totalDaysEarly);
+  const grid = document.getElementById('earlyPersonGrid');
+  const countEl = document.getElementById('earlyPersonCount');
+  if (countEl) countEl.textContent = `${sortedPeople.length} team member${sortedPeople.length === 1 ? '' : 's'} with early wins`;
+  if (grid) {
+    if (sortedPeople.length === 0) {
+      grid.innerHTML = `<div style="grid-column: 1 / -1; padding: 24px; text-align: center; color: var(--text-dim); font-style: italic;">No early completions yet. Mark a task done before its due date to earn a pull-forward badge.</div>`;
+    } else {
+      grid.innerHTML = sortedPeople.map((p, idx) => {
+        const initials = (p.name || '?').split(/\s+/).map(x => x[0]).join('').slice(0, 2).toUpperCase();
+        const rankBadge = idx === 0 ? '🥇' : (idx === 1 ? '🥈' : (idx === 2 ? '🥉' : ''));
+        return `
+          <div class="tlv-person-card" style="border-left: 4px solid #2e7d52;">
+            <div class="tlv-person-header">
+              <div class="tlv-person-avatar" style="background:${avatarColor(p.name)};">${escapeHtml(initials)}</div>
+              <div class="tlv-person-name-row">
+                <div class="tlv-person-name">${escapeHtml(p.name)} ${rankBadge}</div>
+                <div class="tlv-person-role">${p.count} early completion${p.count === 1 ? '' : 's'}</div>
+              </div>
+            </div>
+            <div class="tlv-person-stats">
+              <div class="tlv-person-stat">
+                <div class="tlv-person-stat-label">Total Days Early</div>
+                <div class="tlv-person-stat-value" style="color:#2e7d52;">${p.totalDaysEarly}</div>
+              </div>
+              <div class="tlv-person-stat">
+                <div class="tlv-person-stat-label">Avg / Task</div>
+                <div class="tlv-person-stat-value" style="color:#2e7d52;">${p.avgDaysEarly.toFixed(1)}</div>
+              </div>
+              <div class="tlv-person-stat">
+                <div class="tlv-person-stat-label">Best Pull</div>
+                <div class="tlv-person-stat-value" style="color:var(--sbg-gold);">${p.best}d</div>
+              </div>
+            </div>
+          </div>
+        `;
+      }).join('');
+    }
+  }
+
+  // ===== Populate person filter dropdown =====
+  const personSel = document.getElementById('earlyPersonFilter');
+  if (personSel) {
+    const currentVal = state.earlyLogPersonFilter || 'all';
+    const names = Object.keys(perPersonAll).sort();
+    personSel.innerHTML = `<option value="all">Everyone</option>` + names.map(n => `<option value="${escapeAttr(n)}"${n === currentVal ? ' selected' : ''}>${escapeHtml(n)}</option>`).join('');
+    personSel.value = currentVal;
+  }
+  const windowSel = document.getElementById('earlyWindowFilter');
+  if (windowSel) windowSel.value = state.earlyLogWindowFilter || 'all';
+  const sortSel = document.getElementById('earlySortFilter');
+  if (sortSel) sortSel.value = state.earlyLogSort || 'daysDesc';
+
+  // ===== Detail task list =====
+  const sortMode = state.earlyLogSort || 'daysDesc';
+  const sorted = [...filtered];
+  if (sortMode === 'daysDesc') sorted.sort((a, b) => b.daysEarly - a.daysEarly || b.completedAt - a.completedAt);
+  else if (sortMode === 'dateDesc') sorted.sort((a, b) => b.completedAt - a.completedAt);
+  else if (sortMode === 'dateAsc') sorted.sort((a, b) => a.completedAt - b.completedAt);
+
+  const listEl = document.getElementById('earlyTaskList');
+  if (listEl) {
+    if (sorted.length === 0) {
+      listEl.innerHTML = `<div style="padding: 32px; text-align: center; color: var(--text-dim); font-style: italic;">No early completions match the current filter.</div>`;
+    } else {
+      listEl.innerHTML = sorted.map(it => {
+        const t = it.task, p = it.project;
+        const dueStr = t.dueDate ? formatDate(t.dueDate) : '—';
+        const doneStr = t.completedAt ? new Date(t.completedAt).toLocaleDateString('en-US', {month:'short', day:'numeric', year:'numeric'}) : '—';
+        const leadStr = it.leads.length > 0 ? it.leads.join(', ') : 'Unassigned';
+        const wsLabel = (function() {
+          try { return (getWorkstream(p) || {}).label || ''; } catch (_) { return ''; }
+        })();
+        return `
+          <div class="tlv-log-row" onclick="jumpToTaskFromEarlyLog('${escapeAttr(p.id)}', '${escapeAttr(t.id)}')" style="cursor:pointer;">
+            <div style="display: flex; justify-content: space-between; align-items: start; gap: 12px;">
+              <div style="flex:1; min-width: 0;">
+                <div style="font-weight: 700; color: var(--text); font-size: 14px;">${escapeHtml(t.title)}${_trainingChipMiniHtml(t)}</div>
+                <div style="font-size: 12px; color: var(--text-dim); margin-top: 3px;">
+                  ${escapeHtml(p.name)}${wsLabel ? ' · ' + escapeHtml(wsLabel) : ''} · Lead: ${escapeHtml(leadStr)}
+                </div>
+                <div style="font-size: 11px; color: var(--text-dim); margin-top: 2px; font-family: 'JetBrains Mono', monospace;">
+                  Due: ${escapeHtml(dueStr)} · Completed: ${escapeHtml(doneStr)}
+                </div>
+              </div>
+              <div class="early-completion-badge" style="font-size: 12px; padding: 6px 10px;">🏁 ${it.daysEarly}d early</div>
+            </div>
+          </div>
+        `;
+      }).join('');
+    }
+  }
+}
+
+// Navigate back to the task's project and open the task modal.
+function jumpToTaskFromEarlyLog(projectId, taskId) {
+  state.earlyLogView = false;
+  state.activeProjectId = projectId;
+  saveState();
+  render();
+  setTimeout(() => { try { openTaskModal(null, taskId); } catch (_) {} }, 50);
+}
+
+// Copy a plain-text summary to the clipboard for reporting / email.
+function copyEarlyLogSummary() {
+  const items = _collectEarlyCompletions();
+  const filtered = _filterEarlyCompletions(items);
+  const perPersonAll = _buildEarlyPersonSummary(items);
+  const sortedPeople = Object.values(perPersonAll).sort((a, b) => b.count - a.count);
+  const lines = [];
+  lines.push('🏁 SBG PRECON — COMPLETED EARLY LOG SUMMARY');
+  lines.push('Generated: ' + new Date().toLocaleString('en-US'));
+  lines.push('');
+  lines.push('Team Totals:');
+  lines.push(`  Total pull-forwards: ${items.length}`);
+  lines.push(`  Total days pulled forward: ${items.reduce((s, it) => s + it.daysEarly, 0)}`);
+  lines.push('');
+  lines.push('Leaderboard:');
+  sortedPeople.forEach((p, idx) => {
+    const rank = idx === 0 ? '🥇' : (idx === 1 ? '🥈' : (idx === 2 ? '🥉' : `  ${idx + 1}.`));
+    lines.push(`  ${rank} ${p.name} — ${p.count} early (${p.totalDaysEarly} total days, best ${p.best}d, avg ${p.avgDaysEarly.toFixed(1)}d)`);
+  });
+  lines.push('');
+  lines.push('Recent Early Completions (current filter):');
+  const sorted = [...filtered].sort((a, b) => b.completedAt - a.completedAt);
+  sorted.slice(0, 25).forEach(it => {
+    const doneStr = it.completedAt ? new Date(it.completedAt).toLocaleDateString('en-US', {month:'short', day:'numeric'}) : '—';
+    lines.push(`  • ${doneStr}: "${it.task.title}" — ${it.leads.join(', ') || 'Unassigned'} — ${it.daysEarly}d early (${it.project.name})`);
+  });
+  const text = lines.join('\n');
+  try {
+    navigator.clipboard.writeText(text).then(() => {
+      if (typeof showToast === 'function') showToast('📋 Early Log summary copied to clipboard', 'success');
+      else alert('Summary copied to clipboard.');
+    }).catch(() => window.prompt('Copy the text below:', text));
+  } catch (_) {
+    window.prompt('Copy the text below:', text);
+  }
 }
 
 function renderTrainingLogView() {
@@ -7018,7 +7434,7 @@ function openWorkloadDrilldown(name, startDate, endDate, label) {
     return `
     <div class="wlDrill-row" onclick="window.openTaskModal && openTaskModal(null, '${escapeAttr(t.taskId)}')" style="${doneStyle}">
       <div class="wlDrill-date">${escapeHtml(formatDate(t.date))}</div>
-      <div class="wlDrill-title">${doneBadge}${t.critical ? '🔥 ' : ''}${escapeHtml(t.title || '(untitled)')}${_trainingChipMiniHtml(t)}</div>
+      <div class="wlDrill-title">${doneBadge}${t.critical ? '🔥 ' : ''}${escapeHtml(t.title || '(untitled)')}${_trainingChipMiniHtml(t)}${_buildCompletionSideBadgeHtml(t)}</div>
       <div class="wlDrill-project">${escapeHtml(t.projectName || '')}</div>
       <div class="wlDrill-hours">${_fmtHours(t.hours)}</div>
     </div>
@@ -7115,8 +7531,10 @@ function _collectPastDueTasks(opts) {
 
   projects.forEach(project => {
     (project.tasks || []).forEach(task => {
-      // Skip completed tasks — past-due means "should have been done, isn't"
-      if (task.status === 'done') return;
+      // v158: Skip terminal tasks — done or not-required. Past-due means
+      // "should have been done, isn't" — a task the team decided didn't
+      // need to happen shouldn't nag on the past-due list.
+      if (task.status === 'done' || task.status === 'not-required') return;
       // Must have a due date earlier than the active window start
       if (!task.dueDate || task.dueDate >= cutoff) return;
 
@@ -7904,7 +8322,7 @@ function _renderUnassignedPile() {
       ${unassignedTasks.slice(0, 50).map(t => `
         <div class="twv-unassigned-row ${t.critical ? 'is-critical' : ''}" onclick="openTaskFromWorkload('${escapeAttr(t.projectId)}', '${escapeAttr(t.taskId)}')">
           ${t.critical ? '<span class="twv-unas-crit">🔥</span>' : '<span class="twv-unas-crit"></span>'}
-          <span class="twv-unas-title" title="${escapeAttr(t.title)}">${escapeHtml(t.title)}${_trainingChipMiniHtml(t)}</span>
+          <span class="twv-unas-title" title="${escapeAttr(t.title)}">${escapeHtml(t.title)}${_trainingChipMiniHtml(t)}${_buildCompletionSideBadgeHtml(t)}</span>
           <span class="twv-unas-project">${escapeHtml(t.projectName)}</span>
           <span class="twv-unas-due">${t.dueDate ? formatDate(t.dueDate) : '—'}</span>
           <span class="twv-unas-hours">${t.estimatedHours > 0 ? t.estimatedHours + 'h' : '—'}</span>
@@ -7919,14 +8337,14 @@ function _renderUnassignedPile() {
 function navigateToProjectFromWorkload(projectId) {
   state.activeProjectId = projectId;
   state.teamWorkloadView = false;
-  state.trainingLogView = false;
+  state.trainingLogView = false; state.earlyLogView = false;
   state.projectsListView = false;
   state.projectTimelineView = false;
   state.openSlotsView = false;
   state.tiView = false;
   state.homeView = false;
   state.teamWorkloadView = false;
-  state.trainingLogView = false;
+  state.trainingLogView = false; state.earlyLogView = false;
   state.projectsListView = false;
   state.projectTimelineView = false;
   state.openSlotsView = false;
@@ -7938,14 +8356,14 @@ function navigateToProjectFromWorkload(projectId) {
 function openTaskFromWorkload(projectId, taskId) {
   state.activeProjectId = projectId;
   state.teamWorkloadView = false;
-  state.trainingLogView = false;
+  state.trainingLogView = false; state.earlyLogView = false;
   state.projectsListView = false;
   state.projectTimelineView = false;
   state.openSlotsView = false;
   state.tiView = false;
   state.homeView = false;
   state.teamWorkloadView = false;
-  state.trainingLogView = false;
+  state.trainingLogView = false; state.earlyLogView = false;
   state.projectsListView = false;
   state.projectTimelineView = false;
   state.openSlotsView = false;
@@ -8183,7 +8601,7 @@ function renderReassignList() {
       <label class="reassign-row ${checked ? 'selected' : ''} ${t.critical ? 'is-critical' : ''}">
         <input type="checkbox" ${checked ? 'checked' : ''} onchange="toggleReassignTask('${escapeAttr(t.taskId)}', this.checked)">
         ${t.critical ? '<span class="reassign-crit">🔥</span>' : '<span class="reassign-crit"></span>'}
-        <span class="reassign-title" title="${escapeAttr(t.title)}">${escapeHtml(t.title)}${_trainingChipMiniHtml(t)}</span>
+        <span class="reassign-title" title="${escapeAttr(t.title)}">${escapeHtml(t.title)}${_trainingChipMiniHtml(t)}${_buildCompletionSideBadgeHtml(t)}</span>
         <span class="reassign-project">${escapeHtml(t.projectName)}</span>
         <span class="reassign-role">${t.isLead ? 'Lead' : 'Support'}</span>
         <span class="reassign-due">${t.dueDate ? formatDate(t.dueDate) : '—'}</span>
@@ -8604,7 +9022,7 @@ function renderSnapshotRow(entry, sectionKey) {
     : `<span class="ssv-row-project-thumb ssv-row-project-thumb-text">${escapeHtml(initials)}</span>`;
 
   // Status pill
-  const statusLabels = { 'not-started': 'Not Started', 'in-progress': 'In Progress', 'blocked': 'Blocked', 'pending': 'Pending', 'done': 'Done' };
+  const statusLabels = { 'not-started': 'Not Started', 'in-progress': 'In Progress', 'blocked': 'Blocked', 'pending': 'Pending', 'done': 'Done', 'not-required': 'Not Required' };
   const statusPill = `<span class="ssv-row-status status-${t.status}">${statusLabels[t.status] || t.status}</span>`;
 
   // Due / countdown — humanized
@@ -8678,7 +9096,7 @@ function renderSnapshotRow(entry, sectionKey) {
     <div class="ssv-row" onclick="openTaskFromSnapshot('${project.id}', '${t.id}')">
       <div class="ssv-row-project" title="${escapeHtml(project.name)}">${projectThumb}<span class="ssv-row-project-name">${escapeHtml(project.name)}</span></div>
       <div class="ssv-row-main">
-        <div class="ssv-row-title">${escapeHtml(t.title)}${_trainingChipMiniHtml(t)}${chipsHtml ? ' ' + chipsHtml : ''}${overlapHint}</div>
+        <div class="ssv-row-title">${escapeHtml(t.title)}${_trainingChipMiniHtml(t)}${_buildCompletionSideBadgeHtml(t)}${chipsHtml ? ' ' + chipsHtml : ''}${overlapHint}</div>
         <div class="ssv-row-meta">
           ${statusPill}
           <span class="ssv-row-assignee">${assigneeAvatar}<span class="ssv-row-assignee-name">${escapeHtml(assigneeName)}</span></span>
@@ -9375,7 +9793,7 @@ function renderHomeTaskItem(project, task, bucketKey) {
     <div class="home-item ${cls}" onclick="jumpToTaskFromHome('${project.id}', '${task.id}')">
       <span class="hi-project-chip" title="${escapeHtml(project.name)}">${escapeHtml(project.name)}</span>
       <div class="hi-body">
-        <div class="hi-title">${escapeHtml(task.title)}${_trainingChipMiniHtml(task)}</div>
+        <div class="hi-title">${escapeHtml(task.title)}${_trainingChipMiniHtml(task)}${_buildCompletionSideBadgeHtml(task)}</div>
         <div class="hi-meta">${stage.icon} ${escapeHtml(stage.name)}</div>
       </div>
       <div class="hi-right">${dueBadge}</div>
@@ -9449,7 +9867,7 @@ function renderHomeUnack(user) {
       <div class="home-item hi-critical" onclick="jumpToTaskFromHome('${project.id}', '${task.id}')">
         <span class="hi-project-chip" title="${escapeHtml(project.name)}">${escapeHtml(project.name)}</span>
         <div class="hi-body">
-          <div class="hi-title">${escapeHtml(task.title)}${_trainingChipMiniHtml(task)} ${seriesBadge}</div>
+          <div class="hi-title">${escapeHtml(task.title)}${_trainingChipMiniHtml(task)} ${seriesBadge}${_buildCompletionSideBadgeHtml(task)}</div>
           <div class="hi-meta">${stage.icon} ${escapeHtml(stage.name)}${task.dueDate ? ' · Next due ' + formatDateShort(task.dueDate) : ''}${cadence}</div>
         </div>
         <button class="btn btn-primary btn-sm" onclick="event.stopPropagation(); acknowledgeTaskFromHome('${project.id}', '${task.id}');">✓ Acknowledge${kind === 'series' && seriesCount > 1 ? ' Series' : ''}</button>
@@ -9508,7 +9926,7 @@ function renderHomeSignoffs(user) {
       <div class="home-item hi-info" onclick="jumpToTaskFromHome('${project.id}', '${task.id}')">
         <span class="hi-project-chip" title="${escapeHtml(project.name)}">${escapeHtml(project.name)}</span>
         <div class="hi-body">
-          <div class="hi-title">${escapeHtml(task.title)}${_trainingChipMiniHtml(task)}</div>
+          <div class="hi-title">${escapeHtml(task.title)}${_trainingChipMiniHtml(task)}${_buildCompletionSideBadgeHtml(task)}</div>
           <div class="hi-meta">${stage.icon} ${escapeHtml(stage.name)} · Completed by ${escapeHtml(task.assignee || 'assignee')}</div>
         </div>
         <div class="hi-right"><span class="hi-due-badge" style="background:var(--green);color:#fff;">Review</span></div>
@@ -9537,7 +9955,7 @@ function renderHomeRejections(user) {
       <div class="home-item hi-critical" onclick="jumpToTaskFromHome('${project.id}', '${task.id}')">
         <span class="hi-project-chip" title="${escapeHtml(project.name)}">${escapeHtml(project.name)}</span>
         <div class="hi-body">
-          <div class="hi-title">${escapeHtml(task.title)}${_trainingChipMiniHtml(task)}</div>
+          <div class="hi-title">${escapeHtml(task.title)}${_trainingChipMiniHtml(task)}${_buildCompletionSideBadgeHtml(task)}</div>
           <div class="hi-meta">${stage.icon} · Rejected by ${escapeHtml(task.completionRejectedBy || 'Lead')} · Reason: ${escapeHtml(task.completionRejectionReason || 'Not specified')}</div>
         </div>
         <div class="hi-right"><span class="hi-due-badge overdue">Action</span></div>
@@ -9551,7 +9969,7 @@ function renderHomeRejections(user) {
 function jumpToProjectFromHome(projectId) {
   state.homeView = false;
   state.teamWorkloadView = false;
-  state.trainingLogView = false;
+  state.trainingLogView = false; state.earlyLogView = false;
   state.projectsListView = false;
   state.projectTimelineView = false;
   state.openSlotsView = false;
@@ -9566,7 +9984,7 @@ function jumpToProjectFromHome(projectId) {
 function jumpToTaskFromHome(projectId, taskId) {
   state.homeView = false;
   state.teamWorkloadView = false;
-  state.trainingLogView = false;
+  state.trainingLogView = false; state.earlyLogView = false;
   state.projectsListView = false;
   state.projectTimelineView = false;
   state.openSlotsView = false;
@@ -9583,7 +10001,7 @@ function jumpToTaskFromHome(projectId, taskId) {
 function jumpToMessageFromHome(projectId) {
   state.homeView = false;
   state.teamWorkloadView = false;
-  state.trainingLogView = false;
+  state.trainingLogView = false; state.earlyLogView = false;
   state.projectsListView = false;
   state.projectTimelineView = false;
   state.openSlotsView = false;
@@ -10373,6 +10791,8 @@ function markLeadCompleteFromModal(leadName) {
     if (allDone && t.status !== 'done') {
       t.status = 'done';
       t.completedAt = Date.now();
+      // v158: Also stamp early/late completion flags on auto-done path
+      if (typeof _applyEarlyCompletionFlags === 'function') _applyEarlyCompletionFlags(t);
       if (typeof logActivity === 'function') {
         try {
           logActivity(project, {
@@ -10528,6 +10948,29 @@ function isRecurringTask(task) {
 //             needs the light-on-red variant (currently handled by CSS
 //             cascade via .task-card.is-overdue, but the flag is here
 //             for cases where we render outside of that context).
+// v158: Small badge rendered on task cards + table rows to show whether
+// a completed task was finished early, late, or was skipped as Not
+// Required. Returns empty string for tasks that aren't in a terminal
+// state or don't have completion metadata.
+function _buildCompletionSideBadgeHtml(task) {
+  if (!task) return '';
+  if (task.status === 'not-required') {
+    const dt = task.notRequiredAt ? new Date(task.notRequiredAt).toLocaleDateString('en-US', {month:'short',day:'numeric'}) : '';
+    const tip = dt ? `Marked Not Required on ${dt}` + (task.notRequiredBy ? ` by ${task.notRequiredBy}` : '') : 'Marked Not Required';
+    return `<span class="not-required-badge" title="${escapeAttr(tip)}">⊘ N/A</span>`;
+  }
+  if (task.status !== 'done') return '';
+  if (task.completedEarly && task.completedDaysBefore > 0) {
+    const n = task.completedDaysBefore;
+    return `<span class="early-completion-badge" title="Completed ${n} day${n === 1 ? '' : 's'} before due date — nice pull-forward">🏁 ${n}d early</span>`;
+  }
+  if (task.completedLate && task.completedDaysAfter > 0) {
+    const n = task.completedDaysAfter;
+    return `<span class="late-completion-badge" title="Completed ${n} day${n === 1 ? '' : 's'} after due date">⏱ ${n}d late</span>`;
+  }
+  return '';
+}
+
 function buildRescheduledPastDueBadgeHtml(task, options) {
   if (!task || !task.rescheduledFromPastDue) return '';
   const meta = task.rescheduledFromPastDueMeta || {};
@@ -12857,7 +13300,8 @@ function logTaskStatusChanged(project, task, oldStatus, newStatus) {
     'in-progress': 'In Progress',
     'blocked': 'Blocked',
     'pending': 'Pending',
-    'done': 'Complete'
+    'done': 'Complete',
+    'not-required': 'Not Required'
   };
   logActivity(project, {
     type: 'task',
@@ -13481,7 +13925,7 @@ function openTaskModal(defaultStatus='not-started', taskId=null) {
   // id string that doesn't match a known status), silently treat it as
   // openTaskModal(null, taskId). This makes cross-context openers (workload
   // drill-down, past-due modal, alerts) work regardless of arg positioning.
-  const KNOWN_STATUSES = ['not-started','in-progress','pending','blocked','done'];
+  const KNOWN_STATUSES = ['not-started','in-progress','pending','blocked','done','not-required'];
   if (typeof defaultStatus === 'string' && !KNOWN_STATUSES.includes(defaultStatus) && taskId === null) {
     taskId = defaultStatus;
     defaultStatus = 'not-started';
@@ -13535,6 +13979,21 @@ function openTaskModal(defaultStatus='not-started', taskId=null) {
     const calendarTaskBtn = document.getElementById('calendarTaskBtn');
     if (calendarTaskBtn) calendarTaskBtn.style.display = 'inline-flex';
     document.getElementById('taskTitle').value = t.title||'';
+    // v162: If the task's stage isn't in the dropdown options (common on
+    // cross-workstream clones or after custom stages get removed), inject
+    // it as an orphan option BEFORE setting .value — otherwise the assign
+    // silently fails, .value returns empty string, and any subsequent
+    // save writes stage='' onto the task, making it disappear from Board
+    // + Table Group by Stage. Same pattern as the category orphan handling
+    // a few lines below.
+    const stageSel = document.getElementById('taskStage');
+    if (t.stage && stageSel && !Array.from(stageSel.options).some(o => o.value === t.stage)) {
+      const orphanStage = document.createElement('option');
+      orphanStage.value = t.stage;
+      orphanStage.textContent = `⚠ ${t.stage} (orphan)`;
+      orphanStage.dataset.orphan = 'true';
+      stageSel.insertBefore(orphanStage, stageSel.firstChild);
+    }
     document.getElementById('taskStage').value = t.stage||'project-setup';
     // If the task's category isn't in the master list (e.g. it was deleted), inject it as an orphan option
     const catSel = document.getElementById('taskCategory');
@@ -16041,7 +16500,12 @@ function saveTask() {
     : !!bpFields.bestPractice;
   const data = {
     title,
-    stage: document.getElementById('taskStage').value,
+    // v162: Fall back to existing stage if dropdown returned empty. Empty
+    // stage would strip the task off Board + Table Group by Stage since
+    // the filters require t.stage === stageId, and orphan detection
+    // gates on t.stage being truthy. Two other saveTask-adjacent sites
+    // already use this pattern.
+    stage: document.getElementById('taskStage').value || (existingForBP && existingForBP.stage) || 'project-setup',
     category: document.getElementById('taskCategory').value,
     priority: document.getElementById('taskPriority').value,
     // Critical flag — replaces priority as the authoritative importance signal.
@@ -16195,6 +16659,37 @@ function saveTask() {
     data.lastEditedAt = Date.now();
     data.lastEditedBy = (typeof getCurrentUser === 'function' && getCurrentUser()) || '';
     Object.assign(existing, data);
+    // v160: Wire the v158 early/late-completion flags + not-required
+    // metadata into the saveTask edit path. Previously these only ran
+    // in updateTaskStatus (calendar picker, board drag, inline dropdown)
+    // — the task modal's Save button bypasses updateTaskStatus and lands
+    // here directly, so completing via the modal never set the flags,
+    // never fired the positive-tone toast, and never showed the badge.
+    if (newStatus === 'done' && oldStatus !== 'done') {
+      existing.completedAt = Date.now();
+      if (typeof _applyEarlyCompletionFlags === 'function') {
+        _applyEarlyCompletionFlags(existing);
+      }
+    }
+    if (newStatus === 'not-required' && oldStatus !== 'not-required') {
+      existing.completedAt = Date.now();
+      existing.notRequiredAt = Date.now();
+      existing.notRequiredBy = (typeof getCurrentUser === 'function' && getCurrentUser()) || '';
+    }
+    if (oldStatus === 'not-required' && newStatus !== 'not-required') {
+      existing.notRequiredAt = null;
+      existing.notRequiredBy = '';
+      if (newStatus !== 'done') existing.completedAt = null;
+    }
+    if (oldStatus === 'done' && newStatus !== 'done') {
+      // Reverting an early-completion clears its flags so the badge
+      // doesn't linger on a task that's now open again.
+      existing.completedEarly = false;
+      existing.completedDaysBefore = 0;
+      existing.completedLate = false;
+      existing.completedDaysAfter = 0;
+      existing.completedOnTime = false;
+    }
     // v138: If this edit is what NEWLY made the task recurring (was not
     // recurring before, is now), seed the series and pre-generate 60-day
     // future instances — same treatment new-task creation gets. Without
@@ -16452,7 +16947,8 @@ function _openCalStatusMenu(taskId, evt) {
     { id: 'in-progress', label: 'In Progress', icon: '◐', color: 'var(--blue)' },
     { id: 'blocked',     label: 'Blocked / RFI', icon: '⚠', color: 'var(--red)' },
     { id: 'pending',     label: 'Pending',     icon: '⏳', color: 'var(--purple)' },
-    { id: 'done',        label: 'Complete',    icon: '✓', color: 'var(--green)' }
+    { id: 'done',        label: 'Complete',    icon: '✓', color: 'var(--green)' },
+    { id: 'not-required', label: 'Not Required', icon: '⊘', color: 'var(--text-dim)' }
   ];
 
   const menuHtml = `
@@ -16505,6 +17001,46 @@ function _pickCalStatus(taskId, newStatus) {
   }
 }
 
+// v158: Terminal-status helper — treats both 'done' and 'not-required'
+// as terminal for workload/hours/open-count purposes. Not Required is a
+// completion variant (task shouldn't have been on the plan or answered
+// itself), so it should behave like Done for capacity math and open-task
+// lists. Callers that care about the DISTINCTION (reporting, visuals,
+// filters) still key on task.status directly.
+function isTaskTerminal(t) {
+  if (!t) return false;
+  return t.status === 'done' || t.status === 'not-required';
+}
+
+function _applyEarlyCompletionFlags(t) {
+  if (!t || !t.dueDate) return;
+  try {
+    const todayStr = formatDateForInput(new Date());
+    const dueD = new Date(t.dueDate + 'T00:00:00');
+    const todayD = new Date(todayStr + 'T00:00:00');
+    const daysDiff = Math.round((dueD - todayD) / 86400000);
+    if (daysDiff > 0) {
+      t.completedEarly = true;
+      t.completedDaysBefore = daysDiff;
+      t.completedLate = false;
+      t.completedDaysAfter = 0;
+      t.completedOnTime = false;
+    } else if (daysDiff < 0) {
+      t.completedEarly = false;
+      t.completedDaysBefore = 0;
+      t.completedLate = true;
+      t.completedDaysAfter = Math.abs(daysDiff);
+      t.completedOnTime = false;
+    } else {
+      t.completedEarly = false;
+      t.completedDaysBefore = 0;
+      t.completedLate = false;
+      t.completedDaysAfter = 0;
+      t.completedOnTime = true;
+    }
+  } catch (_) { /* defensive */ }
+}
+
 function updateTaskStatus(taskId, status) {
   const project = state.projects.find(p=>p.id===state.activeProjectId);
   const t = project.tasks.find(x=>x.id===taskId);
@@ -16521,6 +17057,29 @@ function updateTaskStatus(taskId, status) {
     }
   }
   t.status = status;
+  // v158: Early completion tracking — if the task is being marked done
+  // BEFORE its due date, capture that so we can show a "N days early"
+  // badge on the card + aggregate in Team Insights. Also stamps a
+  // completedAt so downstream badges have a canonical timestamp
+  // regardless of which code path did the transition.
+  if (status === 'done' && oldStatus !== 'done') {
+    t.completedAt = Date.now();
+    _applyEarlyCompletionFlags(t);
+  }
+  if (status === 'not-required' && oldStatus !== 'not-required') {
+    // v158: "Not Required" is treated as a completion variant — same
+    // downstream behavior (out of open counts, skips workload capacity)
+    // but distinct visually + separately tracked.
+    t.completedAt = Date.now();
+    t.notRequiredAt = Date.now();
+    t.notRequiredBy = (typeof getCurrentUser === 'function' && getCurrentUser()) || '';
+  }
+  if (oldStatus === 'not-required' && status !== 'not-required') {
+    // Reverting away from Not Required clears its metadata
+    t.notRequiredAt = null;
+    t.notRequiredBy = '';
+    if (status !== 'done') t.completedAt = null;
+  }
   // ACTIVITY LOG: capture the status change
   logTaskStatusChanged(project, t, oldStatus, status);
   // v90: notify project lead + task leads of status transitions
@@ -17490,14 +18049,51 @@ function _notifyTaskStatusChange(project, task, oldStatus, newStatus, actorName)
 
   // Marked complete → notify everyone associated
   if (newStatus === 'done' && oldStatus !== 'done') {
+    // v159: Positive-tone message when the task was pulled forward — reads
+    // as a win rather than a routine completion. Grades by lead time:
+    // 1 day early = mild positive, 2-6 days = solid, 7+ days = big win.
+    // Falls back to neutral "marked complete" for on-time or late finishes.
+    let msg = `${actor} marked "${task.title}" complete`;
+    let notifType = 'task-completed';
+    if (task.completedEarly && task.completedDaysBefore > 0) {
+      const n = task.completedDaysBefore;
+      const dayWord = n === 1 ? 'day' : 'days';
+      let flair = '🏁';
+      let vibe = 'ahead of schedule';
+      if (n >= 7) { flair = '🚀'; vibe = 'well ahead of schedule'; }
+      else if (n >= 2) { flair = '🏁'; vibe = `${n} ${dayWord} early`; }
+      else { flair = '✨'; vibe = `${n} ${dayWord} early`; }
+      msg = `${flair} ${actor} completed "${task.title}" ${vibe} — nice pull-forward`;
+      notifType = 'task-completed-early';
+    } else if (task.completedLate && task.completedDaysAfter > 0) {
+      // Neutral acknowledgment of the slip — no shaming, just factual
+      msg = `${actor} completed "${task.title}" (${task.completedDaysAfter}d after due date)`;
+    }
     associated.forEach(r => {
       _emitNotification({
-        type: 'task-completed',
+        type: notifType,
         taskId: task.id,
         projectId: project.id,
         actorName: actor,
         recipientName: r,
-        message: `${actor} marked "${task.title}" complete`,
+        message: msg,
+        taskTitle: task.title,
+        projectName: project.name
+      });
+    });
+  }
+  // v159: Not Required → distinct notification type + terse message.
+  // Skips reflow into task-completed so filters can distinguish real
+  // completions from scope-drops.
+  if (newStatus === 'not-required' && oldStatus !== 'not-required') {
+    associated.forEach(r => {
+      _emitNotification({
+        type: 'task-not-required',
+        taskId: task.id,
+        projectId: project.id,
+        actorName: actor,
+        recipientName: r,
+        message: `⊘ ${actor} marked "${task.title}" as Not Required`,
         taskTitle: task.title,
         projectName: project.name
       });
@@ -17872,6 +18468,12 @@ function _notificationSeverity(type) {
     case 'task-completed':
     case 'task-acknowledged':
       return { severity: 'success', title: 'GOOD NEWS' };
+    // v159: Early completion — extra-warm framing so pull-forward wins
+    // read as celebrations, not just routine completions.
+    case 'task-completed-early':
+      return { severity: 'success', title: '🏁 AHEAD OF SCHEDULE' };
+    case 'task-not-required':
+      return { severity: 'info', title: 'SCOPE PRUNED' };
     // v108: task-assigned + task-reassigned get their own attention-grabbing
     // severity ('assigned', SBG gold accent) so the signed-in user clearly
     // catches when work has landed on their plate. Titles are more explicit.
@@ -18323,6 +18925,10 @@ function _notificationIcon(type) {
     case 'task-unassigned':     return '📤';
     case 'task-acknowledged':   return '✓';
     case 'task-completed':      return '✅';
+    // v159: Early-completion + Not Required get their own icons so the
+    // toast + bell entry visually distinguish them from routine completes.
+    case 'task-completed-early': return '🏁';
+    case 'task-not-required':   return '⊘';
     case 'task-reopened':       return '↩️';
     case 'task-in-progress':    return '🚧';
     case 'task-blocked':        return '🚫';
@@ -20068,6 +20674,14 @@ function getDefaultAdvancements() {
 
   return [
     // ---------- High-impact ----------
+    advImplemented('quality-of-life', 'Completed Early Log — dedicated sidebar view for team recognition on pull-forward wins', "New sidebar page (🏁 next to Training Log) that surfaces every task pulled forward across all projects. Top strip: team totals (all-time / this month / YTD / total days pulled forward). Middle: per-person leaderboard cards ranked by count, with rank medals (🥇🥈🥉) for the top three, showing each person's total early completions + total days early + average + best single pull. Bottom: detailed task list with filters (window: all / week / month / quarter / year; person: everyone or specific; sort: most days early / most recent / oldest first). Every row shows the task title, project name, workstream, lead(s), due date, completion date, and the green early badge. Click any row to jump straight to that task's modal. Copy Summary button exports a plain-text leaderboard for reporting.", "Shipped Jul 27, 2026 in response to: 'I want a completed early log.' Follows the same navigation + rendering pattern as the Training Log (v119) so the app stays consistent. Ten pieces. (1) State slots: state.earlyLogView (bool), state.earlyLogWindowFilter (all/week/month/quarter/year, default all), state.earlyLogPersonFilter (name or all, default all), state.earlyLogSort (daysDesc/dateDesc/dateAsc, default daysDesc). All initialized in loadState with type guards. (2) Sidebar button: #earlyLogSidebarBtn inserted right after #trainingLogSidebarBtn. 🏁 icon, 'Completed Early' label, 'Tasks pulled forward · leaderboard' subtitle. onclick fires openEarlyLogView. (3) HTML view container: #earlyLogView reuses the tlv-* CSS classes (header, subtitle, actions, stat-strip, body, section, filters, person-grid, task-list) so we get consistent visual weight with Training Log for free. Title styled in the same green (#2e7d52) as the early-completion badge. Three action buttons: Copy Summary / Refresh / Close. (4) openEarlyLogView / exitEarlyLogView: mirror the Training Log open/exit shape. openEarlyLogView sets state.earlyLogView=true, resets every other top-level view flag (homeView, statusSnapshotView, projectTimelineView, teamWorkloadView, openSlotsView, tiView, trainingLogView, projectsListView), hides the sticky countdown bar, saves state, renders. exitEarlyLogView flips the flag off and re-renders. (5) All existing openXView functions batch-updated to reset state.earlyLogView=false alongside the existing state.trainingLogView=false reset — sed pass touched 28 sites so no matter how you navigate away from Early Log it clears cleanly. (6) Router branch: inserted after the Training Log branch in the render dispatcher. Same shape (hide all other view elements, unhide earlyLogView, run renderEarlyLogView, applySidebarState, return). Follow-through hides earlyLogView when the flag is off so subsequent views don't leak into it. (7) _collectEarlyCompletions helper: walks every non-archived project's tasks, filters status==='done' && completedEarly && completedDaysBefore>0, returns items with task, project, leads (via getTaskLeads with fallback), daysEarly, completedAt, dueDate — so downstream rendering doesn't have to re-derive. (8) _buildEarlyPersonSummary aggregates per-person stats — count, totalDaysEarly, avgDaysEarly, best. Each lead on a task gets credited for the pull-forward (co-leads share the win). (9) _filterEarlyCompletions applies the active window + person filters. Windows use standard boundaries: week=last 7 days, month=1st of current month, quarter=first day of current quarter, year=Jan 1. Person filter matches against the leads array. (10) renderEarlyLogView orchestrates it all — populates the four stat tiles at the top (Total Pull-Forwards / This Month / YTD / Total Days Pulled Forward in gold), builds the per-person leaderboard cards sorted by count then total days (rank medals for top 3, avatar with brand color, count as subtitle, three stats per card: Total Days Early / Avg / Best Pull), refreshes the person filter dropdown to include everyone with an early completion, sorts the detail list by the active sort mode, renders each row with title + project + workstream + lead + due date + completion date + green badge. Click any row → jumpToTaskFromEarlyLog(projectId, taskId) exits the Early Log view, switches active project, and pops the task modal. Copy Summary generates a plain-text export with team totals, leaderboard (with rank emojis), and the most recent 25 filtered rows — copies to clipboard with prompt fallback for browsers where clipboard API is blocked. Full diagnostic run stayed green (68/68 static + 19/19 live). JS syntax clean. Backward-compatible: existing done tasks that were completed before v158 don't appear (they have completedEarly=false by default from the loadState backfill), so the log starts fresh with the wins that were tracked from v158 onward. Deferred: Team Insights aggregation tile that mirrors this data in the KPI dashboard, project-scoped early-completion counter on the Home page, and an 'export as CSV' variant of the summary for month-end reporting."),
+    advImplemented('high-impact', 'Completed Early Log — new sidebar view with team leaderboard, per-person stats, filterable detail list, and clipboard export', "Dedicated cross-project recognition view for pull-forward wins. Sidebar button '🏁 Completed Early' opens a full-page log showing every task marked done before its due date. Four stat tiles at top (Total Pull-Forwards / This Month / YTD / Total Days Pulled Forward). Per-person leaderboard with 🥇🥈🥉 rank badges — each card shows total early completions, total days early, avg per task, and best pull. Detail list sortable by most-days-early, most-recent, or oldest-first; filterable by time window (all / week / month / quarter / year) and by person. Each row shows task title, project, workstream, lead(s), due date, actual completion date, and the green 'Nd early' badge. Click any row to jump to the task modal in its home project. Copy Summary button exports a plain-text report to clipboard for reporting or team celebration.", "Shipped Jul 28, 2026 in response to: 'I want a completed early log.' Builds on the completion metadata from v158/v160 (each done task now stamps completedEarly / completedDaysBefore / completedAt when finished before its dueDate). Ten pieces. (1) HTML view container '#earlyLogView' added after the training log's markup — same tlv-* class structure so it inherits the existing training-log CSS (stat strip, person grid, task list styles) without needing new declarations. Green title accent (#2e7d52) to match the early-completion badge palette. Three action buttons: Copy Summary, Refresh, Close. (2) Sidebar button '#earlyLogSidebarBtn' with 🏁 icon added right after Training Log — same snapshot-sidebar-btn class so it fits the existing sidebar rhythm. onclick calls openEarlyLogView(). (3) State slots added to init: state.earlyLogView (bool), state.earlyLogWindowFilter ('all'), state.earlyLogPersonFilter ('all'), state.earlyLogSort ('daysDesc'). All persisted via existing saveState pipeline. (4) Batch sed replaced 'state.trainingLogView = false;' with 'state.trainingLogView = false; state.earlyLogView = false;' across all 28 occurrences in openXView functions so navigating to any OTHER view resets the early log flag (same discipline every other view follows). (5) openEarlyLogView / exitEarlyLogView functions modeled on openTrainingLogView — set the flag, reset every other view flag, hide sticky countdown bar, saveState, render. (6) Router branch in render() added after training log branch: if state.earlyLogView, hide every other view element, unhide #earlyLogView, hide sticky countdown, call renderEarlyLogView, applySidebarState, return. (7) _collectEarlyCompletions() walks every non-archived project's tasks, filters status==='done' && completedEarly && completedDaysBefore>0, returns flat array of {task, project, leads, daysEarly, completedAt, dueDate}. (8) _buildEarlyPersonSummary(items) aggregates per-person stats — each lead on a task gets credited (co-leads both get the win). Returns {name, count, totalDaysEarly, avgDaysEarly, best}. (9) _filterEarlyCompletions(items) applies time-window cutoff (week = last 7 days, month = current month start, quarter = current quarter start, year = Jan 1) plus person filter. (10) renderEarlyLogView() ties it together — populates stat strip (4 tiles), builds sorted leaderboard cards with rank badges and per-person stat rows, populates person filter dropdown with everyone who has an early win, applies the active sort (daysDesc / dateDesc / dateAsc) to the filtered task list, renders each row with the green early-completion pill and click-to-open handler. jumpToTaskFromEarlyLog(projectId, taskId) exits the view, switches active project, opens the task modal. copyEarlyLogSummary() builds a formatted plain-text report — team totals, ranked leaderboard, recent 25 completions — and writes to clipboard with graceful fallback to prompt() when clipboard API unavailable. Full diagnostic run stayed green (68/68 static + 19/19 live). JS syntax clean. Zero new CSS — reused all the tlv-* classes from the training log, plus the existing .early-completion-badge from v158. Not Required tasks are intentionally excluded from this log since they're not real completions — a separate 'Scope Pruned Log' could follow if the user wants that view. Follow-up ideas: (a) shareable link/export to PowerPoint for exec updates, (b) 'nudge' button that posts a message on the task praising the pull-forward, (c) filter chip for critical-only tasks (early completion of a critical task carries more weight), (d) time-series chart showing early completions per week."),
+    advImplemented('bugfix', 'Tasks disappearing from Board + Table (Group by Stage) after save — pre-existing latent bug surfaced by v158 completions', "Root cause: saveTask read the stage dropdown value with no fallback (line 45254). If the task's stored stage wasn't among the dropdown options — common on tasks cloned across workstreams (Bidding stage on a Training project), tasks whose custom stages got deleted, or tasks touched during v135's workstream-aware dropdown rebuild — setting stageSel.value=t.stage silently failed, .value returned empty string, and every save wrote stage='' back onto the task. Empty-stage tasks vanish completely from Board + Table Group by Stage since the stage-panel filter keys on t.stage matching a stageId AND the orphan/uncategorized detector gates on t.stage being truthy. Not a v158-v161 regression per se — the bug pre-dated the early-completion feature — but the completion flow surfaced it because completing a task via the modal is the most common trigger for the save path. Three defenses added: (1) openTaskModal injects the current stage as an orphan option if it's not already in the dropdown, same pattern the category field already uses. (2) saveTask uses .value || existingForBP.stage || 'project-setup' fallback so an empty dropdown read can never wipe the stage. (3) Load-time backfill (which already handled t.stage=undefined) now uses getProjectStages(project) to pick the correct workstream's first stage instead of always defaulting to Bidding's 'project-setup' — retro-rescues Training/Events tasks whose stage got wiped before v162.", "Shipped Jul 27, 2026 in response to: 'It is only disappearing when Group By Stage.' Investigation traced through the disappearance pattern: user marks a task done (or any save on any status) → task still visible in every OTHER grouping (Assignee, Source, Status, Alert) but vanishes from Group by Stage. That specificity narrowed the cause to something targeting t.stage in the save flow. Comparison: two other stage-writing sites in the codebase (lines 43670, 44268) already used the `document.getElementById('taskStage').value || task.stage` fallback pattern. The primary saveTask edit branch (line 45254) had `document.getElementById('taskStage').value` alone — no fallback. So when the dropdown couldn't select the current stage (because the option wasn't there), the save silently corrupted the field. Three pieces. (1) openTaskModal's orphan-stage injection: mirrors the category orphan-option pattern that's been there for a while. Before setting stageSel.value = t.stage, check if any existing option has value === t.stage. If not, prepend a new <option value=t.stage>⚠ {stage} (orphan)</option> with data-orphan='true' attribute so future consumers can style/filter these. Result: the modal shows the orphan stage explicitly (with the ⚠ marker), user can see it's an orphan and pick a new stage, AND the .value assignment succeeds so any subsequent save reads back a non-empty value. (2) saveTask data.stage build: changed from 'document.getElementById(taskStage).value' to 'document.getElementById(taskStage).value || (existingForBP && existingForBP.stage) || project-setup'. Three-tier fallback: dropdown reading (typical case), existing task's stored stage (survives the orphan case even before v162's orphan-option injection lands), then hardcoded project-setup (defensive last resort). Empty-string writes to t.stage are now structurally impossible. (3) Load-time retro-rescue: existing tasks whose stage was already wiped to empty string by the pre-v162 bug get restored on the next state load. Previous backfill (line 29926) unconditionally set t.stage='project-setup' for empty-stage tasks, which is a valid Bidding stage but INVALID for Training/Events/Precon General workstreams — those tasks would then show up in the Uncategorized bucket (visible, at least, but not ideal). New backfill calls getProjectStages(p) for the containing project and uses stages[0].id — which is 'project-setup' for Bidding (unchanged behavior) but the workstream's first custom stage for other types. So a wiped Training task lands back in Training's first defined stage. Wrapped in try/catch so a getProjectStages exception can't break state load. Verified: full diagnostic run stayed green (68/68 static + 19/19 live). JS syntax clean. Post-ship expectation: reload the tracker once (triggers the retro-rescue backfill), and tasks that had vanished from Board + Table should reappear in their proper stage panels. From v162 onward, saving through the task modal can no longer wipe the stage field."),
+    advImplemented('quality-of-life', 'Completion timing shown EVERYWHERE — task modal header banner + timeline + look-ahead + workload drill-down + calendar + alerts + status snapshot + reassignment', "v158 added the badge to Board cards + Table rows. This ship extends it to every surface where a task appears. (1) Task modal: prominent gradient banner floats next to the header status pill — green for early ('🏁 3 DAYS EARLY'), gold for late ('⏱ 2 DAYS LATE'), grey for Not Required ('⊘ NOT REQUIRED'). Tooltip explains the delta. Only shown for terminal states — open tasks show nothing. (2) Project Timeline row: inline mini-badge next to the title. (3) Home page (Today, Look Ahead, Unack, etc.): all 4 hi-title variants + la-task-title get the badge. (4) Team Workload drill-down: wlDrill-title row shows it. (5) Calendar chip: rendered inline. (6) Alerts: ai-title emit. (7) Status Snapshot: ssv-row-title. (8) Reassignment modal: reassign-title. (9) Unassigned workload list: twv-unas-title. Now anywhere a completed task title appears you can see at a glance whether it was pulled forward, slipped, or dropped from scope.", "Shipped Jul 27, 2026 in response to: 'I want an early completed task to be recognized when you open detailed task as well as project timeline, lookaheads, workloads, etc anywhere you see the task i want to see that it was completed early.' Bundled with the not-required + late-completion badges since they share the same helper. Three pieces. (1) Task modal completion banner: new markup element <div class='tmpc-completion-banner' id='tmpcCompletionBanner' style='display:none;'> inserted right after the tmpc-status pill closing div (sibling of status pill, floats to the right of it in the header row). refreshHeaderStatusPill was already the one function that runs every time the modal opens AND every time the status changes — perfect single-point-of-truth to keep the banner synced. Extended refreshHeaderStatusPill to look up the editing task via editingTaskId → activeProject.tasks find, then decide the banner variant: (a) status='not-required' → grey 'NOT REQUIRED' banner + tooltip showing when/by whom, (b) status='done' && completedEarly && completedDaysBefore>0 → green '🏁 N days early' banner + 'nice pull-forward' tooltip, (c) status='done' && completedLate && completedDaysAfter>0 → gold '⏱ N days late' banner. Otherwise banner stays hidden (open tasks, on-time completions). CSS: three variants (variant-early / variant-late / variant-not-required) with gradient backgrounds (44,166,116 green / 192,127,0 gold / 107,118,135 grey), white text, uppercase Barlow-Condensed labels, subtle drop shadow, 14px rounded pill shape. Matches the visual weight of the status pill so they read as siblings, not competing focal points. (2) Seven inline surfaces: Project Timeline (_renderPtvTaskRow), all Home page task-item variants (renderHomeTaskItem, all 4 hi-title occurrences in the unack + pending + sign-off + done sections via batch sed replace), Look Ahead (la-task-title), Team Workload drill-down (wlDrill-title), Alerts (ai-title), Status Snapshot (ssv-row-title), Reassignment modal (reassign-title), Unassigned workload (twv-unas-title), Calendar event chip (cal-event render tail). All emit ${_buildCompletionSideBadgeHtml(t)} inline after the title + training-mini chip, so the badge inherits the parent's text flow and lives right next to the task name. Batch-updated via sed for the multi-occurrence patterns (Home page has 4 hi-title emits across different sections). (3) Behavior: the v158 helper _buildCompletionSideBadgeHtml returns empty string for tasks that aren't in a terminal state, so open tasks in every view continue to look exactly like before — no visual clutter. Only completed / not-required tasks show the badge. Toast dedup + notification pipeline unchanged (this ship is purely additive visual). Full diagnostic run stayed green (68/68 static + 19/19 live). JS syntax clean. Note: existing done tasks completed before v158 still don't show a badge — their flags default to false and there's no retroactive way to recompute the delta. From v160 onward, every new completion via task modal Save AND from picker paths (calendar / board drag / inline dropdown) will land the badge everywhere."),
+    advImplemented('bugfix', 'Early-completion toast + badge now fire when you Save via the task modal (not just Calendar / Board picker)', "v158 and v159 wired early-completion flags + positive-tone toast into updateTaskStatus (the calendar picker, board drag, and inline dropdown paths). But the task modal's Save button bypasses updateTaskStatus and runs saveTask directly — Save simply Object.assign's the form data onto the existing task, then calls _finishSaveTaskEdit which fires _notifyTaskStatusChange. That path never called _applyEarlyCompletionFlags, so the flags stayed at their defaults (completedEarly=false, completedDaysBefore=0), the notifier saw them as false and picked the routine 'marked complete' message instead of the celebration variant, and the card badge helper returned empty since it also gates on those flags. Since the task modal is the primary way most users mark work done, the feature effectively did nothing in the most common flow. Fixed by inserting the same transition hooks into saveTask's edit branch right after Object.assign(existing, data). Now marking a task done via the task modal produces the badge + toast identically to the picker paths.", "Shipped Jul 27, 2026 in response to: 'Toast nor a badge or any indication that task completed early is showing up.' Investigation traced through the four ways a user can mark a task done: (a) calendar status picker → _pickCalStatus → updateTaskStatus (had the hook, worked), (b) board card drag or Kanban column change → updateTaskStatus (had the hook, worked), (c) inline card status dropdown → changeTaskStatusInline → updateTaskStatus (had the hook, worked), (d) task modal Save button → saveTask → edit branch → Object.assign → _finishSaveTaskEdit → _notifyTaskStatusChange (NO hook — the bug). Path (d) is the primary UX for most users. Six pieces. (1) Added post-Object.assign transition detection in saveTask edit branch: if newStatus === 'done' && oldStatus !== 'done', stamp existing.completedAt = Date.now() then call _applyEarlyCompletionFlags(existing). Guarded with typeof check so early-load ordering can't break it. (2) Same block handles the not-required transition: if newStatus === 'not-required' && oldStatus !== 'not-required', stamp completedAt + notRequiredAt + notRequiredBy. (3) Reverting away from not-required clears its metadata + completedAt (unless flipping to done). (4) Reverting a done task back to non-done now also clears the early/late completion flags — otherwise the badge would linger on a task that's open again ('X 3 days early' next to a task with status=in-progress reads as broken state). (5) Order verified: my hook runs AFTER Object.assign(existing, data) copies the form data onto the task, but BEFORE _finishSaveTaskEdit fires the notification. So the flags are set on the existing task object at the moment the notifier reads task.completedEarly / completedDaysBefore. Positive-tone message + task-completed-early notification type both fire correctly. (6) Also covered the deferred-callback path where _finishSaveTaskEdit runs inside _openSeriesScopeDialog's completion callback — my hook runs before that dialog even opens (it's inline right after Object.assign), so the flags are set regardless of whether the user goes through the series-scope prompt or not. Full diagnostic run stayed green (68/68 static + 19/19 live). JS syntax clean. Testing note: existing done tasks marked before v160 remain unbadged (their flags default to false and there's no reliable way to reconstruct the early/late delta retroactively — completedAt exists but we'd need to compare it to dueDate at completion time, and dueDate may have changed since). Any task you mark done from v160 onward will get the badge + toast if it qualifies."),
+    advImplemented('quality-of-life', 'Positive-tone toast for early completions — \"Reshma completed X 3 days early\" reads as a win', "Follow-up to v158. When a task is completed BEFORE its due date, everyone associated with it now sees a warm-toned toast that celebrates the pull-forward instead of the routine '<name> marked <title> complete'. Message text scales with lead time: 1 day = ✨ subtle, 2-6 days = 🏁 solid, 7+ days = 🚀 big win. Late completions get a neutral 'completed (Nd after due date)' — factual, no shaming. Not Required transitions get their own '⊘ marked as Not Required' notification with a 'SCOPE PRUNED' title so filters can distinguish scope-drops from real completions. Distinct notification types (task-completed-early, task-not-required) mean the bell entries, icons, and severity titles are all differentiated from routine task-completed events.", "Shipped Jul 27, 2026 in response to: 'Notification text: Reshma completed X 3 days early as a positive-tone toast.' Called out as deferred in v158; wired it up in this ship. Four pieces. (1) _notifyTaskStatusChange completion branch rewritten to inspect the early/late flags set by v158's _applyEarlyCompletionFlags (which fires BEFORE the notification in updateTaskStatus, so the flags are always current by the time the notifier reads them). If task.completedEarly && completedDaysBefore > 0, the notification type flips to task-completed-early and the message picks a positive-tone template graded by lead time: n >= 7 uses 🚀 + 'well ahead of schedule', 2 <= n < 7 uses 🏁 + 'N days early', n == 1 uses ✨ + '1 day early'. All variants close with 'nice pull-forward' so it reads as warm without being over-the-top. If task.completedLate && completedDaysAfter > 0, message is neutral factual: 'completed (Nd after due date)' — no icon flair, no scolding. On-time completions get the original routine message. (2) New task-not-required notification type: fires when transitioning INTO not-required from any other status. Message '⊘ <actor> marked <title> as Not Required'. Distinct type so bell filters, per-recipient dedup, and any future 'exclude these from feed' toggles can key on it cleanly. (3) Registered both new types in _notificationSeverity: task-completed-early gets severity=success + title='🏁 AHEAD OF SCHEDULE' (rides the existing green severity styling but with a title that reads as celebration). task-not-required gets severity=info + title='SCOPE PRUNED' (neutral, not celebratory since it's not a real completion). Both fall through the existing toast rendering pipeline — no new CSS needed, the title differentiation is enough. (4) Registered icons in _notificationIcon: 🏁 for task-completed-early (matches the badge on the card), ⊘ for task-not-required (matches the N/A badge). Toast dedup fingerprint keys on (type + taskId + actorName) so an early completion won't collide with a same-actor routine completion on a different task — every completion is its own toast. Full diagnostic run stayed green (68/68 static + 19/19 live). JS syntax clean. This closes the highest-value item from v158's deferred list. Remaining follow-ups (Team Insights aggregation, home page counter split, filter toggle) still open."),
+    advImplemented('high-impact', 'Early / late completion tracking + Not Required status — surface pull-forward wins and skip work that answered itself', "Two new task lifecycle features. (1) Early completion tracking: when a task's status transitions to Complete, the tracker now auto-detects whether it was finished BEFORE, ON, or AFTER the due date and stamps flags accordingly. Task cards and table rows show a green pill '🏁 3d early' when the pull-forward was positive, or a gold pill '⏱ 2d late' when it slipped. Hovers explain the delta. The workload page keeps the task on its scheduled dueDate bucket in Planned view (that's what was planned) and removes it from Current-view capacity math (task is done, no more capacity impact) — same behavior as before, but now the CARD tells you the timing story. (2) New 'Not Required' status: a task that answered itself (RFI came back, scope dropped, upstream decision moot) can be marked Not Required with the same downstream effect as Complete — it's off the capacity clock, out of open counts, off the past-due list. Visually distinct: grey ⊘ N/A badge, italic strikethrough title, muted card background. Available in the Calendar status picker, task modal header pill, Column 1 dropdown. Reversible — if you flip a task away from Not Required, the metadata clears.", "Shipped Jul 27, 2026 in response to: 'Starting from V156, what if someone completes task earlier than scheduled task due date, how can i indicate and or track that information? Would it somehow show up on workload for the date completed? Also, if there is a task that becomes Not Required can it be checked as such and have same action as if it were completed? Thoughts?' Both requests bundled since they share the same transition logic in updateTaskStatus. Nine pieces. (1) New _applyEarlyCompletionFlags(t) helper: on transition to done, compares today to task.dueDate, computes daysDiff = round((dueD - todayD) / 86400000). Positive = early: stamps completedEarly=true + completedDaysBefore=N + resets late/on-time. Negative = late: stamps completedLate=true + completedDaysAfter=abs(N) + resets others. Zero = on-time: stamps completedOnTime=true. Guarded against tasks with no dueDate (can't be early/late without a schedule). Applied in BOTH manual updateTaskStatus AND the multi-lead auto-done path (when the last co-lead marks their portion done, the task auto-flips) — otherwise auto-completed tasks would silently miss the flags. (2) updateTaskStatus handles the not-required transition: stamps t.completedAt (so aggregators see it as terminal), t.notRequiredAt, t.notRequiredBy. Reverting away clears the metadata and completedAt (unless the new status is 'done'). (3) New isTaskTerminal(t) helper: returns true for both 'done' AND 'not-required'. Callers that care about the distinction key on task.status directly; callers that just need 'is this task off the plate' use the helper. (4) Workload aggregator updated to treat not-required as terminal: isTerm flag replaces the isDone check in openHours + total-open counts, so a not-required task doesn't consume capacity and doesn't inflate the assignee's open-task numbers. Same treatment in the Unassigned bucket fallback (v152) — not-required tasks with no assignee don't get routed to Unassigned (they're done, no assignment needed). (5) Past-due collector _collectPastDueTasks skips both done AND not-required — a task the team decided didn't need to happen shouldn't nag on the past-due list. Overdue detection in the workload aggregator also excludes not-required. (6) New _buildCompletionSideBadgeHtml(t) helper: renders green early-completion pill / gold late-completion pill / grey Not Required pill depending on the task's terminal state. Emitted in renderTaskCard right after the rescheduled-past-due badge, and in the Table view's title cell alongside the existing chips. (7) UI additions: KNOWN_STATUSES constant now includes 'not-required'. Three status-label maps updated (project timeline row, home task item, activity log). Calendar status picker (v150) got a 6th option ⊘ Not Required. Task modal Column 1 dropdown (#taskStatus) got a 6th option. Task modal header pill (tmpc-status-picker) got a Not Required button. (8) CSS: .task-card.status-not-required (grey-tint background, italic strikethrough title), .early-completion-badge (green pill), .late-completion-badge (gold pill), .not-required-badge (grey pill), all with dark-mode variants. Task modal header pill's data-status='not-required' selector uses the same grey palette. (9) loadState backfill: adds default values for completedEarly, completedDaysBefore, completedLate, completedDaysAfter, completedOnTime, notRequiredAt, notRequiredBy so consumers reading these fields on older tasks see a stable shape. Existing done tasks stay untracked for early/late (no way to reconstruct their delta retroactively without a completedAt history) — they simply won't show a badge, which reads correctly. Full diagnostic run stayed green (68/68 static + 19/19 live). JS syntax clean. Deferred for follow-up: Team Insights aggregation of early-completion counts per person, home page separated 'Completed' vs 'Not Required' counter, notification text for early wins ('Reshma completed X 3 days early'), a filter option to see 'only Not Required' work."),
+    advImplemented('high-impact', 'JSON merge: master lists (stages, project templates, Ball-in-Court, CSI, sources, milestones) now sync — no more disappearing stages + orphaned tasks', "Six master lists were completely absent from the merge pipeline: state.stages (Bidding stages), state.templates (project templates), state.ballInCourtOptions, state.csiDivisions, state.sourceOptions, state.milestoneTypes. Any customization on Machine A disappeared when merging Machine A's JSON onto a fresh Machine B — the receiving machine kept its defaults, and every task that referenced a custom Bidding stage (like a hand-added 'Post-Award') showed as Uncategorized because the stage ID it pointed to didn't exist locally. Also fixed: tasks WITHIN existing task templates now sync — if you add or edit tasks in the SBG Standard template on one machine, those template task additions now propagate to the other machine instead of being silently dropped. Merge preview now shows exactly how many master-list items and template-tasks will be added before you commit.", "Shipped Jul 22, 2026 in response to: 'When reloading project after JSON import several stages from both templates and projects dissapear and many task that were once assinged to stages become unassinged and uncatergorized.' Root cause traced through applyImport merge branch: it only called _mergeImportedArrays for projects/taskTemplates/teamMembers, plus the projectTypes stage-union I added in v156. Everything else was untouched. On a fresh Chrome (no localStorage) or new machine, state initialization seeds state.stages from DEFAULT_STAGES (9 stages). If the merged JSON has 10 stages (user added a custom 'Post-Award' on original machine), the merge doesn't touch state.stages — so it stays at 9 defaults. Then every task in the imported JSON with stage='post-award' hits getStageById() returning null on the receiving machine and shows Uncategorized. Same pattern for project templates (state.templates) that never merged, Ball-in-Court options, CSI divisions, sources, milestone types. Any task referencing custom items in these lists silently orphans. Six pieces. (1) state.stages id-union added to merge (with STAGES runtime array resync after merge so getStageById reads through consistent data). (2) state.templates id-union added — project templates (whole-project 'Save as Template' snapshots) now propagate. (3) state.ballInCourtOptions id-union — custom Ball-in-Court people merge across. (4) state.csiDivisions, state.sourceOptions, state.milestoneTypes id-unions — all master reference lists now merge. (5) New _syncImportedTemplateTasks helper: for task templates that exist by ID on both sides, union the tasks array by task id. Adds Machine A's new template tasks to Machine B's copy of the same template. Existing tasks on B are preserved (safe default; a task that was intentionally deleted on B stays deleted). (6) Preview modal now shows a plain-English breakdown: 'N master-list items will be ADDED: 2 Bidding stages, 3 CSI divisions, 1 project template' and 'N tasks will be ADDED to existing templates (edits Machine A made to shared templates)'. Each count only shows when > 0 so the modal stays focused. Full diagnostic run stayed green (68/68 static + 19/19 live). JS syntax clean. Recovery note: for stages already lost on the receiving machine before v157, users have two options — (a) re-import via Replace mode which does authoritative wholesale restore including all master lists, or (b) manually re-add missing custom stages/options in Settings before merge-importing again; v157 will keep them in sync going forward. Follow-up thought: could add a per-task 'this stage doesn't exist locally — rescue?' inline prompt on task modal so orphans can be re-filed without opening Settings, but v142 Uncategorized bucket already provides discovery so deferring."),
     advImplemented('high-impact', 'JSON round-trip: fixed assignee-wipe on state load + workstream stages now merge across computers', "Two connected JSON round-trip issues surfaced by direct audit. (1) THE assignee-wipe bug: every state load (page refresh, JSON import, tab switch) was silently running t.assignee = t.leads[0] || '' — which WIPED task.assignee whenever leads was an empty array. Fresh tasks and imported tasks commonly have leads = [] with assignee = 'Reshma', so every reload emptied the assignment. This is the root cause of the ongoing missing-tasks reports; v153/154/155 patched downstream symptoms but the wipe happened upstream every time. Fixed: if leads is empty AND assignee is set, backfill leads = [assignee] BEFORE the sync line runs. Assignment is preserved. (2) Workstream stages sync gap: custom stages added to Training/Events/Precon General on Machine A didn't merge into Machine B — the workstream type ID already existed locally so the old merge logic skipped it, and tasks referencing the missing stages showed as Uncategorized on B. Now we union stages by id when the workstream exists on both sides.", "Shipped Jul 21, 2026 in response to: 'Do I have Any JSON download, merge, upload potential issues right now with it all of a sudden uncatergzing a stage or not carrying over when a task is assigned, when i reopen?' User asked for a proactive audit. Found TWO real issues that together explain most of the ongoing round-trip weirdness. Four pieces. (1) The assignee-wipe root cause: loadState's task backfill block does 'if (!Array.isArray(t.leads)) t.leads = t.assignee ? [t.assignee.trim()] : [];' — but this only initializes leads when it's NOT an array. If leads is [] (empty array — the common shape from templates, project duplication, JSON imports from older schemas, and manual edits that removed all leads), Array.isArray returns true, initialization is skipped. Then 't.leads = Array.from(new Set(t.leads.filter(...).map(...)))' cleans up (still empty). Then 't.assignee = t.leads[0] || '';' wipes assignee to empty string. Every single reload compounded the damage. The v153/154/155 fixes were downstream — they made the aggregator smarter about empty-leads-plus-assignee tasks — but the loadState wipe kept turning assignee into '' before the aggregator could see it, so those fixes couldn't help. Fixed with a one-line insertion: if t.leads.length === 0 AND t.assignee is truthy, populate t.leads = [t.assignee] BEFORE the sync line runs. Preserves the invariant 'leads and assignee stay in sync' without silently destroying data. Edge case: user explicitly removes all leads via the modal — saveTask sets both leads=[] AND assignee='' atomically, so on next load leads=[] AND assignee='' → no restore, correctly unassigned. Only a mismatch state triggers the restore. (2) Workstream stages sync gap: the merge branch's projectTypes sync did 'existingTypeIds = Set of local ids; forEach(imported): if not in existing, push.' — pure additive. If Training existed on both machines but Machine A had 5 custom stages and Machine B had 2, merge did nothing. Machine A's tasks with the 3 extra stages appeared Uncategorized on B. Fixed with a stage-level id-union: after checking that the type exists locally, if imported.stages has any stage id not in local.stages, push those stages. Existing stages on local are preserved untouched. Type-level metadata (label, icon, isBuiltIn, isDefault) is NOT synced — that's more likely to be user preference than a hard invariant, and blast-updating it could clobber local settings. Only stages array gets the merge. (3) Both fixes verified against the full diagnostic (68/68 static + 19/19 live). JS syntax clean. Post-ship expected impact: users refreshing after v156 should see task.assignee stop mysteriously clearing on tasks with empty leads arrays; workload should immediately look right without any diagnostic runs. Cross-computer merge of Training/Events/Precon General now propagates stages so tasks stop showing as Uncategorized on the receiving machine. (4) Diagnostic note: because the assignee-wipe was cumulative — every reload made it worse — some tasks in current localStorage already have assignee wiped. The v156 fix prevents FUTURE wipes but doesn't retroactively restore. Users may need to re-open affected tasks and re-select the lead once; from then on it sticks. If widespread, could add a one-time backfill routine that scans for tasks with lastEditedAt but no leads/assignee — deferred until user reports whether the affected count is small (fine to manually fix) or large (worth the backfill)."),
     advImplemented('bugfix', 'Team Workload: canonicalize assignee case + built-in diagnostic tool to catch missing tasks', "When the same person's name appears in different cases across tasks (Reshma vs reshma vs RESHMA), the workload aggregator was creating SEPARATE stats buckets for each case, so the card labeled 'Reshma' (from team members) missed any task whose lead was stored lowercase. Also added a 🔍 Debug button on every workload card that opens a diagnostic modal — compares what Today would find vs what workload finds for that person, lists the specific tasks missing, and explains WHY each was excluded (case mismatch / no due date / outside window / etc.). Includes a Copy Diagnostic JSON button so we can capture the exact state for any missing task and figure out the root cause fast.", "Shipped Jul 21, 2026 in response to: 'I still have the same workload not loading properly issue.' v153 fixed the empty-array-with-assignee case, and v154 added merge-time field sync, but the user reports the drill-down still misses tasks vs the Today page. Rather than guess at more possible causes, this ship does two things: fixes another likely bug (case-sensitivity) and adds a self-serve diagnostic tool. Three pieces. (1) Case-canonicalization: _aggregateWorkloadByAssignee now builds a Map of lowercase→canonical-case for every team member name at aggregation start (state.teamMembers is the source of truth for spelling). Wraps every assignees.add call in canonicalizeName(rawName) which does lowercase-lookup against the map and returns the canonical case if found, otherwise the raw trimmed name. So task.leads = ['reshma'] normalizes to 'Reshma' before Set-add, matching the card. Same treatment for support/supportMembers/task.support. If a task has a name that doesn't match ANY team member (external subcontractor, deleted person), the raw name is preserved so it still gets a bucket rather than being dropped. isLead check inside the assignees.forEach loop also swapped to use isTaskLead(task, name) which does case-insensitive matching — the raw includes() check was preserving-case and could have missed leads too. (2) Diagnostic tool: new openWorkloadDiagnostic(name) function opens a modal that walks EVERY task across every active project, checks isTaskMember(task, name) using the same case-insensitive helpers Today uses, cross-references against the workload aggregator's openTasks + tasksPerDay collections, and lists any task Today would find but workload missed. For each missing task, computes a reason list: 'case mismatch — task has \"reshma\" but card is \"Reshma\"' / 'no due date' / 'due 7/25 — after chart window end (7/24) — try a wider scope' / 'marked done — switch to Planned view' / 'zero estimated hours' / 'unknown — please report'. Modal shows: total scanned tasks, Today count, workload count, delta count in red. Missing tasks render in a scrollable list with title / project / due date / status / hours + the reason(s) in red monospace. (3) Copy Diagnostic JSON button: exports the full diagnostic — task IDs, project names, all assignment fields (leads/assignee/support/supportMembers), dueDate, status, hours, lastEditedAt, workload window, mode — to clipboard as pretty-printed JSON. If clipboard API isn't available (older browser or file:// origin), falls back to a prompt() dialog so the user can copy manually. This is the fastest path to root-causing any remaining missing tasks — the user can hit 🔍 on Reshma's card, click Copy Diagnostic, paste in a chat, and I can pinpoint the exact reason each missing task got excluded. Button is 🔍 with subtle opacity so it doesn't compete with Reassign as the primary action. Full diagnostic run stayed green (68/68 static + 19/19 live). JS syntax clean."),
     advImplemented('high-impact', 'JSON round-trip: task-level edits (leads / support / hours / dueDate / title) now sync across computers on merge', "Previously merge-import only added new tasks and applied deletions/recurrence caps/archive-classification. Edits to existing tasks — swapping a lead, adding support, adjusting hours, moving a due date, changing the title — were completely ignored. Now every task edit stamps a lastEditedAt timestamp, and merge import compares timestamps: if the backup's version is newer than the local version, the tracked fields (leads, supportMembers, assignee, support, estimatedHours, supportHoursPct, dueDate, dayOffset, dateAnchor, title, notes, stage, category, source, scopePackage, ballInCourt, priority, critical, requiresSenior/Lead1/Lead2, checklist, deliverables) get adopted from the backup. Local fresher edits are preserved automatically — the timestamp is the tiebreaker so no manual conflict resolution needed. Preview modal shows how many tasks will have edits adopted before you commit.", "Shipped Jul 21, 2026 in response to: 'when im exporting and reimporting JSON is it capturing when i go into an already created task and delete and add a new lead and or support?' Real gap that pre-dated this ship. Export always captured every field (state serialized wholesale), but Merge-mode import was intentionally conservative — it added new items but left existing items alone to protect today's local edits from stale-backup clobber. That protection had no escape hatch, so genuine cross-computer edits to lead/support on already-created tasks silently didn't propagate. Four pieces. (1) Timestamp stamping: saveTask now sets data.lastEditedAt = Date.now() and data.lastEditedBy = getCurrentUser() before Object.assign(existing, data) in the edit branch, and before spreading into newTask in the new-task branch. Also stamped in applyReassignment (bulk reassign flow) so cross-computer reassignments are dateable. Not stamped in status-only paths (updateTaskStatus, acknowledgeTask, etc.) since those have their own semantics — could add if the user reports a specific need. (2) New _syncImportedTaskFields(target, source): builds a Map of imported tasks by id, walks target tasks, matches by id, compares lastEditedAt (0 if unset), skips if importTs is 0 or localTs >= importTs (protecting fresher local), and adopts a whitelist of user-editable fields when import is newer. Deep-copies arrays/objects via JSON round-trip so imported source can't mutate live state. Skips fields with their own pipelines (status, acknowledged, completedAt, seriesId, tombstones, recurrence, rescheduledFromPastDue) — those would be dangerous to overwrite. Returns count of tasks changed. On successful adopt, target task's lastEditedAt is bumped to importTs so subsequent syncs from other machines correctly compare against the freshest source. (3) Wired into applyImport merge branch right after _syncImportedTaskRecurrenceCaps. Console logs count for debugging. (4) Preview modal count: before showing the confirm dialog, iterates target vs imported computing how many tasks would have a difference on the high-signal fields (leads / supportMembers / assignee / support / estimatedHours / dueDate / title) with importTs > localTs. Renders a navy row 'N tasks will have edits ADOPTED (leads / support / hours / dates / title) — backup is fresher' — separate from the red REMOVED row for tombstones so users can distinguish adds/removes/updates before clicking Import. Only shows when count > 0. Backward compatible: tasks without lastEditedAt (created before this ship) don't sync — safest default until they get a natural edit that stamps them. Replace-mode remains unchanged (still wipes wholesale). JS syntax clean; full diagnostic run stayed green (68/68 static + 19/19 live). Follow-up ideas: could add per-field granular preview showing WHICH fields changed on each task; could add a manual conflict-resolution modal for cases where local + imported both edited the same task in overlapping ways."),
@@ -20097,7 +20711,7 @@ function getDefaultAdvancements() {
     advImplemented('bugfix', 'Duplicate Project modal: bigger + preset cards rebuilt as buttons (finally works)', "Made the Duplicate Project modal MUCH bigger (max-width 1100px, up from 620px) and rebuilt the Copy Mode preset cards using plain <button> elements. The v126 pattern (label wrapping radio+div) was causing the preset content to escape the modal into a narrow phantom column outside — a browser-specific rendering bug that survived the v128 flex/sticky rewrite and the v129 revert. Now uses the simplest possible HTML: button per preset, no nested inputs, no flex chains. Renders cleanly everywhere.", "Shipped Jul 11, 2026 in response to a second screenshot showing the SAME broken layout as v128 — preset cards empty, text 'FRESH COPY / STRUCTURE ONLY / EVERYTHING ELSE RESETS...' floating in a narrow column outside the modal. User's exact words: 'still not fixed!!!!!!!, CAN YOU JUST SIMPLY MAKE POP UP WINDOW BIGGER?' Root cause was deeper than v128's flex overreach: the <label> wrapping <input type=radio> + content div pattern from v126 was rendering broken in the user's browser. The label had display:flex with flex-shrink:0 on the input and flex:1 min-width:0 on the body div — combination somehow caused the body div to render at ~40px wide OUTSIDE the modal's clip rect. Standard fix: throw out the label+radio pattern entirely, use plain <button> elements. Three pieces. (1) HTML rewrite — <button type='button' class='dpm-preset' data-preset='fresh'> with title + desc divs inside. Direct onclick handler. No hidden radio input. Semantic and simple. (2) JS rewrite of _renderDuplicatePresetSelection — was iterating input[name='dpmPreset'] and toggling 'active' on parent label; now iterates .dpm-preset[data-preset] buttons and toggles 'active' by comparing data-preset attribute to the current preset. Same behavior, no radio state to manage. (3) CSS rewrite of .dpm-preset — removed display:flex + flex-shrink chain; now display:block with text-align:left, plain padding, no nested flex layout. Includes a full-width fix (width: 100%) since buttons don't stretch to grid cell by default. Also: max-width bumped from 760px to 1100px per user request for a bigger modal. Preset grid changed from single-column to repeat(auto-fit, minmax(200px, 1fr)) so the 3 presets render side-by-side on wider screens. Options grid also stays as auto-fit 240px minimum for the 2-3 column layout. JS syntax clean."),
     advImplemented('bugfix', 'Fix v128 broken modal — preset cards were empty, description text escaped to a narrow column on the right', "v128 tried to make the Duplicate Project modal responsive by adding display:flex + position:sticky footer + explicit flex-shrink rules on children. The combination fought the base .modal styles and broke the preset card layout — cards rendered as empty boxes while their title/description text piled up in a ~40px vertical column OUTSIDE the modal's visible area. Reverted to a minimal override that just changes max-width; keeps all the base .modal scroll/height behavior that was already working. All the density/layout wins from v128 (tighter fonts, 2-column options grid, auto-fill workstream grid) preserved.", "Shipped Jul 11, 2026 in response to a screenshot showing the presets rendered as empty boxes with description text ('FRESH COPY / STRUCTURE ONLY / EVERYTHING ELSE RESETS / BEST FOR STARTING NEW BID') stuck in a narrow column outside the modal's right edge. Root cause: v128 added display:flex + flex-direction:column to .modal.dpm-modal, then position:sticky on a child .dpm-actions, then flex-shrink:0 rules on direct children. Base .modal already handles scrolling correctly with max-height:90vh + overflow-y:auto, but the flex+sticky overrides created a broken cascade — the preset labels (which have their own display:flex layout) got squeezed by ancestor flex context in a way that caused their body div to overflow horizontally into a phantom column. Fix: deleted all the flex/sticky/child-shrink rules. New .modal.dpm-modal is a single-property override changing only max-width from 620px to 760px. Base .modal styles handle everything else. Mobile breakpoint simplified to reduce padding on <600px viewports. Now the modal uses the SAME reliable layout pattern every other modal in the app uses. JS unchanged. Verified: node syntax check clean."),
     advImplemented('polish', 'Duplicate Project modal fits any viewport — responsive sizing + sticky footer + tighter layout', "The Duplicate Project modal now sizes properly on any screen, wraps content instead of cutting it off, and keeps the Cancel/Create Duplicate buttons visible while you scroll through the options. Options panel now uses a 2-column grid where screen space allows, so the 5 checkbox groups don't stack into one long vertical list. Reduced font sizes and paddings across the modal to fit more content per pixel. Mobile treatment: full-screen modal below 600px viewport.", "Shipped Jul 11, 2026 in response to: 'duplicating project pop up doesnt fit page, window doesnt wrap and allow me to see everything clearly.' Six pieces. (1) Modal container — added new .dpm-modal class replacing inline styles. Width 95vw with max 720px, max-height 90vh, overflow-y auto so it always scrolls when content exceeds viewport. Padding tightened from 24px to 20-22px. (2) Sticky footer — .dpm-actions class on the button row now uses position:sticky bottom:0 with white background + top border so Cancel and Create Duplicate stay visible as you scroll through the options. Prevents the frustrating pattern where you scroll to see options then have to scroll back up to click confirm. (3) Workstream grid — was strict 2-column (repeat(2, 1fr)); now repeat(auto-fill, minmax(150px, 1fr)) so it wraps to 3 or 4 columns on wider screens and to 1-2 on narrow ones. Handles custom workstreams gracefully without overflow. (4) Options panel — the 5 groups (Assignees, Dates, Completion, Recurring, Project-level) now render in a 2-column CSS grid (repeat(auto-fit, minmax(220px, 1fr))) instead of stacking vertically. Two columns fit comfortably at 720px modal width — 4 groups become 2 rows instead of 5 rows. (5) Density pass across all dpm-* elements. Font sizes reduced: preset title 14→13.5px, preset desc 12→11.5px, option label 13→12.5px, option hint 11→10.5px, source title 14→13.5px. Paddings reduced ~15% throughout. Line-height brought closer to 1.35-1.45 range. Same information; less pixels. (6) Mobile breakpoint under 600px viewport — modal expands to 100vw x 100vh with border-radius:0 for a full-screen feel, avoids the awkward margin-around-tiny-modal look on phones. Same content still readable. JS syntax clean."),
-    advImplemented('bugfix', 'Fix: Training Log + Open Slots dropped users on the Projects page when clicked', "Two coordinated bugs meant the Projects page bled through the Training Log and Open Slots pages when navigating from Projects. Fixed both root causes and hardened the render dispatcher so this class of bug can't recur.", "Shipped Jul 11, 2026 in response to: 'training log, and open slots go to the projects page when i click.' Two bugs. BUG 1: State reset missed. openTrainingLogView never set state.projectsListView = false — because my v125 batch pass looked for lines containing 'state.trainingLogView = false;' as an insertion trigger, but openTrainingLogView sets it to =true, not false, so the batch skipped this function. Meanwhile openTeamWorkloadView was missing state.openSlotsView + state.tiView resets, another leftover. Regex audit script ran across every openXView function checking that each mutually excludes ALL other view flags — after fix, ✓ all clean. BUG 2: Dispatcher branches didn't hide OTHER view containers. Even after fixing state, the Projects <div id=projectsListView> would visually stay because the training log branch of render() called projectsListViewEl.classList.remove('hidden') was never mirrored by an .add('hidden') call from the other branches. Added missing hides to 4 branches: training log branch now hides workloadViewEl + projectsListViewEl + openSlotsViewEl; open slots branch now hides trainingLogViewEl + projectsListViewEl; team workload branch now hides trainingLogViewEl + projectsListViewEl + openSlotsViewEl; project timeline branch now hides trainingLogViewEl + projectsListViewEl + openSlotsViewEl. Belt and suspenders — with both state AND DOM hidden by every branch that fires, no view can leak into another. Verified: audit script clean, JS syntax clean, click paths Projects → Training Log, Projects → Open Slots, Projects → Team Workload, Projects → Project Timeline all now cleanly swap views."),
+    advImplemented('bugfix', 'Fix: Training Log + Open Slots dropped users on the Projects page when clicked', "Two coordinated bugs meant the Projects page bled through the Training Log and Open Slots pages when navigating from Projects. Fixed both root causes and hardened the render dispatcher so this class of bug can't recur.", "Shipped Jul 11, 2026 in response to: 'training log, and open slots go to the projects page when i click.' Two bugs. BUG 1: State reset missed. openTrainingLogView never set state.projectsListView = false — because my v125 batch pass looked for lines containing 'state.trainingLogView = false; state.earlyLogView = false;' as an insertion trigger, but openTrainingLogView sets it to =true, not false, so the batch skipped this function. Meanwhile openTeamWorkloadView was missing state.openSlotsView + state.tiView resets, another leftover. Regex audit script ran across every openXView function checking that each mutually excludes ALL other view flags — after fix, ✓ all clean. BUG 2: Dispatcher branches didn't hide OTHER view containers. Even after fixing state, the Projects <div id=projectsListView> would visually stay because the training log branch of render() called projectsListViewEl.classList.remove('hidden') was never mirrored by an .add('hidden') call from the other branches. Added missing hides to 4 branches: training log branch now hides workloadViewEl + projectsListViewEl + openSlotsViewEl; open slots branch now hides trainingLogViewEl + projectsListViewEl; team workload branch now hides trainingLogViewEl + projectsListViewEl + openSlotsViewEl; project timeline branch now hides trainingLogViewEl + projectsListViewEl + openSlotsViewEl. Belt and suspenders — with both state AND DOM hidden by every branch that fires, no view can leak into another. Verified: audit script clean, JS syntax clean, click paths Projects → Training Log, Projects → Open Slots, Projects → Team Workload, Projects → Project Timeline all now cleanly swap views."),
     advImplemented('high-impact', 'Duplicate Project: 3 copy modes (Fresh, Exact Clone, Custom) + granular checkboxes', "Three ways to duplicate a project. (1) 🔄 FRESH COPY — same as v124 default: structure only, everything resets (assignees, dates, statuses, history). Best for starting a new bid or engagement using a proven layout. (2) 📋 EXACT CLONE — full-fidelity copy with everything preserved including assignees, due dates, task statuses, completion history, activity logs, messages, milestones, addenda, and recurring series IDs. Good for backups or moving a project to a different workstream without losing anything. (3) ⚙️ CUSTOM — pick exactly what carries over. Granular checkboxes grouped into Assignees & team, Dates & scheduling, Completion & history, Recurring tasks, and Project-level data. Toggling any checkbox switches to Custom mode automatically. The always-included structural fields (task titles, hours, checklists, deliverables, best-practice notes, recurrence rules, critical/training flags, role requirements) are shown separately so you know what's baseline vs configurable.", "Shipped Jul 11, 2026 in response to: 'when copying a project can you give options and check boxes of what information you want to copy and carry over, also option to duplicate project as is an exact clone - thoughts?' Six pieces. (1) _COPY_OPTION_DEFS — top-level array defining 5 groups of 13 total copy options. Each option is {id, label, hint}. Groups: task-people (assignees, support, ball-in-court), task-dates (due dates, statuses), task-history (completion stamps, ack state, messages, activity log), recurring (share series ids), project-level (milestones, addenda, project activity). Kept as a single source of truth so the modal renderer and the copy function agree on field names. (2) _resolveCopyPreset(preset) — returns a flag map for 'fresh' (all false) or 'clone' (all true), or null for 'custom' so the current pending state isn't clobbered. (3) _copyProjectWithOptions(source, name, workstream, opts) — replaces v124's _legacyDuplicateProjectFast. Deep-clones the source, then walks each per-task field and either preserves or resets based on the opts flag. Handles all 13 fields plus a few always-reset ones (rescheduledFromPastDue metadata) and always-fresh ones (new task id, new createdAt). For recurring tasks with copySeriesIds=false, generates a fresh seriesId=task.id so each recurring task roots its own new series pool. _legacyDuplicateProjectFast is now a thin wrapper that calls _copyProjectWithOptions with the 'fresh' preset for backward compat. (4) Modal DOM extension — grew to 720px max-width, 92vh with vertical scroll to accommodate the new panels. Added: Copy Mode section with 3 radio-button preset cards (Fresh / Exact Clone / Custom) each with title + description; #dpmOptionsPanel that's hidden by default and shown when Custom is selected. Panel renders groups from _COPY_OPTION_DEFS via _renderDuplicateOptions — each option shows checkbox + bold label + gray hint text. (5) Wiring: _pickDuplicatePreset switches presets, calls _resolveCopyPreset to overwrite _pendingDuplicateOpts (unless custom, which preserves current state), re-renders both the preset cards and the options panel. _toggleDuplicateOpt updates _pendingDuplicateOpts[id] AND auto-switches preset to 'custom' if user was on Fresh/Clone — so the UI reflects reality once they start customizing. Both handlers call _renderDuplicateCarryOverInfo to keep the summary panel in sync. (6) Carry-over summary rewrite — was static text; now dynamically renders 3 sections. 'Always carried over' lists the structural fields (task titles, hours, checklists, deliverables, best-practice notes, critical/training flags, roles, recurrence rules, project settings) that no option controls. 'Also carried (per your selection)' lists options where the flag is true, in green. 'Starts fresh' lists options where the flag is false, in red. Users see exactly what they're getting before hitting Create Duplicate. CSS: new .dpm-preset family (2px border cards, active state gets navy border + navy tint background + subtle shadow), .dpm-options-panel with navy-tinted background + border, .dpm-opts-group with Barlow Condensed uppercase group labels, .dpm-opt rows with checkbox + label + hint layout, all matching the SBG modal patterns. JS syntax clean."),
     advImplemented('high-impact', 'Replaced Status Snapshot with Projects page — clean cross-workstream browsing', "The 🎯 Status Snapshot button in the sidebar is now 📁 Projects, opening a dedicated page for finding any project fast. Simple card grid grouped by workstream (Bidding, Training, Events, Precon General, custom), with Past Pursuits and Archived at the bottom. Each card shows the project name, workstream badge, task progress bar, and due-date pill (color-coded by urgency). Click any card to open. A search box at the top filters by name in real time. No dashboard clutter, no counters, just projects.", "Shipped Jul 11, 2026 in response to: 'CAN WE REPLACE SNAPSHOT WITH PROJECTS and have its own page listing projects by workstream, archived, past pursuits etc. In other words, i want someone to easily see PROJECTS and go and find and click on any project. But also i want that page to be simple and visually pleasing and not cluttered.' Seven pieces. (1) Sidebar button — replaced the Status Snapshot button (id snapshotSidebarBtn) with a Projects button (id projectsListSidebarBtn) using the 📁 icon. Same .snapshot-sidebar-btn CSS class since that class name is shared across all the sidebar nav buttons regardless of what they route to. Subtext reads 'Browse by workstream'. (2) Navigation — new state.projectsListView boolean, new state.projectsListSearch string for filter persistence. openProjectsListView + exitProjectsListView follow the standard SBG nav pattern (set flag, reset all other view flags for mutual exclusion, hide sticky countdown bar, saveState, render). Batch pass added state.projectsListView=false to 24 existing view-switch entry points (selectProject, openHomeView, openStatusSnapshot, etc.) so navigating away always clears the flag. Defensive audit for the v121 self-negation bug pattern — verified openProjectsListView doesn't contain state.projectsListView=false in its own body. (3) Render dispatcher — new branch after the Training Log branch: if state.projectsListView, hide all other view containers, show #projectsListView, call renderProjectsListView. (4) DOM structure — #projectsListView contains a header (title 📁 Projects + subtitle showing total project count + New Project button + Close button), a search row (input with X clear button that appears only when filter is active), and a body div populated by JS. (5) Data pipeline — renderProjectsListView filters projects by lowercase name-includes match, buckets into active (non-archived + not past-due) / past (past-due, non-archived) / archived, groups active by workstream, sorts each workstream by due date ascending (nulls at end), past by least-overdue-first, archived by most-recently-archived. (6) Rendering — one section per non-empty workstream in canonical order (Bidding, Training, Events, Precon General, then custom types), plus Past Pursuits and Archived sections at the bottom if they have projects. Each section header shows icon + label + count. Cards use a 4px left-edge color accent per workstream (red / gold / purple / gray), 36px thumbnail (project image or initials on navy square), project name with 2-line clamp, workstream badge below name, task count with done/total, days-left pill color-coded by urgency (red for late/today/urgent, gold for warning, green for OK, gray for none/archived), and a 4px progress bar with the SBG red→gold gradient. Cards use CSS Grid auto-fill with 280px minimum so they naturally responsive-flow at any screen size. Hover treatment: 2px lift + soft navy shadow + border darken. Archived cards get 65% opacity by default, 85% on hover. Click routes to selectProject for active/past, or openProjectModal for archived (matches sidebar behavior — don't switch to a hidden project). (7) Search — real-time filter with debounce-free oninput handler, state.projectsListSearch persisted so filter survives navigation. Empty state has a friendly 'no projects match' message with an inline link to clear the filter, or a 'no projects yet' message with a call-out to the + New Project button when the app is truly empty. CSS: full .plv-* family designed for calm, uncluttered browsing — dark navy titles, muted gray section borders, subtle card shadows only on hover, workstream-color section-header underlines that reinforce the sidebar palette, mobile responsive at 720px (1-column grid, smaller title). Status Snapshot backend code (openStatusSnapshot, statusSnapshotView state, renderStatusSnapshotView) left intact — no functional loss, just no longer surfaced in the sidebar. JS syntax clean; jsdom smoke test would show correct filter counts and card render across 3+ projects in mixed workstreams."),
     advImplemented('high-impact', 'Duplicate Project: pick a target workstream for the copy', "The ⎘ Duplicate Project button now opens a proper modal with a workstream picker instead of a bare name prompt. Copy a Bidding project into Training (or any other workstream) with one click — all tasks, checklists, deliverables, hours, roles, and settings carry over; task statuses and history reset so the copy starts fresh. If the target workstream has different stages than the source, a warning shows exactly how many tasks might not group cleanly, so you know before committing.", "Shipped Jul 11, 2026 in response to: 'CAN I COPY A PROJECT AND ASSIGN IT A DIFFERENT WORKSTREAM TYPE?' Yes — now built. Seven pieces. (1) Rewrote duplicateProject() — was a prompt() + immediate JSON.parse/JSON.stringify copy; now just opens the new modal. Kept the original logic renamed as _legacyDuplicateProjectFast(source, name, workstream) so future callers can bypass the modal if needed. Enhanced the copy logic to also reset per-task: assignee/completion stamps/acknowledgement/rejection state/leadAck/leadCompletion/messages/activityLog/seriesId so the copy is a clean starting point regardless of source state. (2) Duplicate Project modal — lazy-built on first open via _openDuplicateProjectModal(source). Contains: source-info panel showing which project is being duplicated + its workstream + task count; name input pre-filled with 'Original Name (Copy)'; workstream button grid rendering the full state.projectTypes list; live warning box for stage mismatches; carry-over info panel explaining what's copied vs reset; Cancel / Create Duplicate action buttons. (3) Workstream picker — matches the visual language of the New Project workstream picker but as a lazy-rendered grid inside the modal. Each button shows workstream icon + label; active state uses SBG navy fill + white text + subtle drop shadow. Click updates _pendingDuplicateWorkstream and re-renders both the buttons AND the stage warning so users see impact in real time. (4) Stage warning logic — _updateDuplicateStageWarning inspects the target workstream: if the target is 'bidding' it reads state.stages, otherwise reads the workstream's own stages array. Compares to distinct stages used by source tasks and counts orphans (source stages not in target). Shows green ✓ info panel when all source stages exist in target ('tasks will group cleanly'), gold ⚠ warning when target has zero stages defined ('add stages via Settings'), or red ⚠ warning when N stages don't exist ('N tasks may not group under a stage'). All variants explain the fix path so users know exactly what to do next. (5) Carry-over info — always-visible panel showing what carries forward (all tasks with titles/stages/categories/sources/hours/checklists/deliverables/best-practice notes/critical flags/training flags/roles, plus project settings, team assignments, milestones) vs what resets (task statuses to Not Started, all completion + acknowledgement stamps, activity log, messages, series IDs). Users know what they're getting before committing. (6) Confirm handler — _confirmDuplicateProject validates non-empty name, calls _legacyDuplicateProjectFast with the picked workstream, closes modal, and shows a success toast '✓ Duplicated as \"X\" — filed under {icon} {label}'. Automatically switches active project to the copy so the user sees their new project immediately. (7) CSS — full .dpm-* family covering source-info panel, workstream button grid (2-column grid at 640px modal width, hover lift, active state), warn/info variants (red left border for warnings, green for confirmations, gold background tint for stage-empty case), and carry-over info panel with subtle gray background. Uses SBG navy for active states matching the rest of the app's modal patterns. JS syntax clean."),
@@ -20107,9 +20721,9 @@ function getDefaultAdvancements() {
     advImplemented('bugfix', 'v119 fix: Training Log nav worked but self-negated; training badges now show in every list view', "Two fixes to the v119 shipment. (1) The Training Log button was firing openTrainingLogView but the page never opened — it dropped you into a random project instead. Root cause was inside the function itself: the batch pass that added state.trainingLogView=false resets across all navigation entry points accidentally added it to openTrainingLogView's own body too, so the function set the flag TRUE then FALSE two lines later before render() ran. Fixed. Audited every other openXView function; no similar self-negation exists. (2) Training tag was only visually indicated on board cards — invisible on Home Today, Look Ahead, Timeline, Alerts, Team Workload drill-down, Status Snapshot, Reassignment, and Unassigned lists. Now shows a compact gold 🎓 badge next to the task title in ALL of these list views.", "Shipped Jul 10, 2026 in response to: 'the training log doesnt do anything, just goes to a project, also i want visible badges showing that task is training, doesnt indicate it very well anywhere right but on board view.' Two pieces. FIX 1 — openTrainingLogView had 8 state-mutation lines: state.trainingLogView=true, then 6 resets of other views... plus state.trainingLogView=false at line 6 that shouldn't have been there. Removed the erroneous line. Ran an audit regex across every openXView function looking for the pattern 'sets stateXView=true AND stateXView=false in same body' — only openTrainingLogView was affected, so no other pages had the same bug. FIX 2 — added _trainingChipMiniHtml(t) helper that returns a small gold 🎓 chip (18px square, gold border, gold background, white glyph, tooltip 'Counts toward training — appears in Training Log') when t.isTraining, empty string otherwise. Splashed the helper into 8 render points across the app. Home Today: 4 hi-title occurrences (unack, pending, sign-off, done sections). Look Ahead: la-task-title. Project Timeline: ptv-task-title. Project Alerts: ai-title (after the escapeHtml title, before the seriesBadge so the two badges stack cleanly). Team Workload drill-down: wlDrill-title (after the critical-flame if present). Status Snapshot: ssv-row-title. Board table row: task-title-cell (after the newBadge and title text, before the checklist/deliverable/best-practice chips). Reassignment title: reassign-title. Unassigned workload: twv-unas-title. New CSS class .training-chip-mini — 18x18 gold square with 1px matching border, 10px glyph centered, subtle drop shadow, 4px horizontal margin so it breathes next to titles. Cursor: help so users get the tooltip on hover. Verified: all 8 replacements succeeded; JS syntax clean; regex-audited that the helper is only called on t.isTraining branches so no wasted DOM emitted for regular tasks. Now every place a task title renders shows the training tag — no more hunting for it."),
     advImplemented('high-impact', 'Training Log — tag any task as counting toward training + dedicated per-person hours page', "Two coordinated additions. (1) NEW '🎓 Count Toward Training' button on the task modal, right next to Mark as Critical. Toggle it on any task — regular day-to-day work like takeoff review, BC configuration, or client walkthroughs can all count as team development. Task stays assigned to its project as normal; this is just a metadata tag. Tagged tasks get a small gold 🎓 TRAINING chip on the board so you can see them at a glance. (2) NEW 🎓 Training Log page in the sidebar. Cross-project view showing team-wide training hours pending, completed this month, YTD, and all-time. Per-person cards break down each estimator's numbers with color-coded metric tiles (red=pending, gold=this month, navy=YTD, gray=all-time). Detailed task list at the bottom filters by person and status; click any row to jump into the task. 📋 Copy Summary button dumps a plain-text roll-up to the clipboard for reporting.", "Shipped Jul 10, 2026 in response to: 'I would like the ability to tag any task as Training in other words I would like to be able to have any normal task be tagged and tracked for assignees to reflect even though it is a task that is normal day to day business as precon manager i consider it to be apart of training as well. I would like also a separate log and or page that shows everyones current and past training hours completed, pending, etc to be used for reference. All task remain as is and assigned to each project accordingly, I just want to tag them.' Design choice: simple boolean task.isTraining flag (no sub-category or notes for v1 — the user asked for the simplest possible tag; sub-categories can be added later if needed for reporting granularity). Ten pieces. (1) Schema — task.isTraining boolean, no backfill needed since all reads use !!task.isTraining which defaults to false for legacy tasks. state.trainingLogView boolean (navigation flag), state.trainingLogFilter ('all'|'pending'|'completed'), state.trainingLogPersonFilter (name or 'all') — all persisted so filters survive reloads. (2) Task modal button — .training-btn mirrors .critical-btn pattern: 🎓 outline when off (dashed 2px gold border, gold text on transparent), filled solid gold when on. Sits inline right of the Critical button in the same form group (relabeled Critical → Critical / Training since both live there now). toggleTaskTraining / setTaskTrainingUI / getTaskTrainingUI follow the exact naming pattern of the critical helpers. Wired into openTaskModal (loads state from t.isTraining) and saveTask (writes via getTaskTrainingUI). Also wired into v118's _buildTaskCopyForDuplicate so training tag carries through Duplicate + Copy to Project. (3) Task card chip — .training-chip renders alongside .critical-chip when task.isTraining, in the standard SBG gold. Overdue-card override flips it to white-on-red matching the critical-chip pattern for legibility. (4) Sidebar button — new .snapshot-sidebar-btn with 🎓 icon, 'Training Log' label, 'Team training hours · pending & completed' subtitle. Sits right after Team Workload in the sidebar. Same button pattern as Team Workload / Project Timeline / Open Slots so it feels native. (5) Navigation wiring — openTrainingLogView sets trainingLogView=true, resets homeView/statusSnapshotView/projectTimelineView/teamWorkloadView/openSlotsView/tiView so mutual exclusion holds. exitTrainingLogView flips it back. A batch pass added state.trainingLogView=false to 15 existing view-switch entry points (selectProject, openHomeView, openStatusSnapshot, all the other openXView functions) so navigating away from Training Log always clears the flag — same pattern that fixed the v54 Team Workload navigation bug. (6) Render dispatcher — new branch after the Team Workload branch: if state.trainingLogView, hide all other views, show #trainingLogView, call renderTrainingLogView. (7) DOM structure — #trainingLogView contains a header (title + subtitle + action buttons Copy Summary / Refresh / Close), a 4-tile stat strip (Pending / This Month / YTD / All Time — each tile has a left-border accent in its section color), a per-person section with #tlvPersonGrid, and a task-detail section with status + person filter dropdowns and #tlvTaskList. (8) Data pipeline — _collectTrainingTasks walks state.projects (skipping archived) and returns {task, project} refs for every isTraining task. _buildTrainingPersonSummary aggregates per-name totals using the v94 support-hours-pro-rating pattern (primary lead gets the primary share; support members split the support percentage evenly). Bucketizes into pending, this-month completed, YTD completed, all-time completed based on task.status === 'done' and task.completedAt against month/year starts. (9) Rendering — renderTrainingLogView writes the stat strip, per-person cards (each showing 4 metric tiles color-matched to the header stats), and the task list (grid with status icon, title, project, stage, person, hours, due date). Empty states for no-training-tagged and no-matches-current-filter. Task rows click through to _openTaskFromTrainingLog which temporarily sets activeProjectId + opens the task modal so users can jump to any training task without leaving the log page context. (10) copyTrainingLogSummary — builds a plain-text summary (header + per-person block with pending / this-month / YTD / all-time hours) and copies to clipboard via navigator.clipboard. Falls back to alert() on non-clipboard environments. CSS: full .tlv-* family (~350 lines) covering header, stat strip, section wrappers, person grid + cards, metric tiles, filter dropdowns, task list rows with responsive column collapse below 1100px, empty states. Uses SBG gold as the primary accent to visually distinguish from Team Workload's blue treatment. Reports and cards use Barlow Condensed for numbers and labels matching the rest of the app's typography system. Verified: JS syntax clean; symbol references all resolve; view element registered in dispatcher; sidebar button routes correctly."),
     advImplemented('high-impact', 'Task actions: Duplicate, Copy to Project, and Save to Master Template all keep full work setup', "Three related fixes to task reuse. (1) NEW '📋 Duplicate' button on the task modal footer creates a copy of the task in the same project — same title (with '(copy)' suffix), stage, source, hours, category, priority, critical flag, checklist, deliverables, best-practice notes, recurrence rule, and role-requirement flags. Resets assignee, leads, support, due date, status, activity log, messages, acknowledgements, and completion state so the duplicate is a fresh work item. Opens the copy for editing so you can immediately assign it and set the due date. (2) NEW '📤 Copy to Project' button opens a picker of your other active projects. Pick one and the task is copied over with its due date recalculated from the target project's bid dates (via the same anchor + offset math the template loader uses). Same field-preservation rules as Duplicate. Prompts to switch to the target project and open the copy after. (3) FIX '⭐ Save to Master Template' was only saving 7 fields (title, stage, category, source, priority, offset, dateAnchor) — hours, checklist, deliverables, best-practice notes, critical flag, and role-requirement flags were silently dropped. Now saves the complete work-defining picture so loading the template into a future project brings back everything you had set up. Update-existing-template-entry path also updated to overwrite the full field set.", "Shipped Jul 10, 2026 in response to: 'I want to be able to duplicate a task within the same project as well as copy to another project if needed. Also, I noticed when saving task to template it does not carry over all the checklist, hours, information. I want to make sure when Duplicating, Copying, Saving to Master Template that it does the following: Keeps Task Name, Stage, Source, Hours, etc in place and starts fresh Assignees, Support, and Due Dates.' Seven pieces. (1) Shared helper _buildTaskCopyForDuplicate(source, targetProject) — the single source of truth for what carries over vs resets in a task clone. Keeps ~20 work-defining fields (title, stage, category, source, priority, offset, dateAnchor, critical, estimatedHours, supportHoursPct, notes, bestPracticeNotes, scopePackage, requiresSenior/Lead1/Lead2, deep-cloned checklist with new item ids + reset done state, deep-cloned deliverables with new ids + reset done state, deep-cloned recurrence rule with parentId stripped so the copy starts a fresh series). Resets ~15 per-instance fields (assignee, leads, support, supportMembers, ballInCourt='Lead', dueDate (recomputed from target project's anchor + offset), status='not-started', all completion/ack/rejection stamps, per-lead leadAck / leadCompletion / bestPracticeAck objects, seriesId=null, reschedule bookkeeping, messages=[], activityLog=[]). Fresh id and createdAt. Same helper drives Duplicate and Copy-to-Project so behavior stays consistent. (2) duplicateTask() — pulls the current editingTaskId, calls _buildTaskCopyForDuplicate with the SAME project as target, appends '(copy)' to the title, pushes to project.tasks, saves state, closes and reopens the modal on the new task so the user lands on the copy ready to edit. (3) copyTaskToProject() — filters state.projects to other non-archived projects, opens a picker modal listing them sorted by soonest bid due. Empty state alerts if there are no other projects. (4) _openCopyToProjectPicker builds the modal DOM on first use (lazy-created since most users won't hit this feature often), showing a source-task preview panel + one clickable row per project with name, task count, and days-left/days-late badge. (5) _confirmCopyToProject builds the copy against the TARGET project so due date is recomputed from the target's own startDate/dueDate/prebidDate/rfiDueDate, pushes to target.tasks, and offers a confirm to switch to the target and open the new task. (6) saveTaskToMasterTemplate now reads and captures the full field set from the modal — reading estimatedHours from taskHours input (quarter-hour rounded), critical from taskCritical checkbox, pendingChecklist and pendingDeliverables arrays (falling back to existing task values if the pending arrays aren't populated), best-practice text from taskBestPractice / taskBestPracticeNotes, requiresSenior/Lead1/Lead2 from their checkboxes. (7) doSaveTaskToTemplate builds a normalized fullFields object with the same 15+ reusable fields and uses it in BOTH the update-existing path (Object.assign onto the duplicate) and the new-entry path (tmpl.tasks.push({ ...fullFields })). Preview confirm dialog now shows an 'Extras' summary line listing what's included (hours, critical flag, checklist count, deliverable count, best-practice presence) so the user can verify. Round-trip verified: template → new project via existing _addTemplateTasksToProject already handled the rich fields (v39 / v49); the gap was purely on the save side, now closed. CSS: new .ctp-source-preview + .ctp-project-row family for the copy-to-project picker — subtle navy accent, hover lift, matches existing modal patterns. JS syntax clean."),
-    advImplemented('polish', 'Top header: milestone version chip matching the sidebar footer', "The version tag in the top-left app header used to render as a plain flat pill ('V116 · Built Jul 10, 2026') while the sidebar footer had the full milestone treatment — navy-red-gold gradient background, shimmer sweep, 🎉 celebration prefix. Now both surfaces match: the top header shows the same milestone chip ('🎉 V156'), and the build date sits next to it as a smaller monospace annotation so nothing is lost.", "Shipped Jul 10, 2026 in response to a screenshot request asking for the milestone chip style to also appear at the top of the app. Three pieces. (1) New CSS class .brand-text .version-stamp.version-stamp-milestone mirrors the sidebar footer .sf-version-milestone treatment: Barlow Condensed 12px 800-weight uppercase, 3x10px padding, 4px radius, navy→red→gold 135deg gradient background, subtle 1px white inner border ring, 2x6px navy drop shadow. Uses the shared milestone-shimmer keyframe animation (3.5s ease-in-out infinite) via a positioned ::after pseudo-element that sweeps a 40%-wide translucent white streak across every ~3s — same feel as the sidebar. (2) New paired .brand-text .version-built class for the build date so it can breathe next to the chip rather than being crammed inside it: JetBrains Mono 9.5px, 55%-opacity white, small margin-left gap. (3) Markup swap: the subtitle span was one flat 'V116 · Built Jul 10, 2026' pill; now it's two elements — the milestone chip carrying '🎉 V156' and a sibling span carrying 'Built Jul 10, 2026'. Same title attribute pattern as the sidebar footer chip. Sidebar footer chip left untouched — it was already correct. JS unchanged."),
+    advImplemented('polish', 'Top header: milestone version chip matching the sidebar footer', "The version tag in the top-left app header used to render as a plain flat pill ('V116 · Built Jul 10, 2026') while the sidebar footer had the full milestone treatment — navy-red-gold gradient background, shimmer sweep, 🎉 celebration prefix. Now both surfaces match: the top header shows the same milestone chip ('🎉 V163'), and the build date sits next to it as a smaller monospace annotation so nothing is lost.", "Shipped Jul 10, 2026 in response to a screenshot request asking for the milestone chip style to also appear at the top of the app. Three pieces. (1) New CSS class .brand-text .version-stamp.version-stamp-milestone mirrors the sidebar footer .sf-version-milestone treatment: Barlow Condensed 12px 800-weight uppercase, 3x10px padding, 4px radius, navy→red→gold 135deg gradient background, subtle 1px white inner border ring, 2x6px navy drop shadow. Uses the shared milestone-shimmer keyframe animation (3.5s ease-in-out infinite) via a positioned ::after pseudo-element that sweeps a 40%-wide translucent white streak across every ~3s — same feel as the sidebar. (2) New paired .brand-text .version-built class for the build date so it can breathe next to the chip rather than being crammed inside it: JetBrains Mono 9.5px, 55%-opacity white, small margin-left gap. (3) Markup swap: the subtitle span was one flat 'V116 · Built Jul 10, 2026' pill; now it's two elements — the milestone chip carrying '🎉 V163' and a sibling span carrying 'Built Jul 10, 2026'. Same title attribute pattern as the sidebar footer chip. Sidebar footer chip left untouched — it was already correct. JS unchanged."),
     advImplemented('bugfix', 'Today page: ✓ Acknowledge Series now actually propagates to the whole series', "Clicking ✓ Acknowledge Series on a recurring row in the Today page's Awaiting Acknowledgment section was only clearing that single instance — the other 27 siblings stayed put. The dedup display (v113) was working, but under the hood the ack was one-at-a-time. Now one click clears the entire series across all its instances, matching the behavior everywhere else in the app.", "Shipped Jul 10, 2026 in response to: 'Today Screen: When clicking Acknowledge Series it does not go away and seems to just be acknowledge recurring task one at a time. Does not work the way it does everywhere else.' Root cause: acknowledgeTaskFromHome was a duplicated stub predating v112 — it set task.acknowledged/acknowledgedBy/acknowledgedAt directly and never routed through acknowledgeTask (which is where v112 wired the _propagateAckToSiblings call). So the button label read 'Series' via v113's row-level display logic, but the click handler behaved like a per-instance ack. Two fixes. (1) acknowledgeTaskFromHome now checks task.seriesId and calls _propagateAckToSiblings(project, task) after the local ack — same pattern acknowledgeTask uses. One click → every unack'd sibling in the series flips to acknowledged with matching acknowledgedBy/acknowledgedAt. (2) acknowledgeAllMyTasksFromHome confirm dialog now uses the grouped count via getMyUnackedGroupCount so the confirm prompt matches the button label. Was 'Acknowledge all 31 new tasks across all projects?' when the button read 'Acknowledge All (4)'. Now reads 'Acknowledge all 4 items (covering 31 instances) across all projects?' when grouping actually collapsed rows, or the plain 'Acknowledge all N tasks' label when it didn't. Belt and suspenders — since each iteration still touches every task individually, propagation would be redundant for the bulk case; leaving that path alone. JS syntax clean."),
-    advImplemented('high-impact', 'Multi-fix: Schedule Calendar integration + Project Alerts dedup + center-screen assignment toast + collapsed sidebar sections + version sync', "Five coordinated fixes shipped together. (1) Recurrence now respects the Schedule Calendar's holiday list (Settings → Schedule Calendar) rather than a duplicate hardcoded federal list — so editing the master holiday list customizes recurrence skips app-wide. (2) Project Alerts UNACKNOWLEDGED tab now deduplicates recurring series into one row with a gold '🔁 N occurrences' badge and '✓ Acknowledge Series' button — matches v113's Today page behavior so users don't see 54+ individual instances of one weekly task. (3) Assignment toasts (task-assigned / task-reassigned) now pop CENTER-SCREEN with a thick red border, gold left accent, gold-red gradient shadow, subtle blur backdrop, and a 2.5s pulse animation — high-visibility 'in your face but not too much' treatment. Other toasts still stack top-right. (4) Currently Bidding sidebar section is now collapsible and defaults to collapsed (matching Past Pursuits + Archived). (5) Version sync — the stale V83 subtitle in the app header has been updated to match the sidebar chip; both now show V156 with today's build date.", "Shipped Jul 10, 2026 in response to a batch of five fixes in one message. Investigation revealed the existing Schedule Calendar system (state.holidays + isWeekend + isHoliday helpers, populated by getDefaultHolidays()) so v114's duplicate _getUsFederalHolidays / _observedHolidayDates / _nthWeekdayOfMonth / _fmtYmd / _usFederalHolidaysCache / _getHolidayName / _isBusinessDay all got deleted. New _isBusinessDay is a thin wrapper around isWeekend + isHoliday. _advanceToBusinessDay inline-formats YMD without needing the helper. The recurrence UI hint now points users to the Schedule Calendar as the authoritative holiday source rather than listing 11 hardcoded federal holidays. Project Alerts dedup: modified the render loop at line ~50164 to build a displayTasks array by iterating tierTasks, tracking seen seriesIds, and using the earliest-dated instance as the series representative. The count label reads 'N items (covers M instances)' when grouping collapsed rows. renderAlertItem now checks seriesId + sibling count for the unacknowledged tier and appends a gold .ai-series-badge next to the title (' 🔁 8 occurrences' pill) with matching v113 gradient. The ✓ Acknowledge button label switches to '✓ Acknowledge Series' when the row represents a series, with a matching tooltip. Cross-project ack works via existing v112 propagation. Sidebar collapse: renderProjectList now emits Currently Bidding wrapped in a clickable .project-section-header with chevron, gated on state.currentlyBiddingExpanded === true. Toggle handler toggleCurrentlyBidding() matches togglePastPursuits pattern (flip + save + re-render). state.currentlyBiddingExpanded added with default false, so all users see it collapsed on first load. Center-screen assignment toast: new #toastCenterLayer div fixed inset:0 z-index:10002 flex-centered with a semi-opaque navy backdrop + 1px blur; assignment toasts spawn here instead of the top-right container. New .toast-assignment-center class overrides positioning + sizing: 500px wide (max 100vw-40px), 3px red border all around with 8px gold left border, gradient background, 60px red shadow with pulse animation. Larger 30px icon, 15px title, 13.5px message. _spawnToast now branches on notif.type — assignment → center layer + add class; other → normal container. _dismissToastElement clears the .has-toast class on the center layer when it empties (fades the backdrop). dismissAllToasts sweeps both layers. Version sync: line 6 meta and line 18955 subtitle both bumped from V83 (which was multiple versions stale) to V156; sidebar footer built-date updated to Jul 10, 2026. Also the sed pass bumped all V114→V156 references throughout the file. JS syntax clean."),
+    advImplemented('high-impact', 'Multi-fix: Schedule Calendar integration + Project Alerts dedup + center-screen assignment toast + collapsed sidebar sections + version sync', "Five coordinated fixes shipped together. (1) Recurrence now respects the Schedule Calendar's holiday list (Settings → Schedule Calendar) rather than a duplicate hardcoded federal list — so editing the master holiday list customizes recurrence skips app-wide. (2) Project Alerts UNACKNOWLEDGED tab now deduplicates recurring series into one row with a gold '🔁 N occurrences' badge and '✓ Acknowledge Series' button — matches v113's Today page behavior so users don't see 54+ individual instances of one weekly task. (3) Assignment toasts (task-assigned / task-reassigned) now pop CENTER-SCREEN with a thick red border, gold left accent, gold-red gradient shadow, subtle blur backdrop, and a 2.5s pulse animation — high-visibility 'in your face but not too much' treatment. Other toasts still stack top-right. (4) Currently Bidding sidebar section is now collapsible and defaults to collapsed (matching Past Pursuits + Archived). (5) Version sync — the stale V83 subtitle in the app header has been updated to match the sidebar chip; both now show V163 with today's build date.", "Shipped Jul 10, 2026 in response to a batch of five fixes in one message. Investigation revealed the existing Schedule Calendar system (state.holidays + isWeekend + isHoliday helpers, populated by getDefaultHolidays()) so v114's duplicate _getUsFederalHolidays / _observedHolidayDates / _nthWeekdayOfMonth / _fmtYmd / _usFederalHolidaysCache / _getHolidayName / _isBusinessDay all got deleted. New _isBusinessDay is a thin wrapper around isWeekend + isHoliday. _advanceToBusinessDay inline-formats YMD without needing the helper. The recurrence UI hint now points users to the Schedule Calendar as the authoritative holiday source rather than listing 11 hardcoded federal holidays. Project Alerts dedup: modified the render loop at line ~50164 to build a displayTasks array by iterating tierTasks, tracking seen seriesIds, and using the earliest-dated instance as the series representative. The count label reads 'N items (covers M instances)' when grouping collapsed rows. renderAlertItem now checks seriesId + sibling count for the unacknowledged tier and appends a gold .ai-series-badge next to the title (' 🔁 8 occurrences' pill) with matching v113 gradient. The ✓ Acknowledge button label switches to '✓ Acknowledge Series' when the row represents a series, with a matching tooltip. Cross-project ack works via existing v112 propagation. Sidebar collapse: renderProjectList now emits Currently Bidding wrapped in a clickable .project-section-header with chevron, gated on state.currentlyBiddingExpanded === true. Toggle handler toggleCurrentlyBidding() matches togglePastPursuits pattern (flip + save + re-render). state.currentlyBiddingExpanded added with default false, so all users see it collapsed on first load. Center-screen assignment toast: new #toastCenterLayer div fixed inset:0 z-index:10002 flex-centered with a semi-opaque navy backdrop + 1px blur; assignment toasts spawn here instead of the top-right container. New .toast-assignment-center class overrides positioning + sizing: 500px wide (max 100vw-40px), 3px red border all around with 8px gold left border, gradient background, 60px red shadow with pulse animation. Larger 30px icon, 15px title, 13.5px message. _spawnToast now branches on notif.type — assignment → center layer + add class; other → normal container. _dismissToastElement clears the .has-toast class on the center layer when it empties (fades the backdrop). dismissAllToasts sweeps both layers. Version sync: line 6 meta and line 18955 subtitle both bumped from V83 (which was multiple versions stale) to V163; sidebar footer built-date updated to Jul 10, 2026. Also the sed pass bumped all V114→V163 references throughout the file. JS syntax clean."),
     advImplemented('high-impact', 'Recurring tasks: skip weekends + US federal holidays by default', "When a recurring occurrence would land on a Saturday, Sunday, or federal holiday, it now rolls forward to the next business day. So a daily task no longer spawns instances on Sat/Sun, a weekly Wednesday task that hits July 4 shifts to July 5+, etc. All 11 US federal holidays covered (New Year's Day, MLK Day, Presidents Day, Memorial Day, Juneteenth, Independence Day, Labor Day, Columbus Day, Veterans Day, Thanksgiving, Christmas) plus their federal observed dates (a Saturday holiday is observed Friday; a Sunday holiday is observed Monday — both are skipped). Behavior can be toggled off per-task via a new 'Skip weekends & US federal holidays' checkbox in the recurrence section of the task modal — default ON for all new recurring tasks, opt out for genuine 7-day rotations like site security.", "Shipped Jul 6, 2026 in response to: 'on recurring events I want to skip weekends and holidays (Example if task is Daily I don't want it for Saturday and Sunday as well).' Six pieces. (1) Federal holiday computation: _getUsFederalHolidays(year) builds a Set of YYYY-MM-DD strings for a given year, cached per-year so we only compute once per session. Uses _nthWeekdayOfMonth for the six rule-based holidays (MLK 3rd Mon Jan, Presidents 3rd Mon Feb, Memorial last Mon May, Labor 1st Mon Sep, Columbus 2nd Mon Oct, Thanksgiving 4th Thu Nov). Fixed-date holidays go through _observedHolidayDates which returns BOTH the actual date and the federal-observance shift (Saturday holiday → Friday observed; Sunday holiday → Monday observed) so pre-gen skips them both. Verified 2026 output: Jul 4 (Sat) correctly generates Jul 3 as observed; both are non-business days. (2) _isBusinessDay(dateStr): returns false when weekend or in the holidays Set. _advanceToBusinessDay(dateStr): rolls forward one day at a time up to a 14-day safety cap. Never infinite-loops even with corrupt data. (3) _getHolidayName(dateStr): reverse lookup that returns 'Independence Day', 'Thanksgiving', etc. — used for readable UI messaging when a date is skipped. (4) computeNextRecurrenceDate: at the end of the pattern-specific date math, checks rec.skipNonBusinessDays (defaults true when unset — always-on behavior for pre-v114 tasks that never had the field). If the computed date is not a business day, rolls forward via _advanceToBusinessDay and re-checks the endDate cap after the shift so a rolled date that jumps past endDate correctly returns null. (5) UI toggle: new checkbox in the recurrence form group '☑ Skip weekends & US federal holidays' with an explanatory hint listing all 11 federal holidays + observed-date rule. Shows/hides with the pattern (visible only when pattern != none). Populated from rec.skipNonBusinessDays on modal load (defaults checked when field is missing). Saved back into rec.skipNonBusinessDays on modal save. Reset to checked on new-task modal open. (6) Backward-compatible: existing pre-generated instances on weekends/holidays stay put (they were legitimately created under old behavior; user can delete/edit them). Only NEW pre-gen (rolling refresh extending the horizon, or new tasks) applies the skip logic. Because rec.skipNonBusinessDays defaults true when unset, existing recurring tasks automatically get the new behavior for future occurrences — no migration needed. JS syntax clean; verified holiday output for 2026 with a standalone Node test."),
     advImplemented('high-impact', 'Awaiting Ack list: collapsed to one row per recurring series with occurrence count badge', "v112 made acking any single instance propagate to the whole series, but the Awaiting Ack list on the Today page + sidebar badge still counted every pre-generated instance separately — so users still SAW 60 rows to work through even though clicking one would clear them all. This ships the display fix: recurring series now show as ONE row in the Awaiting Ack list with a gold '🔁 8 occurrences' badge and an '✓ Acknowledge Series' button. Sidebar badge and Home stats tile show the deduped count too. The row displays the EARLIEST upcoming instance's due date so you know when the next occurrence hits. Non-recurring tasks continue to show as individual rows.", "Shipped Jul 6, 2026 in response to: 'it still has to where a user sees all 60 task to acknowledge every time a recurring task is created (Example) I want acknowledgement for recurring new task to show up as one item and be a series acknowledgement.' Right call — v112 gave you the propagation, but the display was still flooded. Four pieces. (1) renderHomeUnack rewritten to group items by seriesId before rendering. Walks the raw list, uses a Set of seen seriesIds to dedupe, picks the earliest-dated instance as the row's visible representative (soonest due date = most actionable). Non-series tasks pass through as individual entries. Result: series → one row; standalone tasks → one row each. (2) Section header sub-text updated: shows 'N items (covers M instances)' when grouping actually collapsed anything, otherwise the plain 'N task(s)' label. So users see honest bookkeeping about how much work the shorter list actually represents. (3) Row visual: title now has a gold '🔁 N occurrences' pill badge next to it (only when N > 1). The Acknowledge button reads '✓ Acknowledge Series' instead of '✓ Acknowledge' when the row represents a series. Meta line shows 'Next due' instead of 'Due' and appends the cadence (' · weekly' etc.) from _formatRecurrenceCadence. (4) New helper getMyUnackedGroupCount(user): series-deduped version of the count, used by getHomeBadgeCount (sidebar red count badge) and by the Home stats 'Unacknowledged' tile. Both were pulling raw .length before — now they reflect the number of ACTUAL things to do, not the raw instance count. Backward-compatible: the raw getMyUnackedTasksAcrossProjects list is unchanged so any other caller keeps working; the ack Button still routes through acknowledgeTaskFromHome which triggers v112's series propagation to clear all siblings at once. CSS: .hi-series-badge uses SBG gold gradient (matching the v100 milestone badge style) so it visually reads as an SBG-branded 'this is special' pill. JS syntax clean."),
     advImplemented('high-impact', 'Recurring series: series-level acknowledgement — one ack covers the whole series', "Creating a weekly recurring task used to spawn 8+ pre-generated instances that each needed individual acknowledgement — flooding the Awaiting Ack section with '60 items to ack' for a single logical piece of work. Now, acknowledging ANY one instance in a series automatically propagates the ack state to every sibling in that series. Works from the task modal, from the ✓ Acknowledge button on toasts, from the bulk 'Acknowledge All My Tasks' flow, and from Multi-Lead per-lead ack. Also inherits ack state onto newly pre-generated instances when the rolling window extends, so users don't get re-flooded each time the window advances.", "Shipped Jul 6, 2026 in response to: 'When someone creates a recurring task, I would like for it to be a consolidated acknowledgement for that task. In other words each time a recurring task is created a user will have to acknowledge 60 or more items each time and seems flooded. I would like this single acknowledgement function to work across the system including toasts.' Four pieces. (1) New helper _propagateAckToSiblings(project, sourceTask) walks every task in the same series (by seriesId), and for each sibling that isn't already acked: copies task.acknowledged, task.acknowledgedBy, task.acknowledgedAt from the source. Also copies every task.leadAck[user] entry the source has that the sibling is missing — so if a specific co-lead has personally acked, that propagates independently of the flat flag. Never overwrites a sibling's more-recent ack state. (2) Hook in acknowledgeTask: after the existing logTaskAcknowledged + _notifyTaskAcknowledged, if the source task has a seriesId the propagation helper runs. Console logs the count of siblings updated. Notification only fires once for the source ack — no notification spam per sibling. (3) Hook in ensureSeriesInstancesGenerated: after the pre-generation loop creates new instances (either at task-create time or during the rolling refresh on load), if any pre-existing sibling in the series is already acked, its state propagates to the newly created siblings. Uses the earliest-acked source (first ack wins for the whole series). Also handles the partial-multi-lead case where leadAck entries exist without the flat flag being flipped. (4) Task modal series banner (v100): the hint text under the 'Occurrence N of M in a weekly series' banner now explicitly tells the user 'Acknowledging this instance also acknowledges all sibling occurrences in the series' so the behavior is discoverable. Backward-compatible: existing single-task acks continue to work; only series-tagged tasks trigger propagation. JS syntax clean. NOTE: only affects acknowledgement (assignee/lead accepting the work). Completion sign-off remains per-instance since each weekly instance is a separate piece of work that needs its own approval when done."),
@@ -21960,6 +22574,42 @@ function refreshHeaderStatusPill() {
   // Close the picker if it was open
   const picker = document.getElementById('tmpcStatusPicker');
   if (picker) picker.style.display = 'none';
+  // v161: Populate the completion timing banner. Reads flags from the
+  // task being edited (editingTaskId → task on activeProject). Hidden
+  // for open tasks; shown with green/gold/grey tint for done-early /
+  // done-late / not-required.
+  const banner = document.getElementById('tmpcCompletionBanner');
+  if (banner) {
+    banner.style.display = 'none';
+    banner.textContent = '';
+    banner.title = '';
+    banner.className = 'tmpc-completion-banner';
+    if (editingTaskId) {
+      const proj = state.projects.find(p => p.id === state.activeProjectId);
+      const t = proj ? (proj.tasks || []).find(x => x.id === editingTaskId) : null;
+      if (t) {
+        if (t.status === 'not-required') {
+          const dt = t.notRequiredAt ? new Date(t.notRequiredAt).toLocaleDateString('en-US', {month:'short', day:'numeric'}) : '';
+          banner.textContent = '⊘ Not Required';
+          banner.title = dt ? `Marked Not Required on ${dt}` + (t.notRequiredBy ? ` by ${t.notRequiredBy}` : '') : 'Marked Not Required';
+          banner.className = 'tmpc-completion-banner variant-not-required';
+          banner.style.display = 'inline-flex';
+        } else if (t.status === 'done' && t.completedEarly && t.completedDaysBefore > 0) {
+          const n = t.completedDaysBefore;
+          banner.textContent = `🏁 ${n} day${n === 1 ? '' : 's'} early`;
+          banner.title = `Completed ${n} day${n === 1 ? '' : 's'} before due date — nice pull-forward`;
+          banner.className = 'tmpc-completion-banner variant-early';
+          banner.style.display = 'inline-flex';
+        } else if (t.status === 'done' && t.completedLate && t.completedDaysAfter > 0) {
+          const n = t.completedDaysAfter;
+          banner.textContent = `⏱ ${n} day${n === 1 ? '' : 's'} late`;
+          banner.title = `Completed ${n} day${n === 1 ? '' : 's'} after due date`;
+          banner.className = 'tmpc-completion-banner variant-late';
+          banner.style.display = 'inline-flex';
+        }
+      }
+    }
+  }
 }
 
 // Toggle the inline picker open/closed.
@@ -22720,6 +23370,7 @@ function render() {
   const openSlotsViewEl = document.getElementById('openSlotsView');
   const teamInsightsViewEl = document.getElementById('teamInsightsView');
   const trainingLogViewEl = document.getElementById('trainingLogView');
+  const earlyLogViewEl = document.getElementById('earlyLogView');
   const projectsListViewEl = document.getElementById('projectsListView');
   // v82: Team Insights view takes precedence over all others
   if (state.tiView) {
@@ -22818,6 +23469,26 @@ function render() {
     return;
   }
   if (trainingLogViewEl) trainingLogViewEl.classList.add('hidden');
+  // v163: Completed Early Log view — cross-project recognition
+  if (state.earlyLogView) {
+    if (emptyEl) emptyEl.classList.add('hidden');
+    if (projectViewEl) projectViewEl.classList.add('hidden');
+    if (homeViewEl) homeViewEl.classList.add('hidden');
+    if (snapshotEl) snapshotEl.classList.add('hidden');
+    if (workloadViewEl) workloadViewEl.classList.add('hidden');
+    if (projectsListViewEl) projectsListViewEl.classList.add('hidden');
+    if (openSlotsViewEl) openSlotsViewEl.classList.add('hidden');
+    if (trainingLogViewEl) trainingLogViewEl.classList.add('hidden');
+    if (earlyLogViewEl) earlyLogViewEl.classList.remove('hidden');
+    const _scbBarE = document.getElementById('stickyCountdownBar');
+    const _scbMainE = document.querySelector('.main');
+    if (_scbBarE) _scbBarE.style.display = 'none';
+    if (_scbMainE) _scbMainE.classList.remove('has-sticky-countdown');
+    renderEarlyLogView();
+    applySidebarState();
+    return;
+  }
+  if (earlyLogViewEl) earlyLogViewEl.classList.add('hidden');
   // v125: Projects list view — cross-workstream browsing
   if (state.projectsListView) {
     if (emptyEl) emptyEl.classList.add('hidden');
@@ -26640,7 +27311,7 @@ function renderAlertItem(t, tier) {
     <div class="alert-item${tier === 'completed' ? ' alert-item-completion' : ''}${tier === 'unacknowledged' ? ' alert-item-unack' : ''}${tier === 'rejected' ? ' alert-item-rejected' : ''}" onclick="openTaskModal(null, '${t.id}')">
       <div class="ai-primary-row">
         <span class="ai-stage" title="${escapeHtml(stage.name)}">${stage.icon} ${escapeHtml(stage.name)}</span>
-        <span class="ai-title" title="${escapeHtml(t.title)}">${escapeHtml(t.title)}${_trainingChipMiniHtml(t)}${seriesBadge}</span>
+        <span class="ai-title" title="${escapeHtml(t.title)}">${escapeHtml(t.title)}${_trainingChipMiniHtml(t)}${seriesBadge}${_buildCompletionSideBadgeHtml(t)}</span>
         <span class="ai-assignee">${avatar}${escapeHtml(assigneeLabel)}</span>
         <span class="ai-due">${dueText}</span>
         ${aiHoursPill}
@@ -27031,7 +27702,7 @@ function jumpToSearchResult(idx) {
   if (result.type === 'project') {
     state.homeView = false;
     state.teamWorkloadView = false;
-    state.trainingLogView = false;
+    state.trainingLogView = false; state.earlyLogView = false;
     state.projectsListView = false;
     state.projectTimelineView = false;
     state.openSlotsView = false;
@@ -27041,7 +27712,7 @@ function jumpToSearchResult(idx) {
   } else if (result.type === 'task' || result.type === 'task-message') {
     state.homeView = false;
     state.teamWorkloadView = false;
-    state.trainingLogView = false;
+    state.trainingLogView = false; state.earlyLogView = false;
     state.projectsListView = false;
     state.projectTimelineView = false;
     state.openSlotsView = false;
@@ -27053,7 +27724,7 @@ function jumpToSearchResult(idx) {
   } else if (result.type === 'message') {
     state.homeView = false;
     state.teamWorkloadView = false;
-    state.trainingLogView = false;
+    state.trainingLogView = false; state.earlyLogView = false;
     state.projectsListView = false;
     state.projectTimelineView = false;
     state.openSlotsView = false;
@@ -27067,7 +27738,7 @@ function jumpToSearchResult(idx) {
   } else if (result.type === 'addendum') {
     state.homeView = false;
     state.teamWorkloadView = false;
-    state.trainingLogView = false;
+    state.trainingLogView = false; state.earlyLogView = false;
     state.projectsListView = false;
     state.projectTimelineView = false;
     state.openSlotsView = false;
@@ -27082,7 +27753,7 @@ function jumpToSearchResult(idx) {
   } else if (result.type === 'scope') {
     state.homeView = false;
     state.teamWorkloadView = false;
-    state.trainingLogView = false;
+    state.trainingLogView = false; state.earlyLogView = false;
     state.projectsListView = false;
     state.projectTimelineView = false;
     state.openSlotsView = false;
@@ -27097,7 +27768,7 @@ function jumpToSearchResult(idx) {
       state.activeAssignee = result.memberName;
       state.homeView = false;
       state.teamWorkloadView = false;
-      state.trainingLogView = false;
+      state.trainingLogView = false; state.earlyLogView = false;
       state.projectsListView = false;
       state.projectTimelineView = false;
       state.openSlotsView = false;
@@ -28422,6 +29093,9 @@ function renderTaskCard(t) {
   }
   // v89: Rescheduled-from-past-due badge — permanent accountability marker.
   const rescheduledBadge = buildRescheduledPastDueBadgeHtml(t);
+  // v158: Early / late completion badge + Not Required badge. Only show
+  // on tasks whose completion state is terminal (done or not-required).
+  const completionSideBadge = _buildCompletionSideBadgeHtml(t);
 
   // Checklist progress chip — shows "✓ 3/8" plus loud red treatment when required items are still open
   let checklistChip = '';
@@ -28654,6 +29328,7 @@ function renderTaskCard(t) {
         ${offsetBadge}
         ${recurrenceBadge}
         ${rescheduledBadge}
+        ${completionSideBadge}
         ${t.critical ? '<span class="critical-chip" title="Marked as Critical">🔥 CRITICAL</span>' : ''}
         ${t.isTraining ? '<span class="training-chip" title="Counts toward training — appears in the Training Log">🎓 TRAINING</span>' : ''}
         ${checklistChip}
@@ -28901,7 +29576,7 @@ function renderTableRow(t, statusLabels) {
         </select>
         ${dueInline}${signOffTable}
       </td>
-      <td data-col="task" class="task-title-cell" style="font-weight:600;">${newBadgeTable}${escapeHtml(t.title)}${_trainingChipMiniHtml(t)}${clChipTable}${dlvChipTable}${bpChipTable}${isRecurringTask(t) ? `<span class="recurrence-badge" title="${escapeHtml('Recurs: ' + describeRecurrence(t.recurrence))}">🔁</span>` : ''}${buildRescheduledPastDueBadgeHtml(t)}${ackBtnTable}${overrideBtnTable}${overrideBadgeTable}</td>
+      <td data-col="task" class="task-title-cell" style="font-weight:600;">${newBadgeTable}${escapeHtml(t.title)}${_trainingChipMiniHtml(t)}${clChipTable}${dlvChipTable}${bpChipTable}${isRecurringTask(t) ? `<span class="recurrence-badge" title="${escapeHtml('Recurs: ' + describeRecurrence(t.recurrence))}">🔁</span>` : ''}${buildRescheduledPastDueBadgeHtml(t)}${_buildCompletionSideBadgeHtml(t)}${ackBtnTable}${overrideBtnTable}${overrideBadgeTable}</td>
       <td data-col="stage"><span class="csi-code" style="color:${stage.orphan ? 'var(--sbg-gold, #c07f00)' : 'var(--sbg-navy)'};background:${stage.orphan ? 'rgba(192,127,0,0.08)' : 'var(--surface-3)'};" ${stage.orphan ? 'title="Orphan stage — from source workstream. Open task to re-file into this project\'s workstream."' : ''}>${stage.icon || ''} ${escapeHtml(stage.name)}</span></td>
       <td data-col="assignee">${tblLeads.length > 0 ? `<span class="assignee">${avatarHtml}${tblLeadText}</span>` : '<span style="color:var(--text-faint);">Unassigned</span>'}</td>
       <td data-col="support">${supportCell}</td>
@@ -29640,7 +30315,7 @@ function renderLookAheadTaskRow(item) {
           ${overdueTag}
           ${laNewBadge}
         </div>
-        <div class="la-task-title">${escapeHtml(task.title)}${_trainingChipMiniHtml(task)}</div>
+        <div class="la-task-title">${escapeHtml(task.title)}${_trainingChipMiniHtml(task)}${_buildCompletionSideBadgeHtml(task)}</div>
         <div class="la-task-meta">
           ${assigneeChip}
           ${supportChip}
@@ -30286,12 +30961,13 @@ function renderCalDayCell(d, tasks, project, opts) {
       'in-progress': '◐',
       'blocked': '⚠',
       'pending': '⏳',
-      'done': '✓'
+      'done': '✓',
+      'not-required': '⊘'
     };
     const currentStatusIcon = statusIconMap[t.status] || '○';
     const calStatusPicker = `<button class="cal-status-picker" onclick="event.stopPropagation();_openCalStatusMenu('${escapeAttr(t.id)}', event);" title="Change status (current: ${escapeAttr(t.status || 'not-started')})">${currentStatusIcon}</button>`;
 
-    return `<div class="${classes.join(' ')}" onclick="event.stopPropagation();openTaskModal(null,'${t.id}')" title="${tooltipParts.join(' — ')}">${calNewBadge}${calOverrideBtn}${calOverrideAudit}${calSignoffBadge}${calStatusPicker}${escapeHtml(t.title)}${buildRescheduledPastDueBadgeHtml(t)}${dueFlag}${metaLine}${showMeta ? bicTag : ''}</div>`;
+    return `<div class="${classes.join(' ')}" onclick="event.stopPropagation();openTaskModal(null,'${t.id}')" title="${tooltipParts.join(' — ')}">${calNewBadge}${calOverrideBtn}${calOverrideAudit}${calSignoffBadge}${calStatusPicker}${escapeHtml(t.title)}${buildRescheduledPastDueBadgeHtml(t)}${_buildCompletionSideBadgeHtml(t)}${dueFlag}${metaLine}${showMeta ? bicTag : ''}</div>`;
   }).join('');
 
   const moreHtml = extra > 0 ? `<div class="cal-event-more">+ ${extra} more</div>` : '';

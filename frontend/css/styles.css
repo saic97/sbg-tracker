@@ -5290,6 +5290,91 @@
   .task-card.status-pending { background: var(--fill-pending); border-color: var(--fill-pending-border); }
   .task-card.status-done { background: var(--fill-done); border-color: var(--fill-done-border); }
   .task-card.status-done .task-title { text-decoration: line-through; opacity: 0.75; }
+  /* v158: Not Required task card — grey-tinted, italic + strikethrough title,
+     visually distinct from Complete so users can tell at a glance which
+     tasks were finished vs which were skipped as unnecessary. */
+  .task-card.status-not-required {
+    background: rgba(107, 118, 135, 0.12);
+    border-color: rgba(107, 118, 135, 0.4);
+  }
+  .task-card.status-not-required .task-title {
+    text-decoration: line-through;
+    font-style: italic;
+    opacity: 0.65;
+    color: var(--text-dim);
+  }
+  body.dark-mode .task-card.status-not-required {
+    background: rgba(139, 148, 158, 0.15);
+    border-color: rgba(139, 148, 158, 0.35);
+  }
+  /* v158: Early / late / on-time completion badges — small pills that
+     appear on task cards + rows when a completed task was finished before
+     (or after) its scheduled due date. Green for early, gold for late,
+     subtle grey for on-time (only shown as tooltip since it's the neutral). */
+  .early-completion-badge {
+    display: inline-flex;
+    align-items: center;
+    gap: 3px;
+    padding: 2px 6px;
+    background: rgba(44, 166, 116, 0.12);
+    color: #1e8558;
+    border: 1px solid rgba(44, 166, 116, 0.35);
+    border-radius: 3px;
+    font-size: 10px;
+    font-weight: 700;
+    letter-spacing: 0.04em;
+    font-family: 'JetBrains Mono', monospace;
+    white-space: nowrap;
+    line-height: 1.2;
+  }
+  body.dark-mode .early-completion-badge {
+    background: rgba(63, 185, 80, 0.14);
+    color: #3fb950;
+    border-color: rgba(63, 185, 80, 0.35);
+  }
+  .late-completion-badge {
+    display: inline-flex;
+    align-items: center;
+    gap: 3px;
+    padding: 2px 6px;
+    background: rgba(192, 127, 0, 0.12);
+    color: #a06600;
+    border: 1px solid rgba(192, 127, 0, 0.35);
+    border-radius: 3px;
+    font-size: 10px;
+    font-weight: 700;
+    letter-spacing: 0.04em;
+    font-family: 'JetBrains Mono', monospace;
+    white-space: nowrap;
+    line-height: 1.2;
+  }
+  body.dark-mode .late-completion-badge {
+    background: rgba(229, 178, 76, 0.14);
+    color: #e5b24c;
+    border-color: rgba(229, 178, 76, 0.35);
+  }
+  /* Not Required inline badge — used in table + calendar + card meta */
+  .not-required-badge {
+    display: inline-flex;
+    align-items: center;
+    gap: 3px;
+    padding: 2px 6px;
+    background: rgba(107, 118, 135, 0.12);
+    color: #6b7687;
+    border: 1px solid rgba(107, 118, 135, 0.35);
+    border-radius: 3px;
+    font-size: 10px;
+    font-weight: 700;
+    letter-spacing: 0.04em;
+    font-family: 'JetBrains Mono', monospace;
+    white-space: nowrap;
+    line-height: 1.2;
+  }
+  body.dark-mode .not-required-badge {
+    background: rgba(139, 148, 158, 0.15);
+    color: #8b949e;
+    border-color: rgba(139, 148, 158, 0.4);
+  }
   .task-card.is-overdue {
     background: var(--fill-overdue) !important;
     border-color: var(--fill-overdue-border) !important;
@@ -10620,12 +10705,49 @@
   .status-blocked,     .tmpc-status[data-status="blocked"]     .tmpc-status-dot { background: var(--sbg-red); }
   .status-pending,     .tmpc-status[data-status="pending"]     .tmpc-status-dot { background: #6b46c1; }
   .status-done,        .tmpc-status[data-status="done"]        .tmpc-status-dot { background: #2ca674; }
+  .status-not-required, .tmpc-status[data-status="not-required"] .tmpc-status-dot { background: #6b7687; }
   /* Whole pill tinted to status color for high-visibility cue */
   .tmpc-status[data-status="not-started"] { background: rgba(155,164,176,0.35); border-color: rgba(255,255,255,0.45); }
   .tmpc-status[data-status="in-progress"] { background: rgba(192,127,0,0.55); border-color: #c07f00; }
   .tmpc-status[data-status="blocked"]     { background: rgba(200,50,43,0.55); border-color: var(--sbg-red); }
   .tmpc-status[data-status="pending"]     { background: rgba(107,70,193,0.55); border-color: #6b46c1; }
   .tmpc-status[data-status="done"]        { background: rgba(44,166,116,0.55); border-color: #2ca674; }
+  .tmpc-status[data-status="not-required"] { background: rgba(107,118,135,0.5); border-color: #6b7687; }
+  /* v161: Completion timing banner — floats to the right of the status
+     pill in the task modal header. Warm-tinted for early wins, gold for
+     late, grey for Not Required. Same palette as the card badges. */
+  .tmpc-completion-banner {
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+    padding: 4px 10px;
+    margin-left: 8px;
+    border: 1px solid transparent;
+    border-radius: 14px;
+    font-family: 'Barlow Condensed', sans-serif;
+    font-size: 12.5px;
+    font-weight: 700;
+    letter-spacing: 0.05em;
+    text-transform: uppercase;
+    line-height: 1.2;
+    white-space: nowrap;
+    box-shadow: 0 1px 3px rgba(0, 0, 0, 0.15);
+  }
+  .tmpc-completion-banner.variant-early {
+    background: linear-gradient(90deg, rgba(44, 166, 116, 0.85), rgba(30, 133, 88, 0.85));
+    color: #fff;
+    border-color: rgba(44, 166, 116, 0.6);
+  }
+  .tmpc-completion-banner.variant-late {
+    background: linear-gradient(90deg, rgba(192, 127, 0, 0.85), rgba(160, 102, 0, 0.85));
+    color: #fff;
+    border-color: rgba(192, 127, 0, 0.6);
+  }
+  .tmpc-completion-banner.variant-not-required {
+    background: linear-gradient(90deg, rgba(107, 118, 135, 0.85), rgba(85, 94, 108, 0.85));
+    color: #fff;
+    border-color: rgba(107, 118, 135, 0.6);
+  }
   .tmpc-status-label {
     font-family: 'Barlow Condensed', sans-serif;
     font-size: 14px;
