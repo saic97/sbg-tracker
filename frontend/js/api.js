@@ -60,6 +60,44 @@
     _stateVersion = v;
     try { localStorage.setItem(VERSION_KEY, String(v)); } catch (e) {}
   }
+
+  // ---- poisoned-cache guards -------------------------------------------------
+  // A cached state with ZERO projects paired with a real server version is the
+  // "empty workspace" trap: boot renders the empty cache, sends
+  // If-None-Match: "v<version>", the server answers 304 ("you're current"),
+  // and the emptiness is confirmed forever -- users see no projects/stages
+  // while the server is perfectly intact. It happens when the app persists its
+  // freshly-initialized default state (0 projects, default stages) while a
+  // version stamp from a successful call is already on disk.
+  function stateLooksEmpty(st) {
+    return !st || !Array.isArray(st.projects) || st.projects.length === 0;
+  }
+  function readCachedState() {
+    try {
+      const raw = localStorage.getItem(STORAGE_KEY);
+      return raw ? JSON.parse(raw) : null;
+    } catch (e) { return null; }
+  }
+  // Single funnel for every state-cache write. Refuses to persist an empty
+  // workspace once we know the server has a version (that pairing is the
+  // trap), and stays quota-safe: a failed write purges cache + version so the
+  // next boot does a clean full fetch.
+  function cacheState(st) {
+    if (stateLooksEmpty(st) && typeof _stateVersion === 'number') {
+      try {
+        localStorage.removeItem(STORAGE_KEY);
+        localStorage.removeItem(VERSION_KEY);
+      } catch (e) {}
+      _stateVersion = null;
+      console.warn('[api] refused to cache an empty workspace; cleared version so the next load full-fetches');
+      return false;
+    }
+    try { localStorage.setItem(STORAGE_KEY, JSON.stringify(st)); return true; }
+    catch (e) {
+      try { localStorage.removeItem(STORAGE_KEY); localStorage.removeItem(VERSION_KEY); } catch (e2) {}
+      return false;
+    }
+  }
   // We only want to surface the conflict banner once per occurrence; the
   // saveState debounce can fire multiple PUTs in flight and we don't want to
   // alert N times for the same underlying staleness.
@@ -171,15 +209,8 @@
     // this, the next incremental pass would diff against a stale baseline and
     // re-PUT (and potentially resurrect) data the server just told us about.
     try { window.lastSyncedState = JSON.parse(JSON.stringify(window.state)); } catch (e) {}
-    // Quota-safe: if the big cache write fails, PURGE the stale cache + the
-    // version stamp. A stale cache left beside a fresh version made the next
-    // boot render old data and get a 304 that "confirmed" it (users saw
-    // missing/old data while the server was fine). No cache -> clean full
-    // fetch next boot.
-    try { localStorage.setItem(STORAGE_KEY, JSON.stringify(window.state)); }
-    catch (e) {
-      try { localStorage.removeItem(STORAGE_KEY); localStorage.removeItem(VERSION_KEY); } catch (e2) {}
-    }
+    // Quota-safe + empty-workspace-safe (see cacheState).
+    cacheState(window.state);
     if (typeof window.render === 'function') window.render();
   }
 
@@ -291,6 +322,10 @@
     status, enabled: ENABLED,
     get stateVersion() { return _stateVersion; },
     setStateVersion(v) { setVersion(v); },
+    // Shared, guarded state-cache writer (quota-safe + refuses to persist an
+    // empty workspace beside a version stamp). Other layers route their cache
+    // writes through this so the guards can't be bypassed.
+    cacheState(st) { return cacheState(st || window.state); },
 
     // Coarse state-blob endpoint. Sends If-None-Match with the version we
     // already hold; when the server still has that version it answers 304
@@ -299,9 +334,22 @@
     // serve from.
     getState: async (opts = {}) => {
       const headers = {};
-      let hasLocal = false;
-      try { hasLocal = !!localStorage.getItem(STORAGE_KEY); } catch (e) {}
-      if (!opts.force && typeof _stateVersion === 'number' && hasLocal) {
+      // Only claim "I already have v<N>" when the local copy is actually
+      // WORTH keeping. A cache with no projects must never earn a 304 --
+      // that's what pins users to an empty workspace while the server is
+      // fine. A poisoned pair is dropped here so this very request
+      // full-fetches and the client self-heals.
+      const cached = readCachedState();
+      const usableLocal = !stateLooksEmpty(cached);
+      if (cached && !usableLocal) {
+        try {
+          localStorage.removeItem(STORAGE_KEY);
+          localStorage.removeItem(VERSION_KEY);
+        } catch (e) {}
+        _stateVersion = null;
+        console.warn('[api] discarded an empty cached workspace; fetching the full state from the server');
+      }
+      if (!opts.force && typeof _stateVersion === 'number' && usableLocal) {
         headers['If-None-Match'] = `"v${_stateVersion}"`;
       }
       const r = await request('/api/state', { headers, allow304: true });

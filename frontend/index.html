@@ -3,7 +3,7 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <meta name="application-name" content="SBG Preconstruction Bid Tracker">
-<meta name="version" content="V154">
+<meta name="version" content="V163">
 <!--
   =============================================================================
   BUILD DATE — SINGLE SOURCE OF TRUTH
@@ -13,10 +13,10 @@
   (.sf-built) so they never drift apart again. Format: "MMM D, YYYY".
   =============================================================================
 -->
-<meta name="build-date" content="Jul 21, 2026">
+<meta name="build-date" content="Jul 28, 2026">
 <meta name="created" content="2026-04-18">
 <meta name="built" content="2026-04-19T23:56:18Z">
-<title>SBG Preconstruction Bid Tracker · V154</title>
+<title>SBG Preconstruction Bid Tracker · V163</title>
 <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;600;700&amp;family=Barlow+Condensed:wght@500;600;700;800&amp;family=Inter:wght@300;400;500;600;700;800&amp;display=swap" rel="stylesheet">
 
 <meta name="api-base" content="">
@@ -30,7 +30,7 @@
     <div class="brand-logo" id="brandLogo" onclick="openSettingsModal()" title="Click to edit company logo"><img src="data:image/gif;base64,R0lGODlhAQABAAAAACH5BAEKAAEALAAAAAABAAEAAAICTAEAOw==" alt="Company Logo" style="width:100%;height:100%;object-fit:contain;border-radius:4px;background:#fff;"></div>
     <div class="brand-text">
       <h1>SOURCE BUILDING GR<span class="accent">O</span>UP</h1>
-      <div class="subtitle">Preconstruction · Bid Pursuit Tracker <span class="version-stamp version-stamp-milestone" title="v154 · v100 milestone Recurring Series Overhaul + polish">🎉 V154</span><span class="version-built" data-role="build-date"></span></div>
+      <div class="subtitle">Preconstruction · Bid Pursuit Tracker <span class="version-stamp version-stamp-milestone" title="v163 · v100 milestone Recurring Series Overhaul + polish">🎉 V163</span><span class="version-built" data-role="build-date"></span></div>
     </div>
   </div>
   <div class="header-stats">
@@ -167,6 +167,16 @@
         <span class="ssb-sub" id="trainingLogSidebarSub">Team training hours · pending & completed</span>
       </div>
       <span class="ssb-badge" id="trainingLogSidebarBadge" style="display: none;">0</span>
+    </button>
+
+    <!-- v163: Completed Early Log — cross-project recognition tracker -->
+    <button class="snapshot-sidebar-btn" id="earlyLogSidebarBtn" onclick="openEarlyLogView()" title="Completed Early Log — every task pulled forward, recognized by person">
+      <span class="ssb-icon">🏁</span>
+      <div class="ssb-body">
+        <span class="ssb-label">Completed Early</span>
+        <span class="ssb-sub" id="earlyLogSidebarSub">Tasks pulled forward · leaderboard</span>
+      </div>
+      <span class="ssb-badge" id="earlyLogSidebarBadge" style="display: none;">0</span>
     </button>
 
     <!-- v75: Project Timeline — full-project chronological view, all tasks regardless of status -->
@@ -324,7 +334,7 @@
     <!-- File creation/version footer — stays pinned to the bottom of the sidebar -->
     <div class="sidebar-footer" id="sidebarFooter">
       <div class="sf-brand">SBG Precon Tracker</div>
-      <div class="sf-version sf-version-milestone" title="v154 · v100 milestone Recurring Series Overhaul + polish">🎉 V154</div>
+      <div class="sf-version sf-version-milestone" title="v163 · v100 milestone Recurring Series Overhaul + polish">🎉 V163</div>
       <div class="sf-created">Created April 18, 2026</div>
       <div class="sf-built" data-role="build-date" title="Exact timestamp when this HTML file was generated"></div>
       <div class="sf-org">Source Building Group · Mansfield, TX</div>
@@ -707,6 +717,77 @@
           </div>
           <div class="tlv-task-list" id="tlvTaskList">
             <!-- Populated by renderTrainingLogView() -->
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- v163: COMPLETED EARLY LOG =========================================
+         Cross-project view of every task that was completed BEFORE its
+         due date. Team leaderboard on top, per-person cards, then a
+         filterable detail list sorted by days pulled forward.
+         ================================================================ -->
+    <div id="earlyLogView" class="hidden">
+      <div class="tlv-header">
+        <div class="tlv-title-row">
+          <div>
+            <h1 class="tlv-title" style="color:#2e7d52;">🏁 Completed Early Log</h1>
+            <div class="tlv-subtitle">Every task pulled forward — completed before its scheduled due date. Recognition for the team members who kept work ahead of schedule.</div>
+          </div>
+          <div class="tlv-actions">
+            <button class="btn btn-sm" onclick="copyEarlyLogSummary()" title="Copy an Early Completion summary to the clipboard">📋 Copy Summary</button>
+            <button class="btn btn-sm" onclick="render()" title="Refresh data">↻ Refresh</button>
+            <button class="btn btn-sm" onclick="exitEarlyLogView()" title="Return to previous view">✕ Close</button>
+          </div>
+        </div>
+        <!-- Stat tiles: team-wide totals -->
+        <div class="tlv-stat-strip" id="earlyStatStrip">
+          <!-- Populated by renderEarlyLogView() -->
+        </div>
+      </div>
+
+      <div class="tlv-body">
+        <!-- Per-person leaderboard -->
+        <div class="tlv-section">
+          <div class="tlv-section-header">
+            <h2 class="tlv-section-title">Per-Person Early Completions</h2>
+            <div class="tlv-section-sub" id="earlyPersonCount"></div>
+          </div>
+          <div class="tlv-person-grid" id="earlyPersonGrid">
+            <!-- Populated by renderEarlyLogView() -->
+          </div>
+        </div>
+
+        <!-- Detailed task list -->
+        <div class="tlv-section">
+          <div class="tlv-section-header">
+            <h2 class="tlv-section-title">Early-Completed Tasks Detail</h2>
+            <div class="tlv-filters">
+              <label class="tlv-filter-label">Window:
+                <select id="earlyWindowFilter" class="tlv-filter-select" onchange="state.earlyLogWindowFilter=this.value; saveState(); renderEarlyLogView();">
+                  <option value="all">All Time</option>
+                  <option value="week">This Week</option>
+                  <option value="month">This Month</option>
+                  <option value="quarter">This Quarter</option>
+                  <option value="year">Year to Date</option>
+                </select>
+              </label>
+              <label class="tlv-filter-label">Person:
+                <select id="earlyPersonFilter" class="tlv-filter-select" onchange="state.earlyLogPersonFilter=this.value; saveState(); renderEarlyLogView();">
+                  <!-- Populated -->
+                </select>
+              </label>
+              <label class="tlv-filter-label">Sort:
+                <select id="earlySortFilter" class="tlv-filter-select" onchange="state.earlyLogSort=this.value; saveState(); renderEarlyLogView();">
+                  <option value="daysDesc">Most Days Early</option>
+                  <option value="dateDesc">Most Recent</option>
+                  <option value="dateAsc">Oldest First</option>
+                </select>
+              </label>
+            </div>
+          </div>
+          <div class="tlv-task-list" id="earlyTaskList">
+            <!-- Populated by renderEarlyLogView() -->
           </div>
         </div>
       </div>
@@ -5013,8 +5094,16 @@
           <button type="button" class="tmpc-status-opt" data-status="done" onclick="setHeaderStatus(event, 'done')">
             <span class="tmpc-status-opt-dot status-done"></span> Complete
           </button>
+          <button type="button" class="tmpc-status-opt" data-status="not-required" onclick="setHeaderStatus(event, 'not-required')">
+            <span class="tmpc-status-opt-dot status-not-required"></span> Not Required
+          </button>
         </div>
       </div>
+
+      <!-- v161: Completion timing banner — shown to the right of the status
+           pill when task is done early / late / not-required. Populated by
+           refreshHeaderStatusPill from the task's completion flags. -->
+      <div class="tmpc-completion-banner" id="tmpcCompletionBanner" style="display:none;" title=""></div>
 
       <!-- Lead avatar stack (v59) — read-only display of all Lead assignees.
            Click any avatar to scroll-and-focus the Column 2 picker for editing.
@@ -5169,6 +5258,7 @@
         <option value="blocked">Blocked / RFI</option>
         <option value="pending">Pending – Waiting on Others</option>
         <option value="done">Complete</option>
+        <option value="not-required">Not Required</option>
       </select>
     </div>
     <div class="form-group" id="taskCategoryFormGroup"><label>CSI Division / Tag</label>
