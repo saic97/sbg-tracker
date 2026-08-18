@@ -215,6 +215,16 @@ function loadState() {
     if (typeof state.trainingLogView !== 'boolean') state.trainingLogView = false; state.earlyLogView = false;
     // v163: Completed Early Log — cross-project recognition view
     if (typeof state.earlyLogView !== 'boolean') state.earlyLogView = false;
+    // v166: Project Timeline clean-view toggle — hides completion/status
+    // pills + badges so the timeline can be printed as a shareable plan
+    // without exposing internal actuals.
+    if (typeof state.ptvCleanMode !== 'boolean') state.ptvCleanMode = false;
+    // v167: Monochrome mode — strips ALL colors for a truly B&W-ready
+    // print. Stacks with Clean View but works independently.
+    if (typeof state.ptvMonoMode !== 'boolean') state.ptvMonoMode = false;
+    // v168: Compact mode — halves row heights so more tasks fit per page.
+    // Stacks with Clean View and Monochrome; independent toggle.
+    if (typeof state.ptvCompactMode !== 'boolean') state.ptvCompactMode = false;
     if (typeof state.earlyLogWindowFilter !== 'string') state.earlyLogWindowFilter = 'all';
     if (typeof state.earlyLogPersonFilter !== 'string') state.earlyLogPersonFilter = 'all';
     if (typeof state.earlyLogSort !== 'string') state.earlyLogSort = 'daysDesc';
@@ -502,7 +512,7 @@ function loadState() {
           // Same as project task: per-task choice of anchor. Four valid values:
           // 'bid-start', 'bid-day', 'pre-bid', 'rfi-due'. Default to bid-start
           // so existing templates load identically.
-          if (!['bid-start','bid-day','pre-bid','rfi-due'].includes(t.dateAnchor)) {
+          if (!['bid-start','bid-day','pre-bid','rfi-due','sub-bids-due'].includes(t.dateAnchor)) {
             t.dateAnchor = 'bid-start';
           }
           // ===== v61 RESET MIGRATION =====
@@ -861,6 +871,10 @@ function loadState() {
       // design team. Both optional; empty string when not set.
       if (typeof p.prebidDate === 'undefined') p.prebidDate = '';
       if (typeof p.rfiDueDate === 'undefined') p.rfiDueDate = '';
+      // v170: Sub Bids Due from Trade Partners — the date subs should
+      // have their pricing in by, upstream of Bid Day. Backfill empty
+      // for existing projects.
+      if (typeof p.subBidsDueDate === 'undefined') p.subBidsDueDate = '';
 
       p.tasks.forEach(t => {
         if (!t.stage) {
@@ -891,7 +905,7 @@ function loadState() {
         //   pre-bid    — Mandatory Pre-Bid Walk date (v82+)
         //   rfi-due    — RFI cutoff to design team (v82+)
         // Backward-compat: missing field defaults to 'bid-start'.
-        if (!['bid-start','bid-day','pre-bid','rfi-due'].includes(t.dateAnchor)) {
+        if (!['bid-start','bid-day','pre-bid','rfi-due','sub-bids-due'].includes(t.dateAnchor)) {
           t.dateAnchor = 'bid-start';
         }
         // Multi-support migration: ensure every task has a supportMembers array.
@@ -1754,7 +1768,8 @@ function getDaysLeft(dateStr) {
   return Math.round((due-today)/86400000);
 }
 function getDueClass(dateStr, status) {
-  if (!dateStr || status === 'done') return '';
+  // v169: not-required is terminal — never render as overdue/soon
+  if (!dateStr || status === 'done' || status === 'not-required') return '';
   const d = getDaysLeft(dateStr);
   if (d === null) return '';
   if (d < 0) return 'overdue';
@@ -2061,6 +2076,7 @@ function addBusinessDays(dateStr, days) {
 function resolveTaskAnchorDate(project, task) {
   if (!project || !task) return null;
   // v82+: four anchor types — bid-start (default), bid-day, pre-bid, rfi-due
+  // v170: fifth anchor — sub-bids-due (project.subBidsDueDate)
   const anchor = task.dateAnchor;
   if (anchor === 'bid-day') {
     return (project.dueDate || '').trim() || null;
@@ -2070,6 +2086,9 @@ function resolveTaskAnchorDate(project, task) {
   }
   if (anchor === 'rfi-due') {
     return (project.rfiDueDate || '').trim() || null;
+  }
+  if (anchor === 'sub-bids-due') {
+    return (project.subBidsDueDate || '').trim() || null;
   }
   // 'bid-start' (or anything unrecognized) uses effective bid start (revised-aware)
   if (typeof getEffectiveBidStart === 'function') {
@@ -3644,6 +3663,9 @@ function openProjectModal(id=null) {
     document.getElementById('projDueDate').value = p.dueDate||'';
     // v82+: load additional anchor dates
     document.getElementById('projPrebidDate').value = p.prebidDate || '';
+    // v170: Sub Bids Due
+    const subBidsEl = document.getElementById('projSubBidsDueDate');
+    if (subBidsEl) subBidsEl.value = p.subBidsDueDate || '';
     document.getElementById('projRfiDueDate').value = p.rfiDueDate || '';
     document.getElementById('projValue').value = p.value||'';
     document.getElementById('projLocation').value = p.location||'';
@@ -3841,6 +3863,9 @@ function saveProject() {
   // v82+: read additional anchor dates
   const newPrebidDate = document.getElementById('projPrebidDate').value;
   const newRfiDueDate = document.getElementById('projRfiDueDate').value;
+  // v170: Sub Bids Due
+  const subBidsEl = document.getElementById('projSubBidsDueDate');
+  const newSubBidsDueDate = subBidsEl ? subBidsEl.value : '';
 
   const data = {
     name,
@@ -3864,6 +3889,8 @@ function saveProject() {
     // v82+: additional anchor dates
     prebidDate: newPrebidDate,
     rfiDueDate: newRfiDueDate,
+    // v170: Sub Bids Due from Trade Partners
+    subBidsDueDate: newSubBidsDueDate,
     originalStartDate: newOriginalStart || newStart,
     originalDueDate: newOriginalDue || newDue,
     revisedStartDate: newRevisedStart,
@@ -3906,6 +3933,8 @@ function saveProject() {
     // v82+: snapshot old pre-bid and RFI cutoff so we can detect changes
     const oldPrebidDate = p.prebidDate || '';
     const oldRfiDueDate = p.rfiDueDate || '';
+    // v170: snapshot old Sub Bids Due date for reanchor detection
+    const oldSubBidsDueDate = p.subBidsDueDate || '';
     Object.assign(p, data);
     // v60: detect role changes and prompt to propagate to existing tasks.
     // Walks each of the 3 roles; if old !== new and the old person has tasks
@@ -3928,6 +3957,8 @@ function saveProject() {
     // v82+: detect Pre-Bid and RFI Due changes
     const prebidChanged = oldPrebidDate !== newPrebidDate;
     const rfiDueChanged = oldRfiDueDate !== newRfiDueDate;
+    // v170: detect Sub Bids Due date change
+    const subBidsChanged = oldSubBidsDueDate !== newSubBidsDueDate;
 
     // If due date changed and no revised start has been set yet, offer to compute one
     if (dueChanged && !p.revisedStartDate && p.originalDueDate && newDue !== p.originalDueDate) {
@@ -3946,7 +3977,7 @@ function saveProject() {
     // v82+: prebidChanged and rfiDueChanged also trigger reanchor.
     // Uses reanchorProjectTaskDates() which honors each task's individual
     // dateAnchor (Bid Start / Bid Day / Pre-Bid / RFI Due).
-    if (startChanged || modeChanged || revisedChanged || dueChanged || prebidChanged || rfiDueChanged) {
+    if (startChanged || modeChanged || revisedChanged || dueChanged || prebidChanged || rfiDueChanged || subBidsChanged) {
       const tasksWithOffset = p.tasks.filter(t => typeof t.dayOffset === 'number');
       if (tasksWithOffset.length > 0) {
         // Build a breakdown showing how many tasks anchor to each type
@@ -4625,6 +4656,66 @@ function refreshProjectTimelineView() {
   renderProjectTimelineView();
 }
 
+// v166: Toggle Project Timeline's clean view — hides internal actuals
+// (status pills, completion badges, rescheduled markers, checklist +
+// deliverable + best-practice chips) so the timeline reads as a
+// shareable plan for meetings + hand-offs. Persisted in state.
+function togglePtvCleanMode() {
+  state.ptvCleanMode = !state.ptvCleanMode;
+  saveState();
+  const btn = document.getElementById('ptvCleanToggle');
+  if (btn) {
+    btn.classList.toggle('active', state.ptvCleanMode);
+    btn.innerHTML = state.ptvCleanMode ? '👁 Show Details' : '🧹 Clean View';
+  }
+  document.body.classList.toggle('ptv-clean-mode', state.ptvCleanMode);
+  if (typeof renderProjectTimelineView === 'function') renderProjectTimelineView();
+}
+
+// v167: Toggle Monochrome — removes all colors for a fully B&W-ready
+// view. Independent of Clean View but stacks with it.
+function togglePtvMonoMode() {
+  state.ptvMonoMode = !state.ptvMonoMode;
+  saveState();
+  const btn = document.getElementById('ptvMonoToggle');
+  if (btn) {
+    btn.classList.toggle('active', state.ptvMonoMode);
+    btn.innerHTML = state.ptvMonoMode ? '🎨 Show Colors' : '⬛ Monochrome';
+  }
+  document.body.classList.toggle('ptv-mono-mode', state.ptvMonoMode);
+  if (typeof renderProjectTimelineView === 'function') renderProjectTimelineView();
+}
+
+// v168: Toggle Compact — halves row heights so more tasks fit per page.
+// Stacks with Clean View + Monochrome; independent toggle.
+function togglePtvCompactMode() {
+  state.ptvCompactMode = !state.ptvCompactMode;
+  saveState();
+  const btn = document.getElementById('ptvCompactToggle');
+  if (btn) {
+    btn.classList.toggle('active', state.ptvCompactMode);
+    btn.innerHTML = state.ptvCompactMode ? '📐 Normal Density' : '📏 Compact';
+  }
+  document.body.classList.toggle('ptv-compact-mode', state.ptvCompactMode);
+  if (typeof renderProjectTimelineView === 'function') renderProjectTimelineView();
+}
+
+// v166/v167/v168: Print / PDF export. Respects Clean View, Monochrome,
+// AND Compact toggles — the printed page matches whatever's on screen.
+// Print CSS only strips the app chrome; view styling flows through the
+// body class hooks (ptv-clean-mode / ptv-mono-mode / ptv-compact-mode).
+function printProjectTimeline() {
+  document.body.classList.toggle('ptv-clean-mode', !!state.ptvCleanMode);
+  document.body.classList.toggle('ptv-mono-mode', !!state.ptvMonoMode);
+  document.body.classList.toggle('ptv-compact-mode', !!state.ptvCompactMode);
+  document.body.classList.add('printing-ptv');
+  try {
+    window.print();
+  } finally {
+    setTimeout(() => document.body.classList.remove('printing-ptv'), 500);
+  }
+}
+
 // =============================================================
 // OPEN SLOTS VIEW (v80) — full-page view
 // =============================================================
@@ -5215,6 +5306,25 @@ function buildProjectTimelineData() {
 }
 
 function renderProjectTimelineView() {
+  // v166/v167/v168: Keep body classes + toggle button labels in sync with state
+  document.body.classList.toggle('ptv-clean-mode', !!state.ptvCleanMode);
+  document.body.classList.toggle('ptv-mono-mode', !!state.ptvMonoMode);
+  document.body.classList.toggle('ptv-compact-mode', !!state.ptvCompactMode);
+  const cleanBtn = document.getElementById('ptvCleanToggle');
+  if (cleanBtn) {
+    cleanBtn.classList.toggle('active', !!state.ptvCleanMode);
+    cleanBtn.innerHTML = state.ptvCleanMode ? '👁 Show Details' : '🧹 Clean View';
+  }
+  const monoBtn = document.getElementById('ptvMonoToggle');
+  if (monoBtn) {
+    monoBtn.classList.toggle('active', !!state.ptvMonoMode);
+    monoBtn.innerHTML = state.ptvMonoMode ? '🎨 Show Colors' : '⬛ Monochrome';
+  }
+  const compactBtn = document.getElementById('ptvCompactToggle');
+  if (compactBtn) {
+    compactBtn.classList.toggle('active', !!state.ptvCompactMode);
+    compactBtn.innerHTML = state.ptvCompactMode ? '📐 Normal Density' : '📏 Compact';
+  }
   // Populate project selector with all non-archived projects
   const projSel = document.getElementById('ptvProjectSelect');
   if (projSel) {
@@ -5367,7 +5477,9 @@ function _renderPtvTaskRow(item, groupKey, todayKey) {
   const t = item.task;
   const status = t.status || 'not-started';
   const isDone = status === 'done';
-  const isOverdue = (groupKey < todayKey) && !isDone;
+  // v169: not-required is terminal — never treat as overdue on the timeline row
+  const isTerminal = isDone || status === 'not-required';
+  const isOverdue = (groupKey < todayKey) && !isTerminal;
   const isCritical = !!t.critical;
   const stage = STAGES.find(s => s.id === t.stage);
   const stageLabel = stage ? `${stage.icon} ${stage.name}` : (t.stage || '');
@@ -5568,7 +5680,18 @@ function _aggregateWorkloadByAssignee() {
         // Hours per day for chart (covers active window, capped at 60d for all-open)
         hoursPerDay: {},
         // v78: tasks per day for drill-down on click
-        tasksPerDay: {}
+        tasksPerDay: {},
+        // v164: Early-completion hours per day — subset of hoursPerDay
+        // that came from tasks completed BEFORE their scheduled due date.
+        // Used to render the green top-segment of the split bar in Planned
+        // view AND fed into the summary strip. Keyed by dueDate (not
+        // completedAt) so the "pulled forward" visual sits on the day
+        // the plan expected the work.
+        earlyCompletedHoursPerDay: {},
+        earlyCompletedTasksPerDay: {},
+        earlyCompletedCount: 0,
+        earlyCompletedHoursTotal: 0,
+        earlyCompletedDaysTotal: 0
       });
     }
     return stats.get(name);
@@ -5709,6 +5832,21 @@ function _aggregateWorkloadByAssignee() {
               s.hoursPerDay[task.dueDate] = (s.hoursPerDay[task.dueDate] || 0) + effectiveHrs;
               if (!s.tasksPerDay) s.tasksPerDay = {};
               if (!s.tasksPerDay[task.dueDate]) s.tasksPerDay[task.dueDate] = [];
+              // v164: Early-completion detection — if this task was
+              // finished before its due date, ALSO stamp the per-day
+              // early bucket + increment the person's cross-window totals.
+              // Total hoursPerDay stays unchanged so bar height reflects
+              // the plan; earlyCompletedHoursPerDay is the sub-slice that
+              // the chart uses for the green top segment.
+              const wasEarly = !!(task.completedEarly && task.completedDaysBefore > 0 && task.status === 'done');
+              if (wasEarly) {
+                s.earlyCompletedHoursPerDay[task.dueDate] = (s.earlyCompletedHoursPerDay[task.dueDate] || 0) + effectiveHrs;
+                if (!s.earlyCompletedTasksPerDay[task.dueDate]) s.earlyCompletedTasksPerDay[task.dueDate] = [];
+                s.earlyCompletedTasksPerDay[task.dueDate].push(task.id);
+                s.earlyCompletedCount++;
+                s.earlyCompletedHoursTotal += effectiveHrs;
+                s.earlyCompletedDaysTotal += (task.completedDaysBefore || 0);
+              }
               s.tasksPerDay[task.dueDate].push({
                 taskId: task.id,
                 projectId: project.id,
@@ -5719,7 +5857,10 @@ function _aggregateWorkloadByAssignee() {
                 isLead: isLead,              // v94: role indicator for tooltip
                 supportPct: supportPct,      // v94: pct used (for support-role tooltip)
                 critical: !!task.critical,
-                done: isDone  // v84: drill-down uses this for ✓ badge + strikethrough
+                done: isDone,  // v84: drill-down uses this for ✓ badge + strikethrough
+                // v164: flag pulled-forward tasks for drill-down grouping
+                earlyCompleted: wasEarly,
+                daysEarly: wasEarly ? (task.completedDaysBefore || 0) : 0
               });
             }
           } else if (!isDone) {
@@ -5761,6 +5902,41 @@ function _aggregateWorkloadByAssignee() {
             });
           }
         }
+
+        // v164.1: Recognition is mode-independent. The block above only
+        // populates the early-completion buckets when includeForHours is
+        // true (which is false for done tasks in Current view). That
+        // caused the summary strip + split-bar to disappear on My
+        // Workload (which defaults to Current mode). This always-run
+        // branch stamps the recognition data whenever the task is
+        // early+done+in-window, regardless of mode. Split-bar renderer
+        // guards divide-by-zero when hrs=0, and the parent bar height
+        // is also 0 in Current view, so the visual stays truthful:
+        // Planned view shows both bar AND green segment; Current view
+        // shows the summary strip alone (bar has no early hours to split).
+        try {
+          if (task.dueDate && task.completedEarly && task.completedDaysBefore > 0 && task.status === 'done') {
+            const chartEndStr2 = range.endDate || (function(){
+              const e = new Date(); e.setDate(e.getDate() + 60);
+              return formatDateForInput(e);
+            })();
+            const chartStartStr2 = range.startDate || todayStr;
+            if (task.dueDate >= chartStartStr2 && task.dueDate <= chartEndStr2) {
+              const hrsAlways = (typeof task.estimatedHours === 'number' && task.estimatedHours > 0) ? task.estimatedHours : 0;
+              const supportPctAlways = (typeof getEffectiveSupportPct === 'function') ? getEffectiveSupportPct(task) : 100;
+              const effHrsAlways = isLead ? hrsAlways : (hrsAlways * (supportPctAlways / 100));
+              if (!s.earlyCompletedTasksPerDay[task.dueDate]) s.earlyCompletedTasksPerDay[task.dueDate] = [];
+              // Dedupe — if the includeForHours block already stamped it, skip
+              if (!s.earlyCompletedTasksPerDay[task.dueDate].includes(task.id)) {
+                s.earlyCompletedHoursPerDay[task.dueDate] = (s.earlyCompletedHoursPerDay[task.dueDate] || 0) + effHrsAlways;
+                s.earlyCompletedTasksPerDay[task.dueDate].push(task.id);
+                s.earlyCompletedCount++;
+                s.earlyCompletedHoursTotal += effHrsAlways;
+                s.earlyCompletedDaysTotal += (task.completedDaysBefore || 0);
+              }
+            }
+          }
+        } catch (_) { /* defensive */ }
       });
     });
   });
@@ -7007,6 +7183,8 @@ function _buildEstimatorCardHtml(s) {
         </div>
       `}
 
+      ${_buildEarlySummaryStripHtml(s)}
+
       ${_buildEstimatorStripHtml(s)}
 
       ${_buildOpenSlotsBadgeHtml(s)}
@@ -7039,6 +7217,63 @@ function _buildEstimatorCardHtml(s) {
   `;
 }
 
+// v164: Per-person recognition strip. Shows how many tasks this person
+// pulled forward within the active workload window and the total hours
+// their early-completion took off the plan. Only rendered when there's
+// something to celebrate — a person with zero early completions gets
+// no strip. Clicking "View" jumps to the Completed Early Log filtered
+// to this person for full detail.
+function _buildEarlySummaryStripHtml(s) {
+  if (!s) return '';
+  // Sum only the early hours that fall inside the current chart window
+  const buckets = _buildWorkloadBuckets();
+  if (buckets.length === 0) return '';
+  const earlyInWindow = _bucketizeHoursPerDay(s.earlyCompletedHoursPerDay || {}, buckets)
+    .reduce((a, b) => a + b, 0);
+  // Count tasks pulled forward in window by walking earlyCompletedTasksPerDay
+  const start = buckets[0].startDate;
+  const end = buckets[buckets.length - 1].endDate;
+  let taskCount = 0;
+  const taskIdsSeen = new Set();
+  Object.entries(s.earlyCompletedTasksPerDay || {}).forEach(([dateStr, ids]) => {
+    if (dateStr >= start && dateStr <= end) {
+      (ids || []).forEach(id => {
+        if (!taskIdsSeen.has(id)) {
+          taskIdsSeen.add(id);
+          taskCount++;
+        }
+      });
+    }
+  });
+  if (taskCount === 0 || earlyInWindow <= 0) return '';
+  const hoursRounded = Math.round(earlyInWindow * 10) / 10;
+  return `
+    <div class="twv-early-summary" title="These hours were already done before their scheduled day arrived — they're not competing for current capacity.">
+      <span class="twv-early-summary-icon">🏁</span>
+      <div class="twv-early-summary-text">
+        <strong>${taskCount}</strong> task${taskCount === 1 ? '' : 's'} pulled forward · <strong>${hoursRounded}h</strong> ahead of schedule in this window
+      </div>
+      <button class="twv-early-summary-cta" onclick="event.stopPropagation(); _jumpToEarlyLogFilteredTo('${escapeAttr(s.name)}')">View</button>
+    </div>
+  `;
+}
+
+// Navigate to Completed Early Log filtered to this person.
+function _jumpToEarlyLogFilteredTo(name) {
+  state.earlyLogPersonFilter = name || 'all';
+  state.earlyLogView = true;
+  state.teamWorkloadView = false;
+  state.homeView = false;
+  state.statusSnapshotView = false;
+  state.projectTimelineView = false;
+  state.openSlotsView = false;
+  state.tiView = false;
+  state.trainingLogView = false;
+  state.projectsListView = false;
+  saveState();
+  render();
+}
+
 // v78: Build the per-estimator daily-or-weekly bar strip. Renders bars sized
 // proportional to hours, height capped relative to person's per-day capacity
 // (or per-week capacity in week mode). Clicking a bar opens a drill-down
@@ -7047,6 +7282,11 @@ function _buildEstimatorStripHtml(s) {
   const buckets = _buildWorkloadBuckets();
   if (buckets.length === 0) return '';
   const values = _bucketizeHoursPerDay(s.hoursPerDay || {}, buckets);
+  // v164: parallel series of just the early-completed hours, so each bar
+  // can split its total into "still open" (bottom) + "pulled forward"
+  // (green top). Only meaningful in Planned view — Current view hides
+  // done tasks entirely, so earlyValues will be all zeros there.
+  const earlyValues = _bucketizeHoursPerDay(s.earlyCompletedHoursPerDay || {}, buckets);
   const grain = state.workloadGrain === 'week' ? 'week' : 'day';
   // Capacity per bucket: per-day cap = (weekly cap / 5); per-week cap = weekly cap
   // Used as the "100%" line for bar fill so bars are interpretable against capacity.
@@ -7072,7 +7312,12 @@ function _buildEstimatorStripHtml(s) {
   // Build bars
   const barsHtml = buckets.map((b, i) => {
     const hrs = values[i] || 0;
+    // v164: split-bar — how much of this day's total is already done-early?
+    // Only the leftover (hrs - earlyHrs) actively competes for capacity.
+    const earlyHrs = earlyValues[i] || 0;
+    const remainingHrs = Math.max(0, hrs - earlyHrs);
     const fillPct = scaleMax > 0 ? Math.min(100, (hrs / scaleMax) * 100) : 0;
+    const earlyPctOfBar = hrs > 0 ? Math.min(100, (earlyHrs / hrs) * 100) : 0;
     // Bar color based on whether hours exceed per-bucket capacity
     let barClass = 'twv-strip-bar';
     if (perBucketCap > 0) {
@@ -7081,17 +7326,21 @@ function _buildEstimatorStripHtml(s) {
       else if (hrs > 0) barClass += ' bar-some';
       else barClass += ' bar-empty';
     } else {
-      // No capacity: simple presence/absence color
       if (hrs > 0) barClass += ' bar-some';
       else barClass += ' bar-empty';
     }
     if (b.isToday) barClass += ' is-today';
     if (b.isHoliday) barClass += ' is-holiday';
-    const tipText = `${b.label}: ${Math.round(hrs * 10) / 10}h scheduled${perBucketCap > 0 ? ` (cap ${Math.round(perBucketCap * 10) / 10}h)` : ''}${b.isHoliday ? ' · 🎉 Holiday' : ''}`;
+    const earlySegHtml = earlyHrs > 0
+      ? `<div class="twv-strip-bar-early" style="height:${earlyPctOfBar}%" title="🏁 ${Math.round(earlyHrs * 10) / 10}h already done early"></div>`
+      : '';
+    const tipText = earlyHrs > 0
+      ? `${b.label}: ${Math.round(hrs * 10) / 10}h planned · 🏁 ${Math.round(earlyHrs * 10) / 10}h pulled forward · ${Math.round(remainingHrs * 10) / 10}h remaining${perBucketCap > 0 ? ` (cap ${Math.round(perBucketCap * 10) / 10}h)` : ''}${b.isHoliday ? ' · 🎉 Holiday' : ''}`
+      : `${b.label}: ${Math.round(hrs * 10) / 10}h scheduled${perBucketCap > 0 ? ` (cap ${Math.round(perBucketCap * 10) / 10}h)` : ''}${b.isHoliday ? ' · 🎉 Holiday' : ''}`;
     return `
       <div class="twv-strip-col" title="${escapeAttr(tipText)}" onclick="openWorkloadDrilldown('${escapeAttr(s.name)}', '${escapeAttr(b.startDate)}', '${escapeAttr(b.endDate)}', '${escapeAttr(b.label)}')">
         <div class="twv-strip-bar-wrap">
-          <div class="${barClass}" style="height:${fillPct}%"></div>
+          <div class="${barClass}" style="height:${fillPct}%">${earlySegHtml}</div>
           ${hrs > 0 ? `<div class="twv-strip-bar-num">${Math.round(hrs * 10) / 10}</div>` : ''}
         </div>
         <div class="twv-strip-col-label">${escapeHtml(b.shortLabel)}${b.isToday ? '<span class="twv-strip-today-dot"></span>' : ''}</div>
@@ -7428,7 +7677,10 @@ function openWorkloadDrilldown(name, startDate, endDate, label) {
   // v84: when in planned mode, mark done tasks with ✓ + strikethrough so the
   // user can distinguish "scheduled & completed" from "scheduled & still open".
   const isPlanned = state.workloadMode === 'planned';
-  const rowsHtml = tasks.map(t => {
+  // v164: Section the list — pulled-forward tasks show separately in a
+  // green sub-header so the user sees at a glance what's already off the
+  // capacity clock vs what's still active for the window.
+  const renderRow = (t) => {
     const doneStyle = t.done ? 'text-decoration:line-through; opacity:0.65;' : '';
     const doneBadge = t.done ? '<span title="Completed" style="color:#1e7f3a; font-weight:700; margin-right:4px;">✓</span>' : '';
     return `
@@ -7439,14 +7691,30 @@ function openWorkloadDrilldown(name, startDate, endDate, label) {
       <div class="wlDrill-hours">${_fmtHours(t.hours)}</div>
     </div>
   `;
-  }).join('');
+  };
+  const earlyTasks = tasks.filter(t => t.earlyCompleted);
+  const remainingTasks = tasks.filter(t => !t.earlyCompleted);
+  const earlyHrs = earlyTasks.reduce((s, t) => s + t.hours, 0);
+  const remHrs = remainingTasks.reduce((s, t) => s + t.hours, 0);
+  const earlySection = earlyTasks.length > 0
+    ? `<div style="padding: 10px 14px; margin: 8px 0; background: linear-gradient(90deg, rgba(44,166,116,0.12), rgba(30,133,88,0.06)); border-left: 4px solid #2e7d52; border-radius: 4px; font-family: 'Barlow Condensed', sans-serif; font-weight: 700; letter-spacing: 0.05em; color: #1e8558; text-transform: uppercase; font-size: 12px;">
+         🏁 Pulled Forward · ${earlyTasks.length} task${earlyTasks.length === 1 ? '' : 's'} · ${Math.round(earlyHrs * 10) / 10}h off the plan
+       </div>
+       ${earlyTasks.map(renderRow).join('')}`
+    : '';
+  const remainingHeader = earlyTasks.length > 0 && remainingTasks.length > 0
+    ? `<div style="padding: 8px 14px; margin: 12px 0 4px 0; font-family: 'Barlow Condensed', sans-serif; font-weight: 700; letter-spacing: 0.05em; color: var(--text-dim); text-transform: uppercase; font-size: 11px; border-bottom: 1px solid var(--border);">
+         Still On the Plan · ${remainingTasks.length} · ${Math.round(remHrs * 10) / 10}h
+       </div>`
+    : '';
+  const rowsHtml = earlySection + remainingHeader + remainingTasks.map(renderRow).join('');
   const totalHrs = tasks.reduce((sum, t) => sum + t.hours, 0);
   const doneCount = tasks.filter(t => t.done).length;
   const openCount = tasks.length - doneCount;
   // v84: header summary changes based on mode
   const headerSummary = isPlanned
-    ? `${tasks.length} task${tasks.length === 1 ? '' : 's'} planned · ${Math.round(totalHrs * 10) / 10}h total${doneCount > 0 ? ` · <span style="color:#1e7f3a;">${doneCount} ✓ done</span> · ${openCount} open` : ''}`
-    : `${tasks.length} task${tasks.length === 1 ? '' : 's'} · ${Math.round(totalHrs * 10) / 10}h total`;
+    ? `${tasks.length} task${tasks.length === 1 ? '' : 's'} planned · ${Math.round(totalHrs * 10) / 10}h total${earlyTasks.length > 0 ? ` · <span style="color:#1e7f3a;">🏁 ${earlyTasks.length} pulled forward (${Math.round(earlyHrs * 10) / 10}h)</span>` : ''}${doneCount > 0 ? ` · <span style="color:#1e7f3a;">${doneCount} ✓ done</span> · ${openCount} open` : ''}`
+    : `${tasks.length} task${tasks.length === 1 ? '' : 's'} · ${Math.round(totalHrs * 10) / 10}h total${earlyTasks.length > 0 ? ` · <span style="color:#1e7f3a;">🏁 ${earlyTasks.length} pulled forward</span>` : ''}`;
   const modeBadge = isPlanned
     ? '<span style="background:var(--gold,#c07f00); color:#fff; padding:2px 8px; border-radius:10px; font-size:10px; font-weight:700; margin-left:8px;">PLANNED VIEW</span>'
     : '';
@@ -8823,8 +9091,10 @@ function collectSnapshotBuckets() {
 
   projects.forEach(p => {
     (p.tasks || []).forEach(t => {
-      // Skip done tasks from all buckets — they don't need attention
-      if (t.status === 'done') return;
+      // v169: Skip terminal tasks (done + not-required) from all buckets —
+      // they don't need attention. Previously only 'done' was skipped, so
+      // not-required tasks lingered in the past-due bucket.
+      if (t.status === 'done' || t.status === 'not-required') return;
       // Mine-only filter
       if (filterToMine) {
         const isMine = (typeof isTaskMember === 'function')
@@ -12305,7 +12575,7 @@ function renderProjectHoursRollup() {
   if (project.endDate) endDate = new Date(project.endDate + 'T23:59:59');
   else {
     project.tasks.forEach(t => {
-      if (t && t.dueDate && t.status !== 'done') {
+      if (t && t.dueDate && t.status !== 'done' && t.status !== 'not-required') {
         const d = new Date(t.dueDate + 'T23:59:59');
         if (!endDate || d > endDate) endDate = d;
       }
@@ -13798,10 +14068,14 @@ let _modalDateAnchor = 'bid-start';
 // Centralized anchor-label table — used for label text, hint, calc badge,
 // and warning messages so they all stay in sync if labels change later.
 const _TASK_ANCHOR_LABELS = {
-  'bid-start': { short: 'Bid Start', long: 'Bid Start',     dateField: 'startDate',  warnLabel: 'Bid Start' },
-  'bid-day':   { short: 'Bid Day',   long: 'Bid Day',       dateField: 'dueDate',    warnLabel: 'Bid Day'   },
-  'pre-bid':   { short: 'Pre-Bid',   long: 'Pre-Bid Walk',  dateField: 'prebidDate', warnLabel: 'Pre-Bid Date' },
-  'rfi-due':   { short: 'RFI Due',   long: 'RFI Cutoff',    dateField: 'rfiDueDate', warnLabel: 'RFI Cutoff' }
+  'bid-start':    { short: 'Bid Start', long: 'Bid Start',              dateField: 'startDate',      warnLabel: 'Bid Start' },
+  'bid-day':      { short: 'Bid Day',   long: 'Bid Day',                dateField: 'dueDate',        warnLabel: 'Bid Day'   },
+  'pre-bid':      { short: 'Pre-Bid',   long: 'Pre-Bid Walk',           dateField: 'prebidDate',     warnLabel: 'Pre-Bid Date' },
+  'rfi-due':      { short: 'RFI Due',   long: 'RFI Cutoff',             dateField: 'rfiDueDate',     warnLabel: 'RFI Cutoff' },
+  // v170: Sub Bids Due from Trade Partners — the internal date SBG's
+  // subs should have their pricing in by, upstream of Bid Day. Common
+  // trigger for scope-leveling + estimating tasks.
+  'sub-bids-due': { short: 'Sub Bids',  long: 'Sub Bids Due (Trade Ptr)', dateField: 'subBidsDueDate', warnLabel: 'Sub Bids Due Date' }
 };
 
 // User clicked the S/B/P/R button — change the current anchor, update
@@ -14025,7 +14299,7 @@ function openTaskModal(defaultStatus='not-started', taskId=null) {
     // bid-start for tasks that haven't had the field set explicitly or that
     // have an unrecognized value.
     if (typeof setTaskAnchor === 'function') {
-      const validAnchors = ['bid-start','bid-day','pre-bid','rfi-due'];
+      const validAnchors = ['bid-start','bid-day','pre-bid','rfi-due','sub-bids-due'];
       const anchor = validAnchors.includes(t.dateAnchor) ? t.dateAnchor : 'bid-start';
       setTaskAnchor(anchor);
     }
@@ -15716,7 +15990,7 @@ function copyEmailTaskBody() {
 // instance pool is independent.
 function _buildTaskCopyForDuplicate(source, targetProject) {
   if (!source) return null;
-  const validAnchors = ['bid-start','bid-day','pre-bid','rfi-due'];
+  const validAnchors = ['bid-start','bid-day','pre-bid','rfi-due','sub-bids-due'];
   const anchor = validAnchors.includes(source.dateAnchor) ? source.dateAnchor : 'bid-start';
   // Compute due date from target project's anchor + source's offset if we can
   let anchorDate = '';
@@ -15990,7 +16264,7 @@ function saveTaskToMasterTemplate() {
   const offset = (offsetParsed === null || isNaN(offsetParsed)) ? 0 : offsetParsed;
   // v63: capture current modal anchor selection so the saved template task
   // remembers whether the offset is from Bid Start or Bid Day.
-  const dateAnchor = (typeof _modalDateAnchor !== 'undefined' && ['bid-start','bid-day','pre-bid','rfi-due'].includes(_modalDateAnchor)) ? _modalDateAnchor : 'bid-start';
+  const dateAnchor = (typeof _modalDateAnchor !== 'undefined' && ['bid-start','bid-day','pre-bid','rfi-due','sub-bids-due'].includes(_modalDateAnchor)) ? _modalDateAnchor : 'bid-start';
 
   // v118: also capture the REUSABLE work-defining fields so the template
   // stores the full picture — hours, checklist, deliverables, best practice,
@@ -16128,7 +16402,7 @@ function doSaveTaskToTemplate(templateId, taskData) {
     source: data.source,
     priority: data.priority,
     offset: data.offset,
-    dateAnchor: (['bid-start','bid-day','pre-bid','rfi-due'].includes(data.dateAnchor)) ? data.dateAnchor : 'bid-start',
+    dateAnchor: (['bid-start','bid-day','pre-bid','rfi-due','sub-bids-due'].includes(data.dateAnchor)) ? data.dateAnchor : 'bid-start',
     critical: !!data.critical,
     estimatedHours: (typeof data.estimatedHours === 'number' && data.estimatedHours > 0) ? data.estimatedHours : null,
     tips: (data.tips || '').trim(),
@@ -16524,7 +16798,7 @@ function saveTask() {
     dueDate: document.getElementById('taskDueDate').value,
     dayOffset: isNaN(dayOffset) ? null : dayOffset,
     // v63 / v82+: persist the per-task date anchor (Bid Start / Bid Day / Pre-Bid / RFI Due)
-    dateAnchor: (['bid-start','bid-day','pre-bid','rfi-due'].includes(_modalDateAnchor)) ? _modalDateAnchor : 'bid-start',
+    dateAnchor: (['bid-start','bid-day','pre-bid','rfi-due','sub-bids-due'].includes(_modalDateAnchor)) ? _modalDateAnchor : 'bid-start',
     startByDate: (document.getElementById('taskStartByDate') ? document.getElementById('taskStartByDate').value : '') || null,
     // Projected hours — read from modal, normalize to quarter-hour precision.
     // null when blank so the rollup can distinguish "no estimate" from "0 hours."
@@ -20675,6 +20949,15 @@ function getDefaultAdvancements() {
   return [
     // ---------- High-impact ----------
     advImplemented('quality-of-life', 'Completed Early Log — dedicated sidebar view for team recognition on pull-forward wins', "New sidebar page (🏁 next to Training Log) that surfaces every task pulled forward across all projects. Top strip: team totals (all-time / this month / YTD / total days pulled forward). Middle: per-person leaderboard cards ranked by count, with rank medals (🥇🥈🥉) for the top three, showing each person's total early completions + total days early + average + best single pull. Bottom: detailed task list with filters (window: all / week / month / quarter / year; person: everyone or specific; sort: most days early / most recent / oldest first). Every row shows the task title, project name, workstream, lead(s), due date, completion date, and the green early badge. Click any row to jump straight to that task's modal. Copy Summary button exports a plain-text leaderboard for reporting.", "Shipped Jul 27, 2026 in response to: 'I want a completed early log.' Follows the same navigation + rendering pattern as the Training Log (v119) so the app stays consistent. Ten pieces. (1) State slots: state.earlyLogView (bool), state.earlyLogWindowFilter (all/week/month/quarter/year, default all), state.earlyLogPersonFilter (name or all, default all), state.earlyLogSort (daysDesc/dateDesc/dateAsc, default daysDesc). All initialized in loadState with type guards. (2) Sidebar button: #earlyLogSidebarBtn inserted right after #trainingLogSidebarBtn. 🏁 icon, 'Completed Early' label, 'Tasks pulled forward · leaderboard' subtitle. onclick fires openEarlyLogView. (3) HTML view container: #earlyLogView reuses the tlv-* CSS classes (header, subtitle, actions, stat-strip, body, section, filters, person-grid, task-list) so we get consistent visual weight with Training Log for free. Title styled in the same green (#2e7d52) as the early-completion badge. Three action buttons: Copy Summary / Refresh / Close. (4) openEarlyLogView / exitEarlyLogView: mirror the Training Log open/exit shape. openEarlyLogView sets state.earlyLogView=true, resets every other top-level view flag (homeView, statusSnapshotView, projectTimelineView, teamWorkloadView, openSlotsView, tiView, trainingLogView, projectsListView), hides the sticky countdown bar, saves state, renders. exitEarlyLogView flips the flag off and re-renders. (5) All existing openXView functions batch-updated to reset state.earlyLogView=false alongside the existing state.trainingLogView=false reset — sed pass touched 28 sites so no matter how you navigate away from Early Log it clears cleanly. (6) Router branch: inserted after the Training Log branch in the render dispatcher. Same shape (hide all other view elements, unhide earlyLogView, run renderEarlyLogView, applySidebarState, return). Follow-through hides earlyLogView when the flag is off so subsequent views don't leak into it. (7) _collectEarlyCompletions helper: walks every non-archived project's tasks, filters status==='done' && completedEarly && completedDaysBefore>0, returns items with task, project, leads (via getTaskLeads with fallback), daysEarly, completedAt, dueDate — so downstream rendering doesn't have to re-derive. (8) _buildEarlyPersonSummary aggregates per-person stats — count, totalDaysEarly, avgDaysEarly, best. Each lead on a task gets credited for the pull-forward (co-leads share the win). (9) _filterEarlyCompletions applies the active window + person filters. Windows use standard boundaries: week=last 7 days, month=1st of current month, quarter=first day of current quarter, year=Jan 1. Person filter matches against the leads array. (10) renderEarlyLogView orchestrates it all — populates the four stat tiles at the top (Total Pull-Forwards / This Month / YTD / Total Days Pulled Forward in gold), builds the per-person leaderboard cards sorted by count then total days (rank medals for top 3, avatar with brand color, count as subtitle, three stats per card: Total Days Early / Avg / Best Pull), refreshes the person filter dropdown to include everyone with an early completion, sorts the detail list by the active sort mode, renders each row with title + project + workstream + lead + due date + completion date + green badge. Click any row → jumpToTaskFromEarlyLog(projectId, taskId) exits the Early Log view, switches active project, and pops the task modal. Copy Summary generates a plain-text export with team totals, leaderboard (with rank emojis), and the most recent 25 filtered rows — copies to clipboard with prompt fallback for browsers where clipboard API is blocked. Full diagnostic run stayed green (68/68 static + 19/19 live). JS syntax clean. Backward-compatible: existing done tasks that were completed before v158 don't appear (they have completedEarly=false by default from the loadState backfill), so the log starts fresh with the wins that were tracked from v158 onward. Deferred: Team Insights aggregation tile that mirrors this data in the KPI dashboard, project-scoped early-completion counter on the Home page, and an 'export as CSV' variant of the summary for month-end reporting."),
+    advImplemented('quality-of-life', 'New Not Required tab on Project Alerts — recent scope-drops stay visible without cluttering urgency indicators', "Users needed a way to keep Not Required tasks in view for team review — quality checks, coaching conversations, audit trails — without having those tasks nag as past-due (fixed in v169). This ship adds a new muted-grey ⊘ Not Required tab to the Project Alerts strip. Only appears when there's at least one task marked Not Required in the last 30 days. Tab and panel use grey palette instead of red/gold urgency colors — visually recedes so it's clearly informational, not action-required. Same click-through-to-task-modal behavior as every other alert tab. Available in both the Project scope and My scope strips.", "Shipped Aug 1, 2026 in response to: 'I would also like a project alerts for Not Required so they still maintain some visibility if needed.' Six pieces. (1) getTasksByAlertTier gained a 'not-required' tier branch: filters project.tasks for status === 'not-required' AND notRequiredAt within the last 30 days (30 * 24 * 60 * 60 * 1000 ms cutoff). Legacy not-required tasks that pre-date v158's notRequiredAt stamp (no timestamp = 0) are included anyway so nothing's silently hidden. Recent-window keeps the tab from growing unbounded — a team doing weekly scope reviews will see the last month of drops without every historical skip. (2) Tier populated in the alerts strip builder: const notRequired = getTasksByAlertTier(project, 'not-required', scope). (3) New tab button in the tabs.push sequence, placed after unacknowledged since it's informational not urgent: '⊘ Not Required <count>' with tooltip 'Tasks marked Not Required in the last 30 days — visible for team review, no action needed'. Only rendered when notRequired.length > 0 (empty tab suppression). (4) Titles map entry: 'not-required': '⊘ Not Required — Scope-Dropped Tasks (Last 30 Days)'. (5) Tier map (used by filterTasksByAlertTier when dispatching to getTasksByAlertTier) got 'not-required': 'not-required' — added to BOTH the project-scope AND my-scope maps via Python replace. (6) CSS for .alert-tab.tab-notrequired (muted grey background, greyer border, dark-grey text — no red / gold urgency signals) and .alert-panel.panel-not-required (grey border, grey title, 0.85 opacity on items so scope-dropped work visually recedes). Full dark-mode variants included. Manual JS syntax check passed. All alert-tab conventions (scope='my' vs 'project', empty-tab suppression, active-state class, escapeHtml on user-facing text) preserved."),
+    advImplemented('high-impact', 'New Sub Bids Due (Trade Partners) anchor + post-preload warning for tasks with unresolved anchor dates', "Bundle covering both parts of the request. (1) New fifth date anchor type — 'sub-bids-due' — with a new project field project.subBidsDueDate. Task authors can now anchor a task offset to when SBG's subs are expected to have their pricing in (upstream of Bid Day, common trigger for scope-leveling + estimating tasks). New SB button in the Edit Task modal anchor toggle and template editor row, colored teal (#2e8b8b) to distinguish from S/B/P/R. Reanchor pipeline updated so editing the Sub Bids Due date in the Project modal triggers task recomputation the same way editing other anchor dates does. (2) Post-preload warning: when a template loads into a project and one or more tasks are anchored to a date that isn't set on the project (Pre-Bid, RFI Due, Sub Bids Due, or Bid Day), a deferred alert 400ms after render tells the user exactly how many tasks are affected per anchor type and how to fix it — the silent failure that had users reporting 'pre-bid tasks aren't anchoring' now surfaces itself as an actionable message.", "Shipped Aug 1, 2026 in response to: 'task being loaded that anchor to Prebid are not anchoring, also I would like an additional anchor from Sub Bids Due from Trade Partners'. Two-part diagnosis: (a) plumbing for the pre-bid anchor was correct all along — resolveTaskAnchorDate reads project.prebidDate, reanchorProjectTaskDates walks each task's own anchor, saveProject reanchors when prebidDate changes. What was happening: template preload silently produced tasks with dueDate='' when project.prebidDate was empty at preload time. Task modal shows a per-task warning when opened, but nothing at the project level ever told the user. Fixed with a project-level post-preload summary alert. (b) User's ask for a new anchor type is a clean additive schema change. Twelve pieces. (1) _TASK_ANCHOR_LABELS table (v82) got a fifth entry: sub-bids-due -> {short:'Sub Bids', long:'Sub Bids Due (Trade Ptr)', dateField:'subBidsDueDate', warnLabel:'Sub Bids Due Date'}. This table drives label text, hint text, calc-badge format, and warning messages across the app. (2) resolveTaskAnchorDate got the fifth branch — reads (project.subBidsDueDate || '').trim() || null. Returns null when the anchor date isn't set so the UI's warning path fires per usual. (3) Load-time backfill — if (typeof p.subBidsDueDate === 'undefined') p.subBidsDueDate = ''. Runs on every state load next to prebidDate/rfiDueDate backfills. (4) Validation lists — batch sed replaced all 14 occurrences of ['bid-start','bid-day','pre-bid','rfi-due'] with the 5-element version including 'sub-bids-due'. Covers task backfill validators, template-task validators, and the _addTemplateTasksToProject anchor-picker. Unrecognized values still default to 'bid-start' for backward compat. (5) _addTemplateTasksToProject anchor picker — new else-if branch reads project.subBidsDueDate. (6) Project modal form — new form-row with #projSubBidsDueDate date input and hint text 'The date SBG's subs are expected to have pricing in. Tasks can anchor to this.' Placed after the prebid/rfi row inside the same data-bidding-only container. (7) openProjectModal loads existing value into the new input; new-project init falls through to empty string by default. (8) saveProject reads newSubBidsDueDate from the input, includes it in the data object passed to Object.assign(p, data). (9) Reanchor detection extended: oldSubBidsDueDate snapshot before Object.assign, subBidsChanged = oldSubBidsDueDate !== newSubBidsDueDate, subBidsChanged added to the trigger condition. When it fires, the existing reanchorProjectTaskDates walk correctly resolves via task.dateAnchor which now includes sub-bids-due. (10) Task modal anchor toggle — new button 'SB' with data-anchor='sub-bids-due' and title 'Anchor offset from Sub Bids Due date (from Trade Partners)'. CSS active state background #2e8b8b (teal) matches template editor button. (11) Template editor row — new SB button in the mtt-anchor-toggle, active-state check inspects t.dateAnchor === 'sub-bids-due', onClick calls setMasterTaskAnchor(index, 'sub-bids-due'). Same teal accent. (12) Post-preload warning — new try/catch block at the end of _addTemplateTasksToProject that walks the just-created tasks, counts any with empty dueDate AND typeof dayOffset === 'number' (meaning it SHOULD have computed one), buckets by anchor type. For each anchor type where count > 0 AND the corresponding project field is empty, adds a human-readable line to a missingParts array. If missingParts is non-empty, a setTimeout(400ms) alert fires: '⚠ N tasks loaded without a computed due date: • 3 anchored to Pre-Bid Walk Date • 2 anchored to Sub Bids Due Date. Edit the project to set the missing anchor date(s) — the tasks will auto-reanchor and pick up their due dates.' Deferred so it doesn't block the save/render pipeline. Wrapped in try/catch so any edge-case error can't kill state persistence. Follow-up ideas: (a) also fire this warning during JSON merge import so users notice when someone else's tasks come in with anchors we can't resolve, (b) inline 'Fix now' button on the alert that opens the project modal, (c) anchor-warning badge on the task card itself for tasks with unresolved anchors."),
+    advImplemented('high-impact', 'New Sub Bids Due (Trade Partners) anchor + Not Required project alerts tab + preload warning when anchor dates are missing', "Three coordinated additions. (1) Sub Bids Due from Trade Partners — a new fifth date anchor alongside Bid Start / Bid Day / Pre-Bid / RFI Due. Tasks (or template tasks) can anchor their day-offset to project.subBidsDueDate. New form field in the Project modal, new SB button in the task modal anchor toggle (teal), new SB button on every template editor row (same teal), full reanchor detection so changing the date recomputes every dependent task's due date. Perfect for scope-leveling and estimating tasks that need to happen a fixed number of days after subs turn in their pricing. (2) Not Required project alerts tab — since v169 made not-required a fully terminal state (invisible to past-due everywhere), users had no way to see or review the tasks that got dropped. New '⊘ Not Required' tab in both Project Alerts and My Alerts, showing tasks marked Not Required in the last 30 days. Not urgent — no red styling — but present so scope-drops stay reviewable and accountable. (3) Post-preload warning — when a template loads tasks anchored to Pre-Bid / RFI Due / Sub Bids Due / Bid Day and the corresponding project date is empty, tasks land with empty dueDate silently. Users reported 'pre-bid tasks aren't anchoring' — turns out they were loading fine, just without dates. A deferred alert now surfaces the counts per anchor type ('3 anchored to Pre-Bid Walk Date, 2 anchored to Sub Bids Due Date') and tells the user to set the missing date via Edit Project — the reanchor will recompute them.", "Shipped Aug 1, 2026 in response to two asks: 'task being loaded that anchor to Prebid are not anchoring, also I would like an additional anchor from Sub Bids Due from Trade Partners' AND 'I would also like a project alerts for Not Required so they still maintain some visibility if needed.' Bundled since they share the same anchor/scope-visibility theme. Twelve pieces. (1) _TASK_ANCHOR_LABELS table — added 'sub-bids-due' entry with dateField='subBidsDueDate', warnLabel='Sub Bids Due Date', short='Sub Bids', long='Sub Bids Due (Trade Ptr)'. (2) resolveTaskAnchorDate — new branch reads project.subBidsDueDate for the sub-bids-due anchor. Returns null if empty, same convention as other anchors. (3) State load backfill — projects get p.subBidsDueDate = '' if undefined, mirroring the prebidDate / rfiDueDate backfill from v82. (4) Validation lists — all 14 occurrences of the ['bid-start','bid-day','pre-bid','rfi-due'] tuple batch-updated to include 'sub-bids-due' via sed. Covers task load-time validation, template-task validation, and any downstream anchor-value check. (5) _addTemplateTasksToProject anchor-date pick — new branch: else if (anchor === 'sub-bids-due') anchorDate = (project.subBidsDueDate || '').trim();. (6) Project modal — new form-row-2 block with data-bidding-only='true' containing input[type=date]#projSubBidsDueDate with hint text 'The date SBG's subs are expected to have pricing in. Tasks can anchor to this (e.g., Sub Bids +1 = 1 day after subs are due).' Placeholder second column left for a future anchor field. (7) openProjectModal / saveProject — read + write flow: value loaded from p.subBidsDueDate on modal open, read from #projSubBidsDueDate on save, snapshot old value before Object.assign for reanchor detection, subBidsChanged computed, added to reanchor trigger condition alongside prebidChanged / rfiDueChanged / etc. (8) Task modal SB button — new .task-anchor-btn with data-anchor='sub-bids-due' appended after the R (RFI Due) button. Same setTaskAnchor handler. CSS: .task-anchor-btn.active[data-anchor='sub-bids-due'] { background: #2e8b8b } — teal to distinguish from navy/red/gold/purple. (9) Template editor SB button — same button pattern added to each mtt-anchor-toggle row, same teal color. Fits within the 5-button width since v82 already tightened per-button width to 14px. (10) Not Required project alert tab — added spec { id: 'not-required', icon: '⊘', label: 'Not Required', title: '...' } to both getAlertBuckets AND getMyAlertBuckets, positioned between 'pending' and 'healthy' since it's terminal-adjacent. filterTasksByAlertTier already had 'not-required' in its tierMap from a prior touch — the getTasksByAlertTier body's not-required case filters status === 'not-required' AND notRequiredAt within last 30 days (uses Date.now() - 30d as cutoff). Legacy pre-v158 not-required tasks without a timestamp pass through unfiltered. (11) Post-preload warning in _addTemplateTasksToProject — after the templateTasks.forEach loop finishes and count is finalized, walks project.tasks once, counts tasks with empty dueDate grouped by their dateAnchor. Skips 'bid-start' since startDate is almost always populated. Only counts an anchor category if the corresponding project date is actually empty (so a pre-bid task with empty dueDate but a set prebidDate — shouldn't happen but defensive — doesn't trip the warning). Assembles the parts list, fires a setTimeout 400ms alert with the total count + per-anchor breakdown + hint that Edit Project will trigger auto-reanchor. Wrapped in try/catch so a bad task shape can't kill preload. (12) All changes verified: JS syntax check passed, container-reset diagnostics harness still absent this session so relying on additive/gate-tightening pattern. Follow-up ideas from prior lists still open (Clean View for Board/Table, header customization, landscape print, date-range slider, auto-fit-to-page, etc.)."),
+    advImplemented('bugfix', 'Not Required tasks now fully terminal — no more phantom past-due indicators on Board / Table / Home / Project Timeline', "v158 introduced the Not Required status and correctly excluded it from workload capacity + the past-due drill-down modal + past-due collector. But the low-level helpers isTaskOverdue / isTaskDueImminent / isTaskDueSoon / getDueClass were never updated — they only excluded 'done' — and those helpers are called from dozens of surface renderers (Board card overdue red styling, Table row past-due class, project overdue count in the project switcher, alerts, Home page bucketing). Result: a task marked Not Required was still rendering with overdue-red styling on Board, still lit up the past-due chip on Home, still counted in the project's overdue total. This ship pushes the not-required-is-terminal rule all the way down to those helpers so it propagates through every consumer with zero call-site changes.", "Shipped Jul 31, 2026 in response to: 'I would like when a task is marked not applicable that is treated like a complete so it is not showing up past due thoughts?' User's ask is the same completion-parity we started in v158 but for the past-due presentation layer. Six pieces. (1) isTaskOverdue helper — added `|| t.status === 'not-required'` to the terminal-exit gate at the top. This is the highest-leverage change since the helper is called by Board card overdue styling, Table row is-overdue class, project overdue counts, alerts, workload cards. Every caller now correctly excludes not-required tasks with zero call-site edits. (2) isTaskDueImminent helper — same gate expansion. Task marked not-required 1 day before due date no longer shows the imminent warning. (3) isTaskDueSoon helper — same. (4) getDueClass helper (returns 'overdue' / 'soon' / '' CSS class based on days-left) — same gate. Table due-date cells stop turning red when the task is not-required. (5) Two inline detectors that didn't use the helpers: (a) _renderPtvTaskRow's is-overdue class assignment on the Project Timeline row — the row was going red-tinted for not-required tasks even though the timeline is where users EXPLICITLY mark tasks as skipped. Now checks both done + not-required. (b) Home page bucket detector at line 38561 — the Skip Done Tasks guard was only `if (t.status === 'done') return;`, so not-required tasks flowed into the Home page's past-due / Due Today / Due Tomorrow buckets. Now excludes both terminal states. (6) Two adjacent metric fixes that also benefit from the terminal-parity: (a) Team Insights on-time percentage denominator — not-required tasks were being counted as if they'd been overdue (getting 0 credit in the numerator), unfairly dragging down a person's on-time rate for work that was correctly dropped from scope. Now excluded from both numerator and denominator entirely. (b) Project end-date calculation (line 42047) — was walking not-done tasks to find the latest dueDate for progress %; not-required tasks were inflating the timeline's perceived end date. Now excluded. Manual JS syntax check passed. Container reset means no full diagnostic pass this session but changes are additive/gate-tightening (never widening a check to include more tasks). Every isTask* helper consumer benefits automatically — no call-site enumeration required. Cross-check: earlier v158 changes to _collectPastDueTasks (past-due drill-down) and workload aggregator's overdue count (line 35836) already excluded not-required, and those still work — this ship just brings the low-level helpers up to the same standard."),
+    advImplemented('quality-of-life', 'Project Timeline Compact mode — halves row heights so more tasks fit per printed page', "Third stackable toggle in the Project Timeline header alongside Clean View + Monochrome. Compact mode tightens row padding, reduces font sizes, shrinks status dots and pills, and compresses group headers so the same timeline fits significantly more tasks per printed page. Toggle button '📏 Compact' with gold active state; label flips to '📐 Normal Density' when engaged. State slot state.ptvCompactMode persists through reload. Print CSS has additional compact-mode overrides that go EVEN denser than the on-screen version (9pt titles, 1.5pt row padding, 0.25pt borders) since printed output has more vertical real estate to work with than a screen. Stacks freely with Clean View (hide badges) and Monochrome (no colors) — turn on all three for a stripped-down, colorless, ultra-dense handout that can pack ~50 tasks on a Letter page.", "Shipped Jul 31, 2026 in response to: 'Compact mode — halves row heights for even denser one-page fits.' This was the (e) follow-up idea from v167's list; user picked it up. Same pattern as v166/v167 — the toggle infrastructure is now a well-worn path so this ship was fast. Five pieces. (1) New button 'ptv-compact-toggle' (id=ptvCompactToggle) added to the ptv-actions block after Monochrome. Tooltip explains stacking behavior with the other two toggles. (2) State slot state.ptvCompactMode (bool, default false), init'd in the loadState block alongside state.ptvMonoMode. (3) togglePtvCompactMode() function mirrors the existing togglePtv* pair — flips state, updates button label + active class, toggles body.ptv-compact-mode class, re-renders. (4) renderProjectTimelineView() preamble extended to sync the third toggle. printProjectTimeline() extended to toggle the third class before window.print(). (5) CSS block for body.ptv-compact-mode: rows go from ~10-14px padding to 3px 8px; task titles from 14px to 12px; stage pills from 12px to 10px; assignees from 13px to 11px; status dots from 12px to 8px; status labels from ~11px to 9px; group headers from ~10-14px padding to 4px 10px. Completion badges (early/late/not-required/rescheduled) drop to 9px font + 1px 4px padding. Line-height everywhere tightened to 1.15-1.2 so text sits closer to its own baseline without overlapping. Print-only sub-block goes even smaller (9pt titles, 7pt stages, 8pt assignees, 1.5pt row padding, 0.25pt borders). Gold active state on the toggle button (var(--sbg-gold, #c07f00)) to distinguish from Clean's green + Mono's charcoal. Manual JS syntax check passed. Combined with the previous two toggles the user can now dial in four print flavors that stack independently — normal internal timeline (all off), simplified plan (Clean), pure B&W (Mono), maximum density (Compact), or any combination for a total of 8 configurations. Follow-up ideas still open from v166/v167: (a) Clean View for Board / Table views, (b) 'Include done tasks' filter in print, (c) header customization with company logo + project number + prepared-for line, (d) landscape orientation checkbox, (e) date range slider on print. New follow-up: (f) 'Auto-fit to one page' mode that scales font-size dynamically until everything fits on a single page."),
+    advImplemented('quality-of-life', 'Project Timeline print now respects toggles + new Monochrome mode for pure B&W handouts', "Two v166 refinements landed together. (1) Print used to force clean styling regardless of the Clean View toggle — the user couldn't print the FULL view with all badges + status pills visible. Refactored so print now MATCHES whatever's on screen: if the toggles are off, print keeps every badge and status pill; if Clean View is on, print hides internal actuals; if Monochrome is on, print prints B&W; both stack. Print CSS now only strips app chrome (sidebar / toolbar / buttons / modals) — the styling comes from the body class hooks which apply on screen AND in print. (2) New Monochrome toggle (⬛) sits next to Clean View. State slot state.ptvMonoMode persists. When active, body.ptv-mono-mode class is applied and every color in the Project Timeline surface flattens to white/grey/black: backgrounds go white, text goes near-black, borders become grey hairlines, badge tints get neutralized, status-color dots become plain grey circles with a black outline, done-task strikethrough is removed. Stacks with Clean View — turn on both for a fully-stripped, colorless plan; turn on Mono alone for full-detail B&W; turn on Clean alone for colored simplified view; leave both off for the standard color-rich internal timeline.", "Shipped Jul 31, 2026 in response to: 'The print to PDF only shows clean view, I need option for print views. Also, is there anyway to get clean view to be truly clean without colors?' User's two complaints: (a) print output was locked to clean regardless of the toggle, robbing them of the ability to print the full detailed view; (b) Clean View still shows color-coded badges + tinted backgrounds, which some meeting handouts + printers can't handle. Four pieces. (1) Print refactor: removed the print-only overrides that unconditionally hid badges / neutralized status dots / etc. Print CSS now scopes ONLY to app-chrome removal (sidebar, toolbar, buttons, modals, version chips, subtitle) plus typography + page-break rules for layout. Body class hooks (body.ptv-clean-mode + body.ptv-mono-mode) already apply on-screen; they also apply inside the print output because @media print doesn't reset non-print CSS. So whatever the user sees on screen is what prints. Also added `-webkit-print-color-adjust: exact` + `print-color-adjust: exact` + `color-adjust: exact` on all print elements so backgrounds and tints actually reproduce in the printed output when NOT in mono mode (some browsers strip backgrounds from print by default). (2) New Monochrome toggle button (id=ptvMonoToggle) added to the ptv-actions block right after Clean View. Same styling pattern as Clean View — grey active state (charcoal #333) since the mode itself is monochrome. Label swaps between '⬛ Monochrome' and '🎨 Show Colors'. (3) New state slot state.ptvMonoMode + togglePtvMonoMode() function, mirroring the Clean View pair. renderProjectTimelineView() preamble updated to sync BOTH toggles on every render so state survives reload and navigation. printProjectTimeline() now syncs both classes before window.print(). (4) New CSS block (~50 lines) for body.ptv-mono-mode: descendant selector on #projectTimelineView flattens color / background-color / background-image / border-color / box-shadow to greyscale defaults across every element in the surface. Task rows keep grey hairline borders. Group headers get light grey background with a dark grey border. Status dots go plain grey with a black outline. Critical tasks retain the ★ marker in black. Completion badges (early / late / not-required / rescheduled) keep their SHAPE and TEXT but background tint drops to light grey and text goes near-black. Status pills get the same treatment. Done-task strikethrough is removed (the strikethrough reads too decorated for a plain B&W handout — the ↓-status ordering is enough signal). is-overdue red background zeroed. Manual JS syntax check passed. Follow-up ideas from earlier v166 list still open: (a) Clean View for Board / Table views, (b) 'Include done tasks' filter, (c) header customization with company logo, (d) landscape orientation via pre-print checkbox. New: (e) 'Compact mode' that halves row heights for even denser one-page fits, (f) date range slider on print to trim the timeline to only next 2 weeks or similar."),
+    advImplemented('high-impact', 'Project Timeline: Print / PDF export + Clean View toggle — one-page shareable summary for meetings, or a stripped-down handout with no internal actuals', "Two coordinated additions to Project Timeline for meeting + hand-off use. (1) Print / PDF button in the Project Timeline header. Triggers window.print() which honors the new @media print CSS block: sidebar hidden, toolbars hidden, action buttons hidden, project title elevated to page header, task rows compressed to page-friendly typography with 0.5in margins on Letter portrait, page-break-inside:avoid on rows so tasks don't split across pages, footer 'Page N of M' via CSS counters. Browser's Save-as-PDF from the print dialog gives a PDF export with zero extra libraries. Print ALWAYS uses clean styling (regardless of toggle) since printed timelines are for external audiences. (2) Clean View toggle button next to Print. Persisted in state.ptvCleanMode. When active, the timeline hides every internal actual — completion badges (early/late/not-required), rescheduled-past-due markers, recurrence chips, training chips, status pills, done-task strikethrough + opacity, and overdue red backgrounds. Task rows read as a pure plan: title + stage + assignee + due date. Toggle button flips label between '🧹 Clean View' and '👁 Show Details' with a green active state so it's obvious which mode is engaged. Both changes work together: click Clean View to preview the print output on screen, then click Print / PDF; or leave the toggle off and click Print / PDF directly (print CSS applies clean styling regardless).", "Shipped Jul 31, 2026 in response to: 'Print/PDF for Project Timeline — one-page project summary export for meetings. Also Project Timeline toggle to show clean version without completions, pending etc actuals so I can print view and also print a clean version.' User wants two things: (a) a real print/PDF path, (b) a stripped-down view mode that hides internal state so the timeline can be shared with clients, execs, or subs without leaking who's late / who completed early / what got skipped. Six pieces. (1) Two new buttons in the ptv-actions block: '🧹 Clean View' (id=ptvCleanToggle) and '🖨 Print / PDF'. Ordered before the existing Refresh + Close buttons so the primary user actions are the leftmost. Tooltips explain each. (2) New state slot: state.ptvCleanMode (bool, default false). Init in the same loadState block as state.earlyLogView. Persisted through saveState like every other view flag. (3) togglePtvCleanMode() function — flips state.ptvCleanMode, updates the toggle button label + active class, toggles body.ptv-clean-mode class, re-renders the timeline. (4) printProjectTimeline() function — syncs the body class to match state, adds body.printing-ptv class, calls window.print(), removes the class after 500ms (setTimeout covers browsers that fire afterprint asynchronously). (5) renderProjectTimelineView() got a small preamble that syncs body class + button state to state.ptvCleanMode on every render, so state survives reload / navigation. (6) New CSS block (~140 lines) covering three regions. (a) Toggle button active state: green background matching the SBG palette when clean mode is on. (b) On-screen clean mode (body.ptv-clean-mode): display:none on early-completion-badge, late-completion-badge, not-required-badge, rescheduled-past-due-badge, recurrence-badge, training-chip-mini, ptv-task-status-label. ptv-task-status-dot neutralized to grey. Done-task strikethrough + opacity overridden to full brightness. Overdue red background zeroed. (c) @media print block — always applies clean styling regardless of toggle. Additionally hides: .sidebar, .main-header, .snapshot-sidebar, .toast-container, .modal-backdrop, #stickyCountdownBar, .ptv-toolbar, .ptv-actions, .btn, .ptv-subtitle, version chips. Main content stretches to full width with padding zeroed. Typography stepped down to 10.5pt body / 14pt title. Task rows get page-break-inside:avoid + break-inside:avoid so no row splits across pages. Group headers get page-break-after:avoid so they don't strand at the bottom. Rows padded 3pt/6pt with 0.5pt borders for crisp printed hairlines. Critical tasks get a leading ★ marker via ::before content. @page block sets Letter portrait with 0.5in margins and adds a 'Page N of M' footer via CSS counters (supported by Chrome + Edge + Safari; Firefox strips the footer but everything else works). Manual JS syntax check passed. Container reset means no full diagnostic pass this session, but all changes are additive: new state slot, new functions, new CSS classes with no selector conflicts. Follow-up ideas: (a) Clean View toggle could also apply to the Board / Table views for a full-project print, (b) 'Include done tasks' vs 'Show only remaining' filter in print output, (c) landscape orientation option in the print dialog via a checkbox pre-print, (d) header customization (add company logo, project number, prepared-for line)."),
+    advImplemented('bugfix', 'v164 early-completion summary strip now also fires on Home My Workload — was mode-gated so Current view users saw nothing', "The v164 recognition data (earlyCompletedHoursPerDay / earlyCompletedTasksPerDay) was being populated inside the aggregator's `if (includeForHours)` block. In Current view, includeForHours is false for done tasks — so the early-completion buckets stayed empty and the summary strip + split-bar rendered as nothing. Since Home My Workload defaults to Current mode, none of the v164 recognition treatment was visible there even when the estimator-card builder was calling _buildEarlySummaryStripHtml. Fixed by adding an always-run branch after the mode-gated block that stamps the same buckets whenever a task is early+done+in-window, regardless of mode. Summary strip now fires on any view + any mode; split-bar continues to show only in Planned view because hoursPerDay stays mode-gated and the split-bar computes its segment as a ratio of hours in the bar.", "Shipped Jul 31, 2026 in response to: 'also needs to be on MY workload.' Investigation: Home My Workload calls _buildEstimatorCardHtml(stats), the SAME builder used by Team Workload cards. Since v164 already inserted the summary strip + split-bar into that builder, both pieces theoretically render on Home already. But when user checked Home My Workload, nothing showed. Root cause: the aggregator's early-completion tracking sits inside the `if (includeForHours)` gate. includeForHours evaluates to `isPlanned ? true : !isTerm`, so in Current view (default) done tasks are excluded from ALL per-day writes including the early-completion buckets. Result: the aggregator's stats entry has empty earlyCompletedHoursPerDay + earlyCompletedTasksPerDay in Current mode → _buildEarlySummaryStripHtml sees zero count / zero hours → returns empty string → no strip shows. Fix landed as an additional always-run branch inside the assignees.forEach loop, placed AFTER the existing includeForHours block. When task.dueDate is set + task.completedEarly + task.completedDaysBefore > 0 + task.status === 'done' + dueDate falls within the current chart window, the branch computes effectiveHrs independently (getEffectiveSupportPct + isLead) and writes to earlyCompletedHoursPerDay / earlyCompletedTasksPerDay / earlyCompletedCount / earlyCompletedHoursTotal / earlyCompletedDaysTotal. Dedupe check ensures we don't double-count if includeForHours was true (e.g., in Planned mode where the original block also fires). Wrapped in try/catch so a bad task data shape can't kill the aggregator. Split-bar visual stays truthful: in Current view, hoursPerDay excludes done tasks so the bar height is 0 for a day whose only work was done-and-early → earlyPctOfBar = earlyHrs/0 → guarded to 0 in the renderer, so no visible green segment. Summary strip DOES fire because it reads from the always-populated buckets. Bottom line: user in Current mode now sees the recognition banner ('🏁 3 tasks pulled forward · 8.5h ahead of schedule') on both Team Workload and My Workload; user in Planned mode continues to see BOTH the summary strip AND the split-bar chart. Manual JS syntax check passed (diagnostics harness reset with the container this session). Follow-up thought: if user wants the split-bar to also work in Current view (showing 'this day would have been 8h but 2h were pulled forward'), we could compute a synthetic bar height in Current-mode-with-early-content. Deferring until user requests — the summary strip probably delivers most of the value."),
+    advImplemented('high-impact', 'Workload chart now shows early-completed hours as a green stripe within each day bar + summary strip per person — the plan and the pull-forward wins are both visible at once', "Solves a longstanding tension between the workload's two modes. Current view hides done tasks entirely (correct for capacity math, but you can't see WHY Thursday's bar looks lighter than expected). Planned view keeps them on their scheduled day (correct for historical plan, but a full 8h bar reads as 8h still-to-do). v164 makes both views honest simultaneously: each day's bar now renders as two stacked segments — solid bottom for hours still competing for capacity, green diagonal-hatched top for hours that were pulled forward. Bar TOTAL height stays the same (the plan is preserved), but the split communicates which portion is already off the clock. Hovers now say 'Thursday: 8h planned · 🏁 2h pulled forward · 6h remaining'. Above every workload card, a persistent green summary strip shows team-wide 'X tasks pulled forward · Yh ahead of schedule in this window' with a View button that jumps straight to the Completed Early Log filtered to that person. Drill-down modal (clicking a bar) now sections the task list into 'Pulled Forward' (green sub-header) and 'Still On the Plan', so when you drill into a day you see the wins separately from the still-active work.", "Shipped Jul 31, 2026 in response to: 'Ship.' User asked for Option A (split-bar) plus Option B (summary strip) after v163. Eight pieces. (1) Aggregator (_aggregateWorkloadByAssignee) gained four new per-person stats slots: earlyCompletedHoursPerDay (dueDate → hours), earlyCompletedTasksPerDay (dueDate → [taskId]), earlyCompletedCount (running total), earlyCompletedHoursTotal, earlyCompletedDaysTotal. When the per-day write block adds a task's hours to hoursPerDay + tasksPerDay, it now ALSO detects wasEarly = task.completedEarly && task.completedDaysBefore > 0 && task.status === 'done'. If true, same effectiveHrs also lands in earlyCompletedHoursPerDay, task.id lands in earlyCompletedTasksPerDay, and the person-level totals accumulate. Task entries in tasksPerDay carry new earlyCompleted + daysEarly fields for drill-down grouping. Total hoursPerDay stays UNCHANGED so bar height reflects the full plan; the early bucket is the sub-slice for split-bar rendering. (2) Chart bar renderer (_buildEstimatorStripHtml) builds a parallel earlyValues array via the same _bucketizeHoursPerDay helper. For each bucket, computes earlyPctOfBar = (earlyHrs / hrs) * 100 and emits a new <div class='twv-strip-bar-early'> positioned absolute at bottom of the bar, height set to that pct. CSS: diagonal-stripe pattern (repeating-linear-gradient at 45deg, two greens alternating every 4px) with dark-mode variant. Bar parent gets position:relative + overflow:hidden. Tooltip switches to the 3-value form when earlyHrs > 0. Only meaningful in Planned view; in Current view earlyValues stays all zeros because done tasks aren't in hoursPerDay to begin with — no visual change to Current view. (3) New _buildEarlySummaryStripHtml(s) called before the strip chart in each workload card. Sums earlyCompletedHoursPerDay within the current chart window, counts unique task ids in earlyCompletedTasksPerDay in the same window. If either is zero, returns empty string (no clutter for people with no early wins). Otherwise renders a green gradient banner: '🏁 X tasks pulled forward · Yh ahead of schedule in this window' with a View CTA. CSS: subtle green gradient background, green left border for accent, uppercase Barlow-Condensed label. (4) View CTA calls _jumpToEarlyLogFilteredTo(name) — sets state.earlyLogPersonFilter to that name, flips the view flags, triggers render. Same navigation pattern as jumpToTaskFromEarlyLog from v163. (5) Drill-down modal (openWorkloadDrilldown) sections the task list: earlyTasks = tasks.filter(t => t.earlyCompleted), remainingTasks = the rest. If earlyTasks.length > 0, emit a green sub-header '🏁 PULLED FORWARD · N tasks · Yh off the plan' followed by those rows, then a grey sub-header 'STILL ON THE PLAN · N · Yh' followed by remaining rows. If nothing was pulled forward, the list renders as before (no extra headers). (6) Drill-down modal header summary updated to acknowledge pull-forwards: adds '🏁 N pulled forward (Yh)' to the header stats line when any exist. (7) All existing CSS reused where possible — .early-completion-badge from v158, tlv-* classes from v119 training log. Only new CSS: .twv-strip-bar-early (the split-bar segment), .twv-early-summary + variants (the summary strip). Both have dark-mode variants. (8) Container reset caveat — the diagnostics harness at /home/claude/diagnostics is gone this session (container reset between conversation gaps). Manual verification: node --check on the biggest inline script passed, version bump + build date meta tag updated manually. No downstream diagnostic errors expected because the changes are additive (new stats slots initialized in ensure(), new CSS classes with no conflict, new JS functions, drill-down list-building refactor preserves ordering + click handlers). Follow-up ideas if the split-bar reads too subtly: (a) let the number label above the bar switch to '6h (+2h🏁)' format when there's pulled-forward content, (b) an 'Include early completions' toggle in the workload header for users who want the old behavior, (c) similar treatment on Home page daily-load chip."),
     advImplemented('high-impact', 'Completed Early Log — new sidebar view with team leaderboard, per-person stats, filterable detail list, and clipboard export', "Dedicated cross-project recognition view for pull-forward wins. Sidebar button '🏁 Completed Early' opens a full-page log showing every task marked done before its due date. Four stat tiles at top (Total Pull-Forwards / This Month / YTD / Total Days Pulled Forward). Per-person leaderboard with 🥇🥈🥉 rank badges — each card shows total early completions, total days early, avg per task, and best pull. Detail list sortable by most-days-early, most-recent, or oldest-first; filterable by time window (all / week / month / quarter / year) and by person. Each row shows task title, project, workstream, lead(s), due date, actual completion date, and the green 'Nd early' badge. Click any row to jump to the task modal in its home project. Copy Summary button exports a plain-text report to clipboard for reporting or team celebration.", "Shipped Jul 28, 2026 in response to: 'I want a completed early log.' Builds on the completion metadata from v158/v160 (each done task now stamps completedEarly / completedDaysBefore / completedAt when finished before its dueDate). Ten pieces. (1) HTML view container '#earlyLogView' added after the training log's markup — same tlv-* class structure so it inherits the existing training-log CSS (stat strip, person grid, task list styles) without needing new declarations. Green title accent (#2e7d52) to match the early-completion badge palette. Three action buttons: Copy Summary, Refresh, Close. (2) Sidebar button '#earlyLogSidebarBtn' with 🏁 icon added right after Training Log — same snapshot-sidebar-btn class so it fits the existing sidebar rhythm. onclick calls openEarlyLogView(). (3) State slots added to init: state.earlyLogView (bool), state.earlyLogWindowFilter ('all'), state.earlyLogPersonFilter ('all'), state.earlyLogSort ('daysDesc'). All persisted via existing saveState pipeline. (4) Batch sed replaced 'state.trainingLogView = false;' with 'state.trainingLogView = false; state.earlyLogView = false;' across all 28 occurrences in openXView functions so navigating to any OTHER view resets the early log flag (same discipline every other view follows). (5) openEarlyLogView / exitEarlyLogView functions modeled on openTrainingLogView — set the flag, reset every other view flag, hide sticky countdown bar, saveState, render. (6) Router branch in render() added after training log branch: if state.earlyLogView, hide every other view element, unhide #earlyLogView, hide sticky countdown, call renderEarlyLogView, applySidebarState, return. (7) _collectEarlyCompletions() walks every non-archived project's tasks, filters status==='done' && completedEarly && completedDaysBefore>0, returns flat array of {task, project, leads, daysEarly, completedAt, dueDate}. (8) _buildEarlyPersonSummary(items) aggregates per-person stats — each lead on a task gets credited (co-leads both get the win). Returns {name, count, totalDaysEarly, avgDaysEarly, best}. (9) _filterEarlyCompletions(items) applies time-window cutoff (week = last 7 days, month = current month start, quarter = current quarter start, year = Jan 1) plus person filter. (10) renderEarlyLogView() ties it together — populates stat strip (4 tiles), builds sorted leaderboard cards with rank badges and per-person stat rows, populates person filter dropdown with everyone who has an early win, applies the active sort (daysDesc / dateDesc / dateAsc) to the filtered task list, renders each row with the green early-completion pill and click-to-open handler. jumpToTaskFromEarlyLog(projectId, taskId) exits the view, switches active project, opens the task modal. copyEarlyLogSummary() builds a formatted plain-text report — team totals, ranked leaderboard, recent 25 completions — and writes to clipboard with graceful fallback to prompt() when clipboard API unavailable. Full diagnostic run stayed green (68/68 static + 19/19 live). JS syntax clean. Zero new CSS — reused all the tlv-* classes from the training log, plus the existing .early-completion-badge from v158. Not Required tasks are intentionally excluded from this log since they're not real completions — a separate 'Scope Pruned Log' could follow if the user wants that view. Follow-up ideas: (a) shareable link/export to PowerPoint for exec updates, (b) 'nudge' button that posts a message on the task praising the pull-forward, (c) filter chip for critical-only tasks (early completion of a critical task carries more weight), (d) time-series chart showing early completions per week."),
     advImplemented('bugfix', 'Tasks disappearing from Board + Table (Group by Stage) after save — pre-existing latent bug surfaced by v158 completions', "Root cause: saveTask read the stage dropdown value with no fallback (line 45254). If the task's stored stage wasn't among the dropdown options — common on tasks cloned across workstreams (Bidding stage on a Training project), tasks whose custom stages got deleted, or tasks touched during v135's workstream-aware dropdown rebuild — setting stageSel.value=t.stage silently failed, .value returned empty string, and every save wrote stage='' back onto the task. Empty-stage tasks vanish completely from Board + Table Group by Stage since the stage-panel filter keys on t.stage matching a stageId AND the orphan/uncategorized detector gates on t.stage being truthy. Not a v158-v161 regression per se — the bug pre-dated the early-completion feature — but the completion flow surfaced it because completing a task via the modal is the most common trigger for the save path. Three defenses added: (1) openTaskModal injects the current stage as an orphan option if it's not already in the dropdown, same pattern the category field already uses. (2) saveTask uses .value || existingForBP.stage || 'project-setup' fallback so an empty dropdown read can never wipe the stage. (3) Load-time backfill (which already handled t.stage=undefined) now uses getProjectStages(project) to pick the correct workstream's first stage instead of always defaulting to Bidding's 'project-setup' — retro-rescues Training/Events tasks whose stage got wiped before v162.", "Shipped Jul 27, 2026 in response to: 'It is only disappearing when Group By Stage.' Investigation traced through the disappearance pattern: user marks a task done (or any save on any status) → task still visible in every OTHER grouping (Assignee, Source, Status, Alert) but vanishes from Group by Stage. That specificity narrowed the cause to something targeting t.stage in the save flow. Comparison: two other stage-writing sites in the codebase (lines 43670, 44268) already used the `document.getElementById('taskStage').value || task.stage` fallback pattern. The primary saveTask edit branch (line 45254) had `document.getElementById('taskStage').value` alone — no fallback. So when the dropdown couldn't select the current stage (because the option wasn't there), the save silently corrupted the field. Three pieces. (1) openTaskModal's orphan-stage injection: mirrors the category orphan-option pattern that's been there for a while. Before setting stageSel.value = t.stage, check if any existing option has value === t.stage. If not, prepend a new <option value=t.stage>⚠ {stage} (orphan)</option> with data-orphan='true' attribute so future consumers can style/filter these. Result: the modal shows the orphan stage explicitly (with the ⚠ marker), user can see it's an orphan and pick a new stage, AND the .value assignment succeeds so any subsequent save reads back a non-empty value. (2) saveTask data.stage build: changed from 'document.getElementById(taskStage).value' to 'document.getElementById(taskStage).value || (existingForBP && existingForBP.stage) || project-setup'. Three-tier fallback: dropdown reading (typical case), existing task's stored stage (survives the orphan case even before v162's orphan-option injection lands), then hardcoded project-setup (defensive last resort). Empty-string writes to t.stage are now structurally impossible. (3) Load-time retro-rescue: existing tasks whose stage was already wiped to empty string by the pre-v162 bug get restored on the next state load. Previous backfill (line 29926) unconditionally set t.stage='project-setup' for empty-stage tasks, which is a valid Bidding stage but INVALID for Training/Events/Precon General workstreams — those tasks would then show up in the Uncategorized bucket (visible, at least, but not ideal). New backfill calls getProjectStages(p) for the containing project and uses stages[0].id — which is 'project-setup' for Bidding (unchanged behavior) but the workstream's first custom stage for other types. So a wiped Training task lands back in Training's first defined stage. Wrapped in try/catch so a getProjectStages exception can't break state load. Verified: full diagnostic run stayed green (68/68 static + 19/19 live). JS syntax clean. Post-ship expectation: reload the tracker once (triggers the retro-rescue backfill), and tasks that had vanished from Board + Table should reappear in their proper stage panels. From v162 onward, saving through the task modal can no longer wipe the stage field."),
     advImplemented('quality-of-life', 'Completion timing shown EVERYWHERE — task modal header banner + timeline + look-ahead + workload drill-down + calendar + alerts + status snapshot + reassignment', "v158 added the badge to Board cards + Table rows. This ship extends it to every surface where a task appears. (1) Task modal: prominent gradient banner floats next to the header status pill — green for early ('🏁 3 DAYS EARLY'), gold for late ('⏱ 2 DAYS LATE'), grey for Not Required ('⊘ NOT REQUIRED'). Tooltip explains the delta. Only shown for terminal states — open tasks show nothing. (2) Project Timeline row: inline mini-badge next to the title. (3) Home page (Today, Look Ahead, Unack, etc.): all 4 hi-title variants + la-task-title get the badge. (4) Team Workload drill-down: wlDrill-title row shows it. (5) Calendar chip: rendered inline. (6) Alerts: ai-title emit. (7) Status Snapshot: ssv-row-title. (8) Reassignment modal: reassign-title. (9) Unassigned workload list: twv-unas-title. Now anywhere a completed task title appears you can see at a glance whether it was pulled forward, slipped, or dropped from scope.", "Shipped Jul 27, 2026 in response to: 'I want an early completed task to be recognized when you open detailed task as well as project timeline, lookaheads, workloads, etc anywhere you see the task i want to see that it was completed early.' Bundled with the not-required + late-completion badges since they share the same helper. Three pieces. (1) Task modal completion banner: new markup element <div class='tmpc-completion-banner' id='tmpcCompletionBanner' style='display:none;'> inserted right after the tmpc-status pill closing div (sibling of status pill, floats to the right of it in the header row). refreshHeaderStatusPill was already the one function that runs every time the modal opens AND every time the status changes — perfect single-point-of-truth to keep the banner synced. Extended refreshHeaderStatusPill to look up the editing task via editingTaskId → activeProject.tasks find, then decide the banner variant: (a) status='not-required' → grey 'NOT REQUIRED' banner + tooltip showing when/by whom, (b) status='done' && completedEarly && completedDaysBefore>0 → green '🏁 N days early' banner + 'nice pull-forward' tooltip, (c) status='done' && completedLate && completedDaysAfter>0 → gold '⏱ N days late' banner. Otherwise banner stays hidden (open tasks, on-time completions). CSS: three variants (variant-early / variant-late / variant-not-required) with gradient backgrounds (44,166,116 green / 192,127,0 gold / 107,118,135 grey), white text, uppercase Barlow-Condensed labels, subtle drop shadow, 14px rounded pill shape. Matches the visual weight of the status pill so they read as siblings, not competing focal points. (2) Seven inline surfaces: Project Timeline (_renderPtvTaskRow), all Home page task-item variants (renderHomeTaskItem, all 4 hi-title occurrences in the unack + pending + sign-off + done sections via batch sed replace), Look Ahead (la-task-title), Team Workload drill-down (wlDrill-title), Alerts (ai-title), Status Snapshot (ssv-row-title), Reassignment modal (reassign-title), Unassigned workload (twv-unas-title), Calendar event chip (cal-event render tail). All emit ${_buildCompletionSideBadgeHtml(t)} inline after the title + training-mini chip, so the badge inherits the parent's text flow and lives right next to the task name. Batch-updated via sed for the multi-occurrence patterns (Home page has 4 hi-title emits across different sections). (3) Behavior: the v158 helper _buildCompletionSideBadgeHtml returns empty string for tasks that aren't in a terminal state, so open tasks in every view continue to look exactly like before — no visual clutter. Only completed / not-required tasks show the badge. Toast dedup + notification pipeline unchanged (this ship is purely additive visual). Full diagnostic run stayed green (68/68 static + 19/19 live). JS syntax clean. Note: existing done tasks completed before v158 still don't show a badge — their flags default to false and there's no retroactive way to recompute the delta. From v160 onward, every new completion via task modal Save AND from picker paths (calendar / board drag / inline dropdown) will land the badge everywhere."),
@@ -22362,12 +22645,13 @@ function _addTemplateTasksToProject(project, templateTasks, tmplName) {
     // 'bid-start' (project.startDate), 'bid-day' (project.dueDate),
     // 'pre-bid' (project.prebidDate), 'rfi-due' (project.rfiDueDate).
     // If the relevant anchor isn't set on the project, dueDate stays empty.
-    const validAnchors = ['bid-start','bid-day','pre-bid','rfi-due'];
+    const validAnchors = ['bid-start','bid-day','pre-bid','rfi-due','sub-bids-due'];
     const anchor = validAnchors.includes(x.dateAnchor) ? x.dateAnchor : 'bid-start';
     let anchorDate = '';
     if (anchor === 'bid-day')      anchorDate = (project.dueDate || '').trim();
     else if (anchor === 'pre-bid') anchorDate = (project.prebidDate || '').trim();
     else if (anchor === 'rfi-due') anchorDate = (project.rfiDueDate || '').trim();
+    else if (anchor === 'sub-bids-due') anchorDate = (project.subBidsDueDate || '').trim();
     else                            anchorDate = (project.startDate || '').trim();
     // v63b: coerce offset to a number; missing/invalid → 0 (= due on anchor date).
     // Per user spec: 0 offset means the task is due ON the anchor date.
@@ -22431,6 +22715,46 @@ function _addTemplateTasksToProject(project, templateTasks, tmplName) {
     project.tasks.push(newTask);
     count++;
   });
+  // v170: Post-preload warning — if any tasks landed with empty dueDate
+  // because their anchor date wasn't set on the project, tell the user
+  // exactly what's missing and how many tasks are affected. Users
+  // reporting "pre-bid tasks aren't anchoring" were hitting this silent
+  // failure — the tasks loaded fine, they just had no due date because
+  // project.prebidDate was empty at preload time. Setting the date via
+  // Edit Project triggers the reanchor which recomputes them.
+  try {
+    const missingCounts = { 'pre-bid': 0, 'rfi-due': 0, 'sub-bids-due': 0, 'bid-day': 0 };
+    project.tasks.forEach(t => {
+      if (t.dueDate || typeof t.dayOffset !== 'number') return;
+      if (t.dateAnchor && missingCounts.hasOwnProperty(t.dateAnchor)) {
+        missingCounts[t.dateAnchor]++;
+      }
+    });
+    const missingParts = [];
+    if (missingCounts['pre-bid'] > 0 && !(project.prebidDate || '').trim()) {
+      missingParts.push(`${missingCounts['pre-bid']} anchored to Pre-Bid Walk Date`);
+    }
+    if (missingCounts['rfi-due'] > 0 && !(project.rfiDueDate || '').trim()) {
+      missingParts.push(`${missingCounts['rfi-due']} anchored to RFI Cutoff Date`);
+    }
+    if (missingCounts['sub-bids-due'] > 0 && !(project.subBidsDueDate || '').trim()) {
+      missingParts.push(`${missingCounts['sub-bids-due']} anchored to Sub Bids Due Date`);
+    }
+    if (missingCounts['bid-day'] > 0 && !(project.dueDate || '').trim()) {
+      missingParts.push(`${missingCounts['bid-day']} anchored to Bid Day`);
+    }
+    if (missingParts.length > 0) {
+      const total = missingParts.reduce((s, p) => s + parseInt(p, 10), 0);
+      // Defer the alert so it fires AFTER the current save/render cycle
+      setTimeout(() => {
+        alert(
+          `⚠ ${total} task${total === 1 ? '' : 's'} loaded without a computed due date:\n\n` +
+          missingParts.map(p => '  • ' + p).join('\n') +
+          '\n\nEdit the project to set the missing anchor date(s) — the tasks will auto-reanchor and pick up their due dates. Tasks are still visible and editable in the meantime.'
+        );
+      }, 400);
+    }
+  } catch (_) { /* non-fatal */ }
   return count;
 }
 
@@ -24862,6 +25186,10 @@ function computeProjectHealthScore(project) {
   let onTimeDenominator = 0;
   tasks.forEach(t => {
     if (!t.dueDate) return;
+    // v169: not-required tasks shouldn't affect on-time percentage —
+    // they were dropped from scope, not late. Excluded from both
+    // numerator and denominator entirely.
+    if (t.status === 'not-required') return;
     const isPastDue = t.dueDate < todayStr;
     const isDone = t.status === 'done';
     if (isPastDue || isDone) {
@@ -26101,6 +26429,7 @@ function getAlertBuckets(project) {
     { id: 'unack',       icon: '🔔', label: 'Unack',        title: 'Tasks assigned but not yet acknowledged by the assignee' },
     { id: 'unassigned',  icon: '👤', label: 'Unassigned',   title: 'Tasks with no Lead assignee' },
     { id: 'pending',     icon: '⏳', label: 'Pending',      title: 'Tasks with status Pending (waiting on something)' },
+    { id: 'not-required', icon: '⊘', label: 'Not Required', title: 'Tasks marked Not Required in the last 30 days — visible for review + accountability' },
     { id: 'healthy',     icon: '✅', label: 'Healthy',      title: 'Tasks with no active alerts and not yet done — on track' },
     { id: 'done',        icon: '✓',  label: 'Done',         title: 'Completed tasks' }
   ];
@@ -26125,6 +26454,7 @@ function getMyAlertBuckets(project) {
     { id: 'rejected',    icon: '✗',  label: 'Rejected',     title: 'Your tasks with a rejection notice from the Lead Estimator' },
     { id: 'unack',       icon: '🔔', label: 'Unack',        title: 'Your assigned tasks not yet acknowledged' },
     { id: 'pending',     icon: '⏳', label: 'Pending',      title: 'Your tasks with status Pending' },
+    { id: 'not-required', icon: '⊘', label: 'Not Required', title: 'Your tasks marked Not Required in the last 30 days — visible for review' },
     { id: 'healthy',     icon: '✅', label: 'Healthy',      title: 'Your tasks with no active alerts and not yet done — comfortably on track' },
     { id: 'done',        icon: '✓',  label: 'Done',         title: 'Your completed tasks' }
     // Note: 'unassigned' tier is not included in My scope (it's tasks WITHOUT an assignee, by definition not yours)
@@ -26472,7 +26802,8 @@ function filterTasksByAlertTier(project, tier) {
       'in-progress': 'in-progress',
       'rejected': 'rejected',
       'unassigned': 'unassigned',
-      'pending': 'pending'
+      'pending': 'pending',
+      'not-required': 'not-required'
     };
     const apiTier = tierMap[tier] || tier;
     return getTasksByAlertTier(project, apiTier, 'project');
@@ -26544,7 +26875,8 @@ function filterTasksByAlertTierScoped(project, tier, scope) {
       'in-progress': 'in-progress',
       'rejected': 'rejected',
       'unassigned': 'unassigned',
-      'pending': 'pending'
+      'pending': 'pending',
+      'not-required': 'not-required'
     };
     const apiTier = tierMap[tier] || tier;
     return getTasksByAlertTier(project, apiTier, 'my');
@@ -26665,6 +26997,20 @@ function getTasksByAlertTier(project, tier, scope) {
     if (tier === 'pending') return t.status === 'pending';
     if (tier === 'in-progress') return t.status === 'in-progress';
     if (tier === 'blocked') return t.status === 'blocked';
+    // v171: Not Required alert tier — surfaces tasks the team explicitly
+    // marked as scope-dropped. Not urgent (they're terminal), but visible
+    // for review + accountability. Recent-only window: last 30 days by
+    // notRequiredAt so old skipped work doesn't pile up forever.
+    if (tier === 'not-required') {
+      if (t.status !== 'not-required') return false;
+      const stamp = t.notRequiredAt || 0;
+      if (stamp > 0) {
+        const cutoff = Date.now() - (30 * 24 * 60 * 60 * 1000);
+        return stamp >= cutoff;
+      }
+      // No timestamp (legacy pre-v158 not-required tasks) — include anyway
+      return true;
+    }
     if (tier === 'late-start') {
       // Late Start = task is not-started AND has a passed Start By date
       // AND the Start By feature is enabled for this stage (so disabling
@@ -26731,6 +27077,10 @@ function renderScopedAlertStrip(project, scope, stripElementId) {
   const blocked = getTasksByAlertTier(project, 'blocked', scope);
   const atRisk = getTasksByAlertTier(project, 'at-risk', scope);
   const lateStart = getTasksByAlertTier(project, 'late-start', scope);
+  // v171: Not Required — informational tier so scope-dropped work stays
+  // visible for team review. Limited to last 30 days by notRequiredAt to
+  // avoid unbounded growth.
+  const notRequired = getTasksByAlertTier(project, 'not-required', scope);
 
   const currentUser = getCurrentUser();
   const tabs = [];
@@ -26796,6 +27146,15 @@ function renderScopedAlertStrip(project, scope, stripElementId) {
     const active = activeTier === 'unacknowledged' ? ' active' : '';
     tabs.push(`<button class="alert-tab tab-unacknowledged${active}" onclick="toggleAlertPanelScoped('unacknowledged','${scope}')" title="Newly-assigned tasks awaiting assignee acknowledgment">
       🔔 Unacknowledged <span class="alert-count">${unacknowledged.length}</span>
+    </button>`);
+  }
+  // v171: Not Required tab — muted grey, informational only. Only shown
+  // when there are recent Not Required tasks (last 30 days) so users can
+  // review what got dropped from scope without it becoming clutter.
+  if (notRequired.length > 0) {
+    const active = activeTier === 'not-required' ? ' active' : '';
+    tabs.push(`<button class="alert-tab tab-notrequired${active}" onclick="toggleAlertPanelScoped('not-required','${scope}')" title="Tasks marked Not Required in the last 30 days — visible for team review, no action needed">
+      ⊘ Not Required <span class="alert-count">${notRequired.length}</span>
     </button>`);
   }
   // Messages and receipts are inherently "mine" — only shown in the My Alerts strip
@@ -26917,7 +27276,9 @@ function renderScopedAlertStrip(project, scope, stripElementId) {
         'at-risk': '⚠ At Risk — Overdue or Due Soon Without Progress',
         'late-start': '⏰ Late Start — Past Start-By Date, Still Not Started',
         'completed': '✓ Completions Awaiting Lead Estimator Sign-Off',
-        'rejected': '✗ Rejected Completions — Assignee Action Required'
+        'rejected': '✗ Rejected Completions — Assignee Action Required',
+        // v171: Not Required tier title — informational tone, no urgency signals
+        'not-required': '⊘ Not Required — Scope-Dropped Tasks (Last 30 Days)'
       };
       const leadName = (project.leadEstimator || '').trim();
       const scopeLabel = scope === 'my' ? ' · Filtered to your tasks' : '';
@@ -29356,20 +29717,22 @@ function renderTaskCard(t) {
 }
 
 function isTaskOverdue(t) {
-  if (!t.dueDate || t.status === 'done') return false;
+  // v169: not-required is a terminal state (like done) — a task the team
+  // decided didn't need to happen shouldn't be flagged as overdue.
+  if (!t.dueDate || t.status === 'done' || t.status === 'not-required') return false;
   return getDaysLeft(t.dueDate) < 0;
 }
 
 function isTaskDueImminent(t) {
   // 0 or 1 days out — more urgent tier
-  if (!t.dueDate || t.status === 'done') return false;
+  if (!t.dueDate || t.status === 'done' || t.status === 'not-required') return false;
   const d = getDaysLeft(t.dueDate);
   return d !== null && d >= 0 && d <= 1;
 }
 
 function isTaskDueSoon(t) {
   // Exactly 2 days out — mutually exclusive with imminent
-  if (!t.dueDate || t.status === 'done') return false;
+  if (!t.dueDate || t.status === 'done' || t.status === 'not-required') return false;
   const d = getDaysLeft(t.dueDate);
   return d === 2;
 }
@@ -31197,7 +31560,7 @@ function toggleMTTRoleReq(index, fieldName, checked) {
 // 'bid-start' (default — offset is relative to project kickoff) or
 // 'bid-day' (offset relative to bid submission deadline).
 function setMasterTaskAnchor(index, anchor) {
-  if (!['bid-start','bid-day','pre-bid','rfi-due'].includes(anchor)) return;
+  if (!['bid-start','bid-day','pre-bid','rfi-due','sub-bids-due'].includes(anchor)) return;
   const task = state.masterTasks[index];
   if (!task) return;
   task.dateAnchor = anchor;
@@ -31545,7 +31908,7 @@ function _buildTemplateExportPayload(tmpl) {
       priority:        t.priority || 'medium',
       offset:          (typeof t.offset === 'number' && !isNaN(t.offset)) ? t.offset : 0,
       // v63 / v82+: anchor — preserve so import recreates the same calc behavior
-      dateAnchor:      (['bid-start','bid-day','pre-bid','rfi-due'].includes(t.dateAnchor)) ? t.dateAnchor : 'bid-start',
+      dateAnchor:      (['bid-start','bid-day','pre-bid','rfi-due','sub-bids-due'].includes(t.dateAnchor)) ? t.dateAnchor : 'bid-start',
       // v37+: critical + hours + tips + deliverables + checklist
       critical:        !!t.critical,
       estimatedHours:  (typeof t.estimatedHours === 'number' && t.estimatedHours > 0) ? t.estimatedHours : null,
@@ -31839,7 +32202,7 @@ function confirmImportTemplate(mode) {
     source:         t.source || '',
     priority:       t.priority || 'medium',
     offset:         (typeof t.offset === 'number' && !isNaN(t.offset)) ? t.offset : 0,
-    dateAnchor:     (['bid-start','bid-day','pre-bid','rfi-due'].includes(t.dateAnchor)) ? t.dateAnchor : 'bid-start',
+    dateAnchor:     (['bid-start','bid-day','pre-bid','rfi-due','sub-bids-due'].includes(t.dateAnchor)) ? t.dateAnchor : 'bid-start',
     critical:       !!t.critical,
     estimatedHours: (typeof t.estimatedHours === 'number' && t.estimatedHours > 0) ? t.estimatedHours : null,
     tips:           t.tips || '',
@@ -32229,7 +32592,7 @@ function applyRecommendations() {
       source:         r.source || '',
       priority:       'medium',
       offset:         (typeof r.offset === 'number') ? r.offset : 0,
-      dateAnchor:     (['bid-start','bid-day','pre-bid','rfi-due'].includes(r.dateAnchor)) ? r.dateAnchor : 'bid-start',
+      dateAnchor:     (['bid-start','bid-day','pre-bid','rfi-due','sub-bids-due'].includes(r.dateAnchor)) ? r.dateAnchor : 'bid-start',
       critical:       !!r.critical,
       estimatedHours: (typeof r.estimatedHours === 'number' && r.estimatedHours > 0) ? r.estimatedHours : null,
       tips:           r.tips || '',
@@ -32813,6 +33176,7 @@ function renderMasterTasks() {
             <button type="button" class="mtt-anchor-btn ${t.dateAnchor === 'bid-day' ? 'active' : ''}" data-anchor="bid-day" onclick="setMasterTaskAnchor(${t._index}, 'bid-day')" title="Anchor from Bid Day">B</button>
             <button type="button" class="mtt-anchor-btn ${t.dateAnchor === 'pre-bid' ? 'active' : ''}" data-anchor="pre-bid" onclick="setMasterTaskAnchor(${t._index}, 'pre-bid')" title="Anchor from Pre-Bid Date">P</button>
             <button type="button" class="mtt-anchor-btn ${t.dateAnchor === 'rfi-due' ? 'active' : ''}" data-anchor="rfi-due" onclick="setMasterTaskAnchor(${t._index}, 'rfi-due')" title="Anchor from RFI Cutoff">R</button>
+            <button type="button" class="mtt-anchor-btn ${t.dateAnchor === 'sub-bids-due' ? 'active' : ''}" data-anchor="sub-bids-due" onclick="setMasterTaskAnchor(${t._index}, 'sub-bids-due')" title="Anchor from Sub Bids Due (Trade Partners)">SB</button>
           </div>
           <input type="number" value="${t.offset||0}" onchange="updateMasterTaskField(${t._index}, 'offset', this.value)" title="${_mttAnchorLabel(t.dateAnchor)}">
         </div>

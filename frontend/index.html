@@ -3,7 +3,7 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <meta name="application-name" content="SBG Preconstruction Bid Tracker">
-<meta name="version" content="V163">
+<meta name="version" content="V171">
 <!--
   =============================================================================
   BUILD DATE — SINGLE SOURCE OF TRUTH
@@ -13,10 +13,10 @@
   (.sf-built) so they never drift apart again. Format: "MMM D, YYYY".
   =============================================================================
 -->
-<meta name="build-date" content="Jul 28, 2026">
+<meta name="build-date" content="Jul 31, 2026">
 <meta name="created" content="2026-04-18">
 <meta name="built" content="2026-04-19T23:56:18Z">
-<title>SBG Preconstruction Bid Tracker · V163</title>
+<title>SBG Preconstruction Bid Tracker · V171</title>
 <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;600;700&amp;family=Barlow+Condensed:wght@500;600;700;800&amp;family=Inter:wght@300;400;500;600;700;800&amp;display=swap" rel="stylesheet">
 
 <meta name="api-base" content="">
@@ -30,7 +30,7 @@
     <div class="brand-logo" id="brandLogo" onclick="openSettingsModal()" title="Click to edit company logo"><img src="data:image/gif;base64,R0lGODlhAQABAAAAACH5BAEKAAEALAAAAAABAAEAAAICTAEAOw==" alt="Company Logo" style="width:100%;height:100%;object-fit:contain;border-radius:4px;background:#fff;"></div>
     <div class="brand-text">
       <h1>SOURCE BUILDING GR<span class="accent">O</span>UP</h1>
-      <div class="subtitle">Preconstruction · Bid Pursuit Tracker <span class="version-stamp version-stamp-milestone" title="v163 · v100 milestone Recurring Series Overhaul + polish">🎉 V163</span><span class="version-built" data-role="build-date"></span></div>
+      <div class="subtitle">Preconstruction · Bid Pursuit Tracker <span class="version-stamp version-stamp-milestone" title="v171 · Sub Bids Due anchor + preload warning + Not Required project alert tab">🎉 V171</span><span class="version-built" data-role="build-date"></span></div>
     </div>
   </div>
   <div class="header-stats">
@@ -334,7 +334,7 @@
     <!-- File creation/version footer — stays pinned to the bottom of the sidebar -->
     <div class="sidebar-footer" id="sidebarFooter">
       <div class="sf-brand">SBG Precon Tracker</div>
-      <div class="sf-version sf-version-milestone" title="v163 · v100 milestone Recurring Series Overhaul + polish">🎉 V163</div>
+      <div class="sf-version sf-version-milestone" title="v171 · Sub Bids Due anchor + preload warning + Not Required project alert tab">🎉 V171</div>
       <div class="sf-created">Created April 18, 2026</div>
       <div class="sf-built" data-role="build-date" title="Exact timestamp when this HTML file was generated"></div>
       <div class="sf-org">Source Building Group · Mansfield, TX</div>
@@ -805,6 +805,10 @@
             <div class="ptv-subtitle">Every task on its real date — past, present, and future. See the actual shape of a project from kickoff to close.</div>
           </div>
           <div class="ptv-actions">
+            <button class="btn btn-sm ptv-clean-toggle" id="ptvCleanToggle" onclick="togglePtvCleanMode()" title="Toggle Clean View — hides status pills, completion badges, and other internal actuals so the timeline reads as a shareable plan">🧹 Clean View</button>
+            <button class="btn btn-sm ptv-mono-toggle" id="ptvMonoToggle" onclick="togglePtvMonoMode()" title="Toggle Monochrome — strips all colors for a fully B&amp;W-ready view (stacks with Clean View)">⬛ Monochrome</button>
+            <button class="btn btn-sm ptv-compact-toggle" id="ptvCompactToggle" onclick="togglePtvCompactMode()" title="Toggle Compact — halves row heights so more tasks fit on a single page (stacks with Clean View + Monochrome)">📏 Compact</button>
+            <button class="btn btn-sm" onclick="printProjectTimeline()" title="Print / save as PDF — one-page summary view">🖨 Print / PDF</button>
             <button class="btn btn-sm" onclick="refreshProjectTimelineView()" title="Refresh data">↻ Refresh</button>
             <button class="btn btn-sm" onclick="exitProjectTimelineView()" title="Return to previous view">✕ Close</button>
           </div>
@@ -4841,6 +4845,18 @@
         <div class="hint-inline">Optional. Last day to submit RFI questions. Tasks can anchor to this.</div>
       </div>
     </div>
+    <!-- v170: Sub Bids Due from Trade Partners — internal date subs
+         should have their pricing in by, upstream of Bid Day -->
+    <div class="form-row-2" data-bidding-only="true">
+      <div class="form-group">
+        <label>Sub Bids Due from Trade Partners</label>
+        <input type="date" id="projSubBidsDueDate">
+        <div class="hint-inline">Optional. The date SBG's subs are expected to have pricing in. Tasks can anchor to this (e.g., "Sub Bids +1" = 1 day after subs are due).</div>
+      </div>
+      <div class="form-group">
+        <!-- placeholder for a future anchor date field -->
+      </div>
+    </div>
     <div class="form-row-3" data-bidding-only="true">
       <div class="form-group">
         <label>Bid Submission Time</label>
@@ -5347,6 +5363,7 @@
           <button type="button" class="task-anchor-btn" data-anchor="bid-day" onclick="setTaskAnchor('bid-day')" title="Anchor offset from Bid Day Date (submission deadline)">B</button>
           <button type="button" class="task-anchor-btn" data-anchor="pre-bid" onclick="setTaskAnchor('pre-bid')" title="Anchor offset from Pre-Bid Walk Date">P</button>
           <button type="button" class="task-anchor-btn" data-anchor="rfi-due" onclick="setTaskAnchor('rfi-due')" title="Anchor offset from RFI Cutoff Date">R</button>
+          <button type="button" class="task-anchor-btn" data-anchor="sub-bids-due" onclick="setTaskAnchor('sub-bids-due')" title="Anchor offset from Sub Bids Due date (from Trade Partners)">SB</button>
         </div>
         <input type="number" id="taskDayOffset" placeholder="e.g. 7" onchange="updateDueFromOffset()" style="flex:1;">
       </div>
