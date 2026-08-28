@@ -1569,6 +1569,24 @@
   body.ptv-mono-mode .early-completion-badge,
   body.ptv-mono-mode .late-completion-badge,
   body.ptv-mono-mode .not-required-badge,
+  /* v175: Reschedule modal reason-tile visual feedback */
+  .rtm-reason-tile:hover {
+    border-color: #6b46c1 !important;
+    background: rgba(107, 70, 193, 0.03) !important;
+  }
+  .rtm-reason-tile input[type="radio"]:checked ~ span {
+    color: #6b46c1 !important;
+  }
+  label.rtm-reason-tile:has(input[type="radio"]:checked) {
+    border-color: #6b46c1 !important;
+    background: rgba(107, 70, 193, 0.06) !important;
+    box-shadow: 0 0 0 1px rgba(107, 70, 193, 0.2);
+  }
+  .rtm-shortcut:hover {
+    background: rgba(107, 70, 193, 0.1) !important;
+    border-color: #6b46c1 !important;
+  }
+
   body.ptv-mono-mode .rescheduled-past-due-badge {
     background: #eee !important;
     color: #111 !important;
@@ -5713,6 +5731,47 @@
     background: rgba(139, 148, 158, 0.15);
     color: #8b949e;
     border-color: rgba(139, 148, 158, 0.4);
+  }
+  /* v173: Missed Deadline — rust palette. Signals the window closed
+     without the loud red of active-overdue, but still darker/warmer than
+     Not Required's grey so the two are visually distinct at a glance. */
+  .task-card.status-missed-deadline {
+    background: rgba(164, 64, 41, 0.10);
+    border-color: rgba(164, 64, 41, 0.4);
+  }
+  .task-card.status-missed-deadline .task-title {
+    text-decoration: line-through;
+    font-style: italic;
+    opacity: 0.7;
+    color: #6b3020;
+  }
+  body.dark-mode .task-card.status-missed-deadline {
+    background: rgba(219, 96, 66, 0.14);
+    border-color: rgba(219, 96, 66, 0.4);
+  }
+  body.dark-mode .task-card.status-missed-deadline .task-title {
+    color: #dbb0a0;
+  }
+  .missed-deadline-badge {
+    display: inline-flex;
+    align-items: center;
+    gap: 3px;
+    padding: 2px 6px;
+    background: rgba(164, 64, 41, 0.12);
+    color: #a44029;
+    border: 1px solid rgba(164, 64, 41, 0.4);
+    border-radius: 3px;
+    font-size: 10px;
+    font-weight: 700;
+    letter-spacing: 0.04em;
+    font-family: 'JetBrains Mono', monospace;
+    white-space: nowrap;
+    line-height: 1.2;
+  }
+  body.dark-mode .missed-deadline-badge {
+    background: rgba(219, 96, 66, 0.15);
+    color: #db6042;
+    border-color: rgba(219, 96, 66, 0.4);
   }
   .task-card.is-overdue {
     background: var(--fill-overdue) !important;
@@ -11084,6 +11143,8 @@
   .status-pending,     .tmpc-status[data-status="pending"]     .tmpc-status-dot { background: #6b46c1; }
   .status-done,        .tmpc-status[data-status="done"]        .tmpc-status-dot { background: #2ca674; }
   .status-not-required, .tmpc-status[data-status="not-required"] .tmpc-status-dot { background: #6b7687; }
+  /* v173: Missed Deadline — rust color for pill dot */
+  .status-missed-deadline, .tmpc-status[data-status="missed-deadline"] .tmpc-status-dot { background: #a44029; }
   /* Whole pill tinted to status color for high-visibility cue */
   .tmpc-status[data-status="not-started"] { background: rgba(155,164,176,0.35); border-color: rgba(255,255,255,0.45); }
   .tmpc-status[data-status="in-progress"] { background: rgba(192,127,0,0.55); border-color: #c07f00; }
@@ -11091,6 +11152,8 @@
   .tmpc-status[data-status="pending"]     { background: rgba(107,70,193,0.55); border-color: #6b46c1; }
   .tmpc-status[data-status="done"]        { background: rgba(44,166,116,0.55); border-color: #2ca674; }
   .tmpc-status[data-status="not-required"] { background: rgba(107,118,135,0.5); border-color: #6b7687; }
+  /* v173: Missed Deadline whole-pill tint */
+  .tmpc-status[data-status="missed-deadline"] { background: rgba(164,64,41,0.55); border-color: #a44029; }
   /* v161: Completion timing banner — floats to the right of the status
      pill in the task modal header. Warm-tinted for early wins, gold for
      late, grey for Not Required. Same palette as the card badges. */
@@ -11125,6 +11188,12 @@
     background: linear-gradient(90deg, rgba(107, 118, 135, 0.85), rgba(85, 94, 108, 0.85));
     color: #fff;
     border-color: rgba(107, 118, 135, 0.6);
+  }
+  /* v173: Missed Deadline completion-banner variant — rust gradient */
+  .tmpc-completion-banner.variant-missed-deadline {
+    background: linear-gradient(90deg, rgba(164, 64, 41, 0.9), rgba(122, 45, 27, 0.9));
+    color: #fff;
+    border-color: rgba(164, 64, 41, 0.65);
   }
   .tmpc-status-label {
     font-family: 'Barlow Condensed', sans-serif;

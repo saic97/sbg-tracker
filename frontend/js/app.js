@@ -955,6 +955,9 @@ function loadState() {
         if (typeof t.completedOnTime === 'undefined') t.completedOnTime = false;
         if (typeof t.notRequiredAt === 'undefined') t.notRequiredAt = null;
         if (typeof t.notRequiredBy === 'undefined') t.notRequiredBy = '';
+        // v173: Missed Deadline metadata backfill
+        if (typeof t.missedDeadlineAt === 'undefined') t.missedDeadlineAt = null;
+        if (typeof t.missedDeadlineBy === 'undefined') t.missedDeadlineBy = '';
         // Per-Lead ack state — each co-Lead has their own acknowledgment
         if (!t.leadAck || typeof t.leadAck !== 'object') t.leadAck = {};
         // Per-Lead completion state — each co-Lead can independently mark
@@ -1769,7 +1772,7 @@ function getDaysLeft(dateStr) {
 }
 function getDueClass(dateStr, status) {
   // v169: not-required is terminal — never render as overdue/soon
-  if (!dateStr || status === 'done' || status === 'not-required') return '';
+  if (!dateStr || status === 'done' || status === 'not-required' || status === 'missed-deadline') return '';
   const d = getDaysLeft(dateStr);
   if (d === null) return '';
   if (d < 0) return 'overdue';
@@ -5294,7 +5297,7 @@ function buildProjectTimelineData() {
     if (d < todayStr) {
       counts.past++;
       // v172: not-required is terminal — never counts as overdue
-      if (status !== 'done' && status !== 'not-required') counts.overdue++;
+      if (status !== 'done' && status !== 'not-required' && status !== 'missed-deadline') counts.overdue++;
     } else if (d === todayStr) counts.today++;
     else counts.future++;
   });
@@ -5493,7 +5496,8 @@ function _renderPtvTaskRow(item, groupKey, todayKey) {
     'blocked': 'Blocked',
     'pending': 'Pending',
     'done': 'Done',
-    'not-required': 'Not Required'
+    'not-required': 'Not Required',
+    'missed-deadline': 'Missed Deadline'
   };
   const statusLabel = statusLabelMap[status] || status;
   const rowClasses = ['ptv-task-row', `status-${status}`];
@@ -5742,7 +5746,7 @@ function _aggregateWorkloadByAssignee() {
       // into a synthetic 'Unassigned' bucket so the user can see the
       // work exists and needs to be assigned. Skips terminal tasks
       // (done or not-required) — no reason to surface completed unassigned work.
-      if (assignees.size === 0 && task.status !== 'done' && task.status !== 'not-required') {
+      if (assignees.size === 0 && task.status !== 'done' && task.status !== 'not-required' && task.status !== 'missed-deadline') {
         assignees.add('Unassigned');
       }
 
@@ -5771,7 +5775,7 @@ function _aggregateWorkloadByAssignee() {
         // capacity clock and out of open counts. In Planned view (which
         // shows what was scheduled regardless of outcome), we still
         // include them; in Current view they're skipped for hours.
-        const isTerm = task.status === 'done' || task.status === 'not-required';
+        const isTerm = task.status === 'done' || task.status === 'not-required' || task.status === 'missed-deadline';
         const includeForHours = isPlanned ? true : !isTerm;
         const isDone = isTerm;
 
@@ -6368,7 +6372,7 @@ function _aggregateTeamInsights() {
           }
         }
         // Overdue (currently past-due and not terminal — done or not-required both close it out)
-        if (task.status !== 'done' && task.status !== 'not-required' && task.dueDate && task.dueDate < todayStr) {
+        if (task.status !== 'done' && task.status !== 'not-required' && task.status !== 'missed-deadline' && task.dueDate && task.dueDate < todayStr) {
           s.overdueCount++;
           if (s.recentOverdueTasks.length < 25) {
             s.recentOverdueTasks.push({
@@ -7803,7 +7807,7 @@ function _collectPastDueTasks(opts) {
       // v158: Skip terminal tasks — done or not-required. Past-due means
       // "should have been done, isn't" — a task the team decided didn't
       // need to happen shouldn't nag on the past-due list.
-      if (task.status === 'done' || task.status === 'not-required') return;
+      if (task.status === 'done' || task.status === 'not-required' || task.status === 'missed-deadline') return;
       // Must have a due date earlier than the active window start
       if (!task.dueDate || task.dueDate >= cutoff) return;
 
@@ -9095,7 +9099,7 @@ function collectSnapshotBuckets() {
       // v169: Skip terminal tasks (done + not-required) from all buckets —
       // they don't need attention. Previously only 'done' was skipped, so
       // not-required tasks lingered in the past-due bucket.
-      if (t.status === 'done' || t.status === 'not-required') return;
+      if (t.status === 'done' || t.status === 'not-required' || t.status === 'missed-deadline') return;
       // Mine-only filter
       if (filterToMine) {
         const isMine = (typeof isTaskMember === 'function')
@@ -9293,7 +9297,7 @@ function renderSnapshotRow(entry, sectionKey) {
     : `<span class="ssv-row-project-thumb ssv-row-project-thumb-text">${escapeHtml(initials)}</span>`;
 
   // Status pill
-  const statusLabels = { 'not-started': 'Not Started', 'in-progress': 'In Progress', 'blocked': 'Blocked', 'pending': 'Pending', 'done': 'Done', 'not-required': 'Not Required' };
+  const statusLabels = { 'not-started': 'Not Started', 'in-progress': 'In Progress', 'blocked': 'Blocked', 'pending': 'Pending', 'done': 'Done', 'not-required': 'Not Required', 'missed-deadline': 'Missed Deadline' };
   const statusPill = `<span class="ssv-row-status status-${t.status}">${statusLabels[t.status] || t.status}</span>`;
 
   // Due / countdown — humanized
@@ -9538,7 +9542,7 @@ function getMyTasksAcrossProjects(user) {
     if (p.archived) return; // exclude archived projects from cross-project task roll-ups
     (p.tasks || []).forEach(t => {
       // v172: not-required is terminal — never show on Today buckets
-      if (t.status === 'done' || t.status === 'not-required') return;
+      if (t.status === 'done' || t.status === 'not-required' || t.status === 'missed-deadline') return;
       const isMine = (typeof isTaskMember === 'function')
         ? isTaskMember(t, user)
         : ((t.assignee && t.assignee.toLowerCase() === userLower) || isTaskSupport(t, user));
@@ -9577,7 +9581,7 @@ function getMyUnackedTasksAcrossProjects(user) {
     if (p.archived) return; // exclude archived projects
     (p.tasks || []).forEach(t => {
       // v172: not-required is terminal — never surface as unack
-      if (t.status === 'done' || t.status === 'not-required') return;
+      if (t.status === 'done' || t.status === 'not-required' || t.status === 'missed-deadline') return;
       if (t.acknowledged) return;
       if (!t.assignee || t.assignee.toLowerCase() !== userLower) return;
       out.push({ project: p, task: t });
@@ -11232,6 +11236,14 @@ function _buildCompletionSideBadgeHtml(task) {
     const tip = dt ? `Marked Not Required on ${dt}` + (task.notRequiredBy ? ` by ${task.notRequiredBy}` : '') : 'Marked Not Required';
     return `<span class="not-required-badge" title="${escapeAttr(tip)}">⊘ N/A</span>`;
   }
+  // v173: Missed Deadline badge — rust color to signal missed window
+  // without the loud red of active-overdue. Same terminal treatment as
+  // Not Required (out of counts, out of past-due) but visually distinct.
+  if (task.status === 'missed-deadline') {
+    const dt = task.missedDeadlineAt ? new Date(task.missedDeadlineAt).toLocaleDateString('en-US', {month:'short',day:'numeric'}) : '';
+    const tip = dt ? `Marked Missed Deadline on ${dt}` + (task.missedDeadlineBy ? ` by ${task.missedDeadlineBy}` : '') : 'Marked Missed Deadline';
+    return `<span class="missed-deadline-badge" title="${escapeAttr(tip)}">✗ Missed</span>`;
+  }
   if (task.status !== 'done') return '';
   if (task.completedEarly && task.completedDaysBefore > 0) {
     const n = task.completedDaysBefore;
@@ -12578,7 +12590,7 @@ function renderProjectHoursRollup() {
   if (project.endDate) endDate = new Date(project.endDate + 'T23:59:59');
   else {
     project.tasks.forEach(t => {
-      if (t && t.dueDate && t.status !== 'done' && t.status !== 'not-required') {
+      if (t && t.dueDate && t.status !== 'done' && t.status !== 'not-required' && t.status !== 'missed-deadline') {
         const d = new Date(t.dueDate + 'T23:59:59');
         if (!endDate || d > endDate) endDate = d;
       }
@@ -13574,7 +13586,8 @@ function logTaskStatusChanged(project, task, oldStatus, newStatus) {
     'blocked': 'Blocked',
     'pending': 'Pending',
     'done': 'Complete',
-    'not-required': 'Not Required'
+    'not-required': 'Not Required',
+    'missed-deadline': 'Missed Deadline'
   };
   logActivity(project, {
     type: 'task',
@@ -14202,7 +14215,7 @@ function openTaskModal(defaultStatus='not-started', taskId=null) {
   // id string that doesn't match a known status), silently treat it as
   // openTaskModal(null, taskId). This makes cross-context openers (workload
   // drill-down, past-due modal, alerts) work regardless of arg positioning.
-  const KNOWN_STATUSES = ['not-started','in-progress','pending','blocked','done','not-required'];
+  const KNOWN_STATUSES = ['not-started','in-progress','pending','blocked','done','not-required','missed-deadline'];
   if (typeof defaultStatus === 'string' && !KNOWN_STATUSES.includes(defaultStatus) && taskId === null) {
     taskId = defaultStatus;
     defaultStatus = 'not-started';
@@ -16105,6 +16118,403 @@ function _buildTaskCopyForDuplicate(source, targetProject) {
 // v118: Duplicate the current task within the same project. Opens the new
 // task in the modal so the user can immediately assign it, adjust the date,
 // etc. Keeps work-defining fields, resets people/dates/status/history.
+// v174: In-task Reschedule — quick way to push this task's due date
+// forward without leaving the task modal.
+// v175: Full modal UX (was window.prompt) — live date preview, shortcut
+// buttons, custom +N business days OR specific date OR clear, plus a
+// reason picker that determines whether the reschedule counts as a slip.
+//   • "Reschedule Anchor Date" — the PLAN moved (design date pushed,
+//     subs got extra time, etc.). Adjusts dayOffset so the task stays
+//     aligned to its anchor. No accountability badge — this is a plan
+//     revision, not a slip.
+//   • "Push For Past Due" — the task got missed and is being pushed to
+//     a new date. Stamps rescheduledFromPastDue metadata so the v89
+//     red accountability badge fires everywhere the task appears.
+function rescheduleThisTask() {
+  if (!editingTaskId) {
+    alert('Save the task first, then reschedule it.');
+    return;
+  }
+  const project = state.projects.find(p => p.id === state.activeProjectId);
+  if (!project) return;
+  const t = project.tasks.find(x => x.id === editingTaskId);
+  if (!t) return;
+  _openRescheduleTaskModal(project, t);
+}
+
+// v175: Build + show the reschedule modal. Injects once, then reuses.
+function _openRescheduleTaskModal(project, task) {
+  const modalId = 'rescheduleTaskModal';
+  let m = document.getElementById(modalId);
+  if (!m) {
+    m = document.createElement('div');
+    m.id = modalId;
+    m.className = 'modal-backdrop';
+    m.style.display = 'none';
+    m.innerHTML = `
+      <div class="modal" style="max-width:640px;">
+        <div class="modal-header" style="display:flex; align-items:center; justify-content:space-between; padding:14px 18px; border-bottom:1px solid var(--border);">
+          <div style="font-family:'Barlow Condensed', sans-serif; font-size:20px; font-weight:700; letter-spacing:0.02em;">🔁 Reschedule Task</div>
+          <button class="btn btn-sm" onclick="_closeRescheduleTaskModal()">✕</button>
+        </div>
+        <div class="modal-body" id="rtmBody" style="padding:18px; max-height:70vh; overflow-y:auto;"></div>
+        <div class="modal-actions" style="display:flex; justify-content:flex-end; gap:8px; padding:12px 18px; border-top:1px solid var(--border);">
+          <button class="btn" onclick="_closeRescheduleTaskModal()">Cancel</button>
+          <button class="btn btn-primary" id="rtmConfirmBtn" onclick="_confirmRescheduleTaskModal()" style="background:#6b46c1; color:#fff; border-color:#6b46c1;">Confirm Reschedule</button>
+        </div>
+      </div>
+    `;
+    document.body.appendChild(m);
+    m.addEventListener('click', function(e) {
+      if (e.target === m) _closeRescheduleTaskModal();
+    });
+  }
+  // Cache the task ids on the modal so confirm can find them
+  m.dataset.projectId = project.id;
+  m.dataset.taskId = task.id;
+  _renderRescheduleTaskModalBody(project, task);
+  m.style.display = 'flex';
+}
+
+function _closeRescheduleTaskModal() {
+  const m = document.getElementById('rescheduleTaskModal');
+  if (m) m.style.display = 'none';
+}
+
+// Render the modal body with reason radios, shortcut buttons, custom
+// inputs, and a live preview panel.
+function _renderRescheduleTaskModalBody(project, task) {
+  const body = document.getElementById('rtmBody');
+  if (!body) return;
+  const currentDue = task.dueDate || '';
+  const currentLabel = currentDue ? (typeof formatDate === 'function' ? formatDate(currentDue) : currentDue) : '(no date set)';
+  const anchorLabel = (typeof _TASK_ANCHOR_LABELS === 'object' && _TASK_ANCHOR_LABELS[task.dateAnchor])
+    ? _TASK_ANCHOR_LABELS[task.dateAnchor].long
+    : (task.dateAnchor || 'Bid Start');
+  const currentOffset = (typeof task.dayOffset === 'number') ? task.dayOffset : 0;
+  // Detect if the task is past-due to pre-select the right reason
+  const isPastDue = currentDue && (typeof isTaskOverdue === 'function') && isTaskOverdue(task);
+  const defaultReason = isPastDue ? 'past-due' : 'anchor';
+
+  body.innerHTML = `
+    <div style="background:var(--surface-2); border-left:4px solid #6b46c1; padding:12px 14px; border-radius:6px; margin-bottom:16px;">
+      <div style="font-size:14px; font-weight:600; color:var(--text); margin-bottom:4px;">${escapeHtml(task.title)}</div>
+      <div style="font-size:12px; color:var(--text-dim); line-height:1.6;">
+        Current due: <strong style="color:var(--text);">${escapeHtml(currentLabel)}</strong>${isPastDue ? ' <span style="color:var(--red, #c8322b); font-weight:700;">· PAST DUE</span>' : ''}<br>
+        Anchor: <strong style="color:var(--text);">${escapeHtml(anchorLabel)} + ${currentOffset} day${currentOffset === 1 ? '' : 's'}</strong>
+      </div>
+    </div>
+
+    <div style="margin-bottom:16px;">
+      <div style="font-size:11px; text-transform:uppercase; color:var(--text-dim); font-weight:700; letter-spacing:0.5px; margin-bottom:8px;">Reason for Reschedule</div>
+      <div style="display:grid; grid-template-columns:1fr 1fr; gap:10px;">
+        <label class="rtm-reason-tile" data-reason="anchor" style="cursor:pointer; padding:10px 12px; border:2px solid var(--border); border-radius:6px; background:var(--surface); display:block;">
+          <div style="display:flex; align-items:center; gap:8px;">
+            <input type="radio" name="rtmReason" value="anchor" ${defaultReason === 'anchor' ? 'checked' : ''} onchange="_updateRescheduleModalPreview()">
+            <span style="font-weight:700; color:var(--text);">📐 Reschedule Anchor Date</span>
+          </div>
+          <div style="font-size:11px; color:var(--text-dim); margin-top:4px; margin-left:24px;">Plan moved — updates dayOffset so task stays aligned to its anchor. <strong>No slip badge.</strong></div>
+        </label>
+        <label class="rtm-reason-tile" data-reason="past-due" style="cursor:pointer; padding:10px 12px; border:2px solid var(--border); border-radius:6px; background:var(--surface); display:block;">
+          <div style="display:flex; align-items:center; gap:8px;">
+            <input type="radio" name="rtmReason" value="past-due" ${defaultReason === 'past-due' ? 'checked' : ''} onchange="_updateRescheduleModalPreview()">
+            <span style="font-weight:700; color:var(--red, #c8322b);">🔁 Push For Past Due</span>
+          </div>
+          <div style="font-size:11px; color:var(--text-dim); margin-top:4px; margin-left:24px;">Task slipped and needs to be pushed. <strong>Stamps red accountability badge (v89).</strong></div>
+        </label>
+      </div>
+    </div>
+
+    <div style="margin-bottom:16px;">
+      <div style="font-size:11px; text-transform:uppercase; color:var(--text-dim); font-weight:700; letter-spacing:0.5px; margin-bottom:8px;">Quick Push (from current due date)</div>
+      <div style="display:flex; gap:6px; flex-wrap:wrap;">
+        <button type="button" class="btn btn-sm rtm-shortcut" data-days="1" onclick="_selectRescheduleShortcut(1)">+1 day</button>
+        <button type="button" class="btn btn-sm rtm-shortcut" data-days="2" onclick="_selectRescheduleShortcut(2)">+2 days</button>
+        <button type="button" class="btn btn-sm rtm-shortcut" data-days="3" onclick="_selectRescheduleShortcut(3)">+3 days</button>
+        <button type="button" class="btn btn-sm rtm-shortcut" data-days="5" onclick="_selectRescheduleShortcut(5)">+5 days</button>
+        <button type="button" class="btn btn-sm rtm-shortcut" data-days="7" onclick="_selectRescheduleShortcut(7)">+1 week</button>
+        <button type="button" class="btn btn-sm rtm-shortcut" data-days="14" onclick="_selectRescheduleShortcut(14)">+2 weeks</button>
+      </div>
+      <div style="display:flex; align-items:center; gap:8px; margin-top:10px;">
+        <label style="font-size:12px; color:var(--text-dim);">Custom:</label>
+        <input type="number" id="rtmCustomDays" min="1" max="365" placeholder="N" style="width:70px; padding:4px 8px; border:1px solid var(--border); border-radius:4px; background:var(--surface);" oninput="_selectRescheduleCustomDays()">
+        <span style="font-size:12px; color:var(--text-dim);">business days</span>
+      </div>
+    </div>
+
+    <div style="margin-bottom:16px;">
+      <div style="font-size:11px; text-transform:uppercase; color:var(--text-dim); font-weight:700; letter-spacing:0.5px; margin-bottom:8px;">OR pick a specific date</div>
+      <input type="date" id="rtmSpecificDate" style="padding:6px 10px; border:1px solid var(--border); border-radius:4px; background:var(--surface);" onchange="_selectRescheduleSpecificDate()">
+    </div>
+
+    <div style="margin-bottom:16px;">
+      <label style="display:inline-flex; align-items:center; gap:8px; font-size:13px; color:var(--text); cursor:pointer;">
+        <input type="checkbox" id="rtmClearDate" onchange="_selectRescheduleClear()">
+        Clear due date (remove entirely)
+      </label>
+    </div>
+
+    <div id="rtmPreview" style="background:linear-gradient(90deg, rgba(107, 70, 193, 0.08), rgba(107, 70, 193, 0.04)); border:1px solid rgba(107, 70, 193, 0.3); border-radius:8px; padding:14px; min-height:70px;">
+      <div style="font-size:11px; text-transform:uppercase; color:#6b46c1; font-weight:700; letter-spacing:0.5px; margin-bottom:6px;">Preview</div>
+      <div id="rtmPreviewBody" style="font-size:13px; color:var(--text-dim);">Pick a shortcut, custom days, or a specific date above.</div>
+    </div>
+  `;
+  // Attach state — stored on the modal element for the confirm handler
+  const m = document.getElementById('rescheduleTaskModal');
+  m.dataset.pendingNewDue = '';
+  m.dataset.pendingMode = ''; // 'shortcut' | 'specific' | 'clear'
+  _updateRescheduleModalPreview();
+}
+
+// Called when a shortcut button is clicked. Also clears any specific-date
+// or clear-checkbox selection so the modes are mutually exclusive.
+function _selectRescheduleShortcut(days) {
+  const m = document.getElementById('rescheduleTaskModal');
+  const task = _rtmGetTask();
+  if (!task) return;
+  const base = task.dueDate || (typeof formatDateForInput === 'function' ? formatDateForInput(new Date()) : '');
+  if (!base) return;
+  const shifted = (typeof addBusinessDays === 'function') ? addBusinessDays(base, days) : null;
+  const newDue = (shifted && shifted.date) ? shifted.date : '';
+  m.dataset.pendingNewDue = newDue;
+  m.dataset.pendingMode = 'shortcut';
+  m.dataset.pendingShortcut = String(days);
+  // Clear custom / specific / clear inputs
+  const custom = document.getElementById('rtmCustomDays');
+  if (custom) custom.value = '';
+  const specific = document.getElementById('rtmSpecificDate');
+  if (specific) specific.value = '';
+  const clear = document.getElementById('rtmClearDate');
+  if (clear) clear.checked = false;
+  // Highlight the picked shortcut button
+  document.querySelectorAll('.rtm-shortcut').forEach(b => {
+    b.style.background = (String(days) === b.dataset.days) ? '#6b46c1' : '';
+    b.style.color = (String(days) === b.dataset.days) ? '#fff' : '';
+    b.style.borderColor = (String(days) === b.dataset.days) ? '#6b46c1' : '';
+  });
+  _updateRescheduleModalPreview();
+}
+
+function _selectRescheduleCustomDays() {
+  const m = document.getElementById('rescheduleTaskModal');
+  const task = _rtmGetTask();
+  if (!task) return;
+  const custom = document.getElementById('rtmCustomDays');
+  const n = parseInt(custom && custom.value, 10);
+  if (!n || n < 1) {
+    m.dataset.pendingNewDue = '';
+    m.dataset.pendingMode = '';
+    _updateRescheduleModalPreview();
+    return;
+  }
+  const base = task.dueDate || (typeof formatDateForInput === 'function' ? formatDateForInput(new Date()) : '');
+  const shifted = (typeof addBusinessDays === 'function') ? addBusinessDays(base, n) : null;
+  m.dataset.pendingNewDue = (shifted && shifted.date) ? shifted.date : '';
+  m.dataset.pendingMode = 'custom';
+  m.dataset.pendingShortcut = String(n);
+  // Clear the shortcut highlights + specific + clear
+  document.querySelectorAll('.rtm-shortcut').forEach(b => {
+    b.style.background = '';
+    b.style.color = '';
+    b.style.borderColor = '';
+  });
+  const specific = document.getElementById('rtmSpecificDate');
+  if (specific) specific.value = '';
+  const clear = document.getElementById('rtmClearDate');
+  if (clear) clear.checked = false;
+  _updateRescheduleModalPreview();
+}
+
+function _selectRescheduleSpecificDate() {
+  const m = document.getElementById('rescheduleTaskModal');
+  const specific = document.getElementById('rtmSpecificDate');
+  if (!specific || !specific.value) return;
+  m.dataset.pendingNewDue = specific.value;
+  m.dataset.pendingMode = 'specific';
+  // Clear other inputs
+  document.querySelectorAll('.rtm-shortcut').forEach(b => {
+    b.style.background = '';
+    b.style.color = '';
+    b.style.borderColor = '';
+  });
+  const custom = document.getElementById('rtmCustomDays');
+  if (custom) custom.value = '';
+  const clear = document.getElementById('rtmClearDate');
+  if (clear) clear.checked = false;
+  _updateRescheduleModalPreview();
+}
+
+function _selectRescheduleClear() {
+  const m = document.getElementById('rescheduleTaskModal');
+  const clear = document.getElementById('rtmClearDate');
+  if (clear && clear.checked) {
+    m.dataset.pendingNewDue = '';
+    m.dataset.pendingMode = 'clear';
+    // Clear other inputs
+    document.querySelectorAll('.rtm-shortcut').forEach(b => {
+      b.style.background = '';
+      b.style.color = '';
+      b.style.borderColor = '';
+    });
+    const custom = document.getElementById('rtmCustomDays');
+    if (custom) custom.value = '';
+    const specific = document.getElementById('rtmSpecificDate');
+    if (specific) specific.value = '';
+  } else {
+    m.dataset.pendingMode = '';
+  }
+  _updateRescheduleModalPreview();
+}
+
+function _rtmGetTask() {
+  const m = document.getElementById('rescheduleTaskModal');
+  if (!m) return null;
+  const proj = state.projects.find(p => p.id === m.dataset.projectId);
+  return proj ? (proj.tasks || []).find(x => x.id === m.dataset.taskId) : null;
+}
+
+// Compute + render the live preview panel content whenever any input
+// changes. Also updates the confirm button label with the impact.
+function _updateRescheduleModalPreview() {
+  const m = document.getElementById('rescheduleTaskModal');
+  if (!m) return;
+  const previewBody = document.getElementById('rtmPreviewBody');
+  const confirmBtn = document.getElementById('rtmConfirmBtn');
+  const task = _rtmGetTask();
+  if (!task || !previewBody) return;
+  const mode = m.dataset.pendingMode || '';
+  const newDue = m.dataset.pendingNewDue || '';
+  const reasonEl = document.querySelector('input[name="rtmReason"]:checked');
+  const reason = reasonEl ? reasonEl.value : 'anchor';
+  const currentDue = task.dueDate || '';
+  const currentLabel = currentDue ? (typeof formatDate === 'function' ? formatDate(currentDue) : currentDue) : '(none)';
+  // No selection yet
+  if (!mode) {
+    previewBody.innerHTML = '<span style="color:var(--text-dim);">Pick a shortcut, custom days, or a specific date above.</span>';
+    if (confirmBtn) { confirmBtn.disabled = true; confirmBtn.style.opacity = '0.5'; confirmBtn.style.cursor = 'not-allowed'; }
+    return;
+  }
+  if (mode === 'clear') {
+    previewBody.innerHTML = `<div><strong>Due date will be cleared</strong> (was ${escapeHtml(currentLabel)}).</div>
+      <div style="margin-top:6px; font-size:12px; color:var(--text-dim);">Task will show without a scheduled date until you set one again.</div>`;
+    if (confirmBtn) { confirmBtn.disabled = false; confirmBtn.style.opacity = '1'; confirmBtn.style.cursor = 'pointer'; }
+    return;
+  }
+  if (!newDue) {
+    previewBody.innerHTML = '<span style="color:var(--red, #c8322b);">Invalid date. Try again.</span>';
+    if (confirmBtn) { confirmBtn.disabled = true; confirmBtn.style.opacity = '0.5'; confirmBtn.style.cursor = 'not-allowed'; }
+    return;
+  }
+  const newLabel = typeof formatDate === 'function' ? formatDate(newDue) : newDue;
+  // Compute days delta from current due (or from today if no current)
+  let deltaLabel = '';
+  if (currentDue) {
+    const dCurrent = new Date(currentDue + 'T00:00:00');
+    const dNew = new Date(newDue + 'T00:00:00');
+    const diffDays = Math.round((dNew - dCurrent) / 86400000);
+    if (diffDays > 0) deltaLabel = ` (+${diffDays} calendar day${diffDays === 1 ? '' : 's'})`;
+    else if (diffDays < 0) deltaLabel = ` (${diffDays} days earlier)`;
+  }
+  const badgeCue = reason === 'past-due'
+    ? '<span style="color:var(--red, #c8322b); font-weight:700;">🔁 Slip badge will be stamped</span>'
+    : '<span style="color:var(--text-dim);">📐 dayOffset will be updated (no slip badge)</span>';
+  // If anchor mode, also show what the new dayOffset will be
+  let anchorNote = '';
+  if (reason === 'anchor' && typeof resolveTaskAnchorDate === 'function') {
+    const proj = state.projects.find(p => p.id === m.dataset.projectId);
+    const anchorDate = proj ? resolveTaskAnchorDate(proj, task) : null;
+    if (anchorDate) {
+      const dAnchor = new Date(anchorDate + 'T00:00:00');
+      const dNew = new Date(newDue + 'T00:00:00');
+      const bizDays = _businessDaysBetween(dAnchor, dNew);
+      anchorNote = `<div style="margin-top:4px; font-size:11px; color:var(--text-dim);">New dayOffset: <strong style="color:var(--text);">${bizDays}</strong> business days from ${escapeHtml((typeof _TASK_ANCHOR_LABELS === 'object' && _TASK_ANCHOR_LABELS[task.dateAnchor]) ? _TASK_ANCHOR_LABELS[task.dateAnchor].long : 'anchor')} (${escapeHtml(typeof formatDate === 'function' ? formatDate(anchorDate) : anchorDate)})</div>`;
+    } else {
+      anchorNote = '<div style="margin-top:4px; font-size:11px; color:var(--red, #c8322b);">Anchor date not set on project — dayOffset can\'t be recomputed. Set the anchor date via Edit Project.</div>';
+    }
+  }
+  previewBody.innerHTML = `
+    <div style="font-size:13px; color:var(--text);">
+      <strong>${escapeHtml(currentLabel)}</strong> → <strong style="color:#6b46c1;">${escapeHtml(newLabel)}</strong>${deltaLabel}
+    </div>
+    <div style="margin-top:6px; font-size:12px;">${badgeCue}</div>
+    ${anchorNote}
+  `;
+  if (confirmBtn) { confirmBtn.disabled = false; confirmBtn.style.opacity = '1'; confirmBtn.style.cursor = 'pointer'; }
+}
+
+// Business days between two Date objects (positive if b is after a).
+function _businessDaysBetween(a, b) {
+  if (!a || !b) return 0;
+  const start = new Date(Math.min(a.getTime(), b.getTime()));
+  const end = new Date(Math.max(a.getTime(), b.getTime()));
+  const sign = b.getTime() >= a.getTime() ? 1 : -1;
+  let days = 0;
+  const cur = new Date(start.getTime());
+  while (cur < end) {
+    cur.setDate(cur.getDate() + 1);
+    const dow = cur.getDay();
+    if (dow !== 0 && dow !== 6) days++;
+  }
+  return days * sign;
+}
+
+// Confirm the reschedule: apply the pending change to the task, stamp
+// the appropriate metadata based on reason, refresh UI.
+function _confirmRescheduleTaskModal() {
+  const m = document.getElementById('rescheduleTaskModal');
+  if (!m) return;
+  const task = _rtmGetTask();
+  if (!task) return;
+  const project = state.projects.find(p => p.id === m.dataset.projectId);
+  if (!project) return;
+  const mode = m.dataset.pendingMode || '';
+  const newDue = m.dataset.pendingNewDue || '';
+  const reasonEl = document.querySelector('input[name="rtmReason"]:checked');
+  const reason = reasonEl ? reasonEl.value : 'anchor';
+  if (!mode) return; // nothing selected
+  const oldDue = task.dueDate || '';
+  // Apply
+  task.dueDate = (mode === 'clear') ? '' : newDue;
+  task.lastEditedAt = Date.now();
+  task.lastEditedBy = (typeof getCurrentUser === 'function' && getCurrentUser()) || '';
+  if (reason === 'anchor' && mode !== 'clear' && newDue && typeof resolveTaskAnchorDate === 'function') {
+    // Update dayOffset so task stays aligned to its anchor
+    const anchorDate = resolveTaskAnchorDate(project, task);
+    if (anchorDate) {
+      const dAnchor = new Date(anchorDate + 'T00:00:00');
+      const dNew = new Date(newDue + 'T00:00:00');
+      task.dayOffset = _businessDaysBetween(dAnchor, dNew);
+    }
+  } else if (reason === 'past-due' && oldDue && newDue) {
+    // Stamp the v89 accountability badge
+    if (!Array.isArray(task.rescheduledFromPastDue)) task.rescheduledFromPastDue = [];
+    task.rescheduledFromPastDue.push(oldDue);
+    task.rescheduledFromPastDueMeta = task.rescheduledFromPastDueMeta || {};
+    task.rescheduledFromPastDueMeta.source = 'in-task-reschedule';
+    task.rescheduledFromPastDueMeta.when = Date.now();
+    task.rescheduledFromPastDueMeta.rescheduledBy = (typeof getCurrentUser === 'function' && getCurrentUser()) || '';
+    task.rescheduledFromPastDueMeta.originalDueDate = task.rescheduledFromPastDueMeta.originalDueDate || oldDue;
+    task.rescheduledFromPastDueMeta.newDueDate = newDue;
+    task.rescheduledFromPastDueMeta.pushCount = (task.rescheduledFromPastDueMeta.pushCount || 0) + 1;
+  }
+  if (task._recurrenceSpawned) task._recurrenceSpawned = false;
+  saveState();
+  const dueEl = document.getElementById('taskDueDate');
+  if (dueEl) dueEl.value = task.dueDate;
+  const offsetEl = document.getElementById('taskDayOffset');
+  if (offsetEl && reason === 'anchor') offsetEl.value = task.dayOffset;
+  if (typeof refreshHeaderStatusPill === 'function') refreshHeaderStatusPill();
+  if (typeof render === 'function') render();
+  _closeRescheduleTaskModal();
+  if (typeof showToast === 'function') {
+    const suffix = reason === 'past-due' ? ' · slip badge stamped' : ' · anchor offset updated';
+    const msg = task.dueDate
+      ? '🔁 Rescheduled "' + task.title + '" → ' + (typeof formatDate === 'function' ? formatDate(task.dueDate) : task.dueDate) + suffix
+      : 'Cleared due date on "' + task.title + '"';
+    showToast(msg, 'info');
+  }
+}
+
 function duplicateTask() {
   if (!editingTaskId) {
     alert('Save the task first, then duplicate it.');
@@ -16958,6 +17368,17 @@ function saveTask() {
       existing.notRequiredBy = '';
       if (newStatus !== 'done') existing.completedAt = null;
     }
+    // v173: Missed Deadline transitions
+    if (newStatus === 'missed-deadline' && oldStatus !== 'missed-deadline') {
+      existing.completedAt = Date.now();
+      existing.missedDeadlineAt = Date.now();
+      existing.missedDeadlineBy = (typeof getCurrentUser === 'function' && getCurrentUser()) || '';
+    }
+    if (oldStatus === 'missed-deadline' && newStatus !== 'missed-deadline') {
+      existing.missedDeadlineAt = null;
+      existing.missedDeadlineBy = '';
+      if (newStatus !== 'done') existing.completedAt = null;
+    }
     if (oldStatus === 'done' && newStatus !== 'done') {
       // Reverting an early-completion clears its flags so the badge
       // doesn't linger on a task that's now open again.
@@ -17225,7 +17646,8 @@ function _openCalStatusMenu(taskId, evt) {
     { id: 'blocked',     label: 'Blocked / RFI', icon: '⚠', color: 'var(--red)' },
     { id: 'pending',     label: 'Pending',     icon: '⏳', color: 'var(--purple)' },
     { id: 'done',        label: 'Complete',    icon: '✓', color: 'var(--green)' },
-    { id: 'not-required', label: 'Not Required', icon: '⊘', color: 'var(--text-dim)' }
+    { id: 'not-required', label: 'Not Required', icon: '⊘', color: 'var(--text-dim)' },
+    { id: 'missed-deadline', label: 'Missed Deadline', icon: '✗', color: '#a44029' }
   ];
 
   const menuHtml = `
@@ -17278,15 +17700,16 @@ function _pickCalStatus(taskId, newStatus) {
   }
 }
 
-// v158: Terminal-status helper — treats both 'done' and 'not-required'
-// as terminal for workload/hours/open-count purposes. Not Required is a
-// completion variant (task shouldn't have been on the plan or answered
-// itself), so it should behave like Done for capacity math and open-task
-// lists. Callers that care about the DISTINCTION (reporting, visuals,
-// filters) still key on task.status directly.
+// v158: Terminal-status helper — treats 'done', 'not-required', and
+// 'missed-deadline' as terminal for workload/hours/open-count purposes.
+// Not Required = task shouldn't have happened. Missed Deadline (v173) =
+// task should have happened but the window has closed. Both are terminal
+// like Done for capacity math + past-due suppression. Callers that care
+// about the DISTINCTION (reporting, visuals, filters) still key on
+// task.status directly.
 function isTaskTerminal(t) {
   if (!t) return false;
-  return t.status === 'done' || t.status === 'not-required';
+  return t.status === 'done' || t.status === 'not-required' || t.status === 'missed-deadline' || t.status === 'missed-deadline';
 }
 
 function _applyEarlyCompletionFlags(t) {
@@ -17355,6 +17778,19 @@ function updateTaskStatus(taskId, status) {
     // Reverting away from Not Required clears its metadata
     t.notRequiredAt = null;
     t.notRequiredBy = '';
+    if (status !== 'done') t.completedAt = null;
+  }
+  // v173: Missed Deadline — task should have happened but the window
+  // closed. Behaves as terminal (like Not Required) — off capacity clock,
+  // out of past-due, off open counts. Separate metadata for reporting.
+  if (status === 'missed-deadline' && oldStatus !== 'missed-deadline') {
+    t.completedAt = Date.now();
+    t.missedDeadlineAt = Date.now();
+    t.missedDeadlineBy = (typeof getCurrentUser === 'function' && getCurrentUser()) || '';
+  }
+  if (oldStatus === 'missed-deadline' && status !== 'missed-deadline') {
+    t.missedDeadlineAt = null;
+    t.missedDeadlineBy = '';
     if (status !== 'done') t.completedAt = null;
   }
   // ACTIVITY LOG: capture the status change
@@ -18376,6 +18812,23 @@ function _notifyTaskStatusChange(project, task, oldStatus, newStatus, actorName)
       });
     });
   }
+  // v173: Missed Deadline → separate notification type. Neutral tone —
+  // the deadline is missed, no need for celebration or shame; just a
+  // factual record for reporting.
+  if (newStatus === 'missed-deadline' && oldStatus !== 'missed-deadline') {
+    associated.forEach(r => {
+      _emitNotification({
+        type: 'task-missed-deadline',
+        taskId: task.id,
+        projectId: project.id,
+        actorName: actor,
+        recipientName: r,
+        message: `✗ ${actor} marked "${task.title}" as Missed Deadline`,
+        taskTitle: task.title,
+        projectName: project.name
+      });
+    });
+  }
   // Un-doing a complete → notify everyone associated
   if (oldStatus === 'done' && newStatus !== 'done') {
     associated.forEach(r => {
@@ -18751,6 +19204,10 @@ function _notificationSeverity(type) {
       return { severity: 'success', title: '🏁 AHEAD OF SCHEDULE' };
     case 'task-not-required':
       return { severity: 'info', title: 'SCOPE PRUNED' };
+    // v173: Missed Deadline — neutral warning tone. Not celebratory, but
+    // not alarming either since the window has already closed.
+    case 'task-missed-deadline':
+      return { severity: 'warning', title: 'DEADLINE MISSED' };
     // v108: task-assigned + task-reassigned get their own attention-grabbing
     // severity ('assigned', SBG gold accent) so the signed-in user clearly
     // catches when work has landed on their plate. Titles are more explicit.
@@ -19206,6 +19663,8 @@ function _notificationIcon(type) {
     // toast + bell entry visually distinguish them from routine completes.
     case 'task-completed-early': return '🏁';
     case 'task-not-required':   return '⊘';
+    // v173: Missed Deadline icon — ✗ signals the window closed.
+    case 'task-missed-deadline': return '✗';
     case 'task-reopened':       return '↩️';
     case 'task-in-progress':    return '🚧';
     case 'task-blocked':        return '🚫';
@@ -20954,7 +21413,10 @@ function getDefaultAdvancements() {
     advImplemented('quality-of-life', 'Completed Early Log — dedicated sidebar view for team recognition on pull-forward wins', "New sidebar page (🏁 next to Training Log) that surfaces every task pulled forward across all projects. Top strip: team totals (all-time / this month / YTD / total days pulled forward). Middle: per-person leaderboard cards ranked by count, with rank medals (🥇🥈🥉) for the top three, showing each person's total early completions + total days early + average + best single pull. Bottom: detailed task list with filters (window: all / week / month / quarter / year; person: everyone or specific; sort: most days early / most recent / oldest first). Every row shows the task title, project name, workstream, lead(s), due date, completion date, and the green early badge. Click any row to jump straight to that task's modal. Copy Summary button exports a plain-text leaderboard for reporting.", "Shipped Jul 27, 2026 in response to: 'I want a completed early log.' Follows the same navigation + rendering pattern as the Training Log (v119) so the app stays consistent. Ten pieces. (1) State slots: state.earlyLogView (bool), state.earlyLogWindowFilter (all/week/month/quarter/year, default all), state.earlyLogPersonFilter (name or all, default all), state.earlyLogSort (daysDesc/dateDesc/dateAsc, default daysDesc). All initialized in loadState with type guards. (2) Sidebar button: #earlyLogSidebarBtn inserted right after #trainingLogSidebarBtn. 🏁 icon, 'Completed Early' label, 'Tasks pulled forward · leaderboard' subtitle. onclick fires openEarlyLogView. (3) HTML view container: #earlyLogView reuses the tlv-* CSS classes (header, subtitle, actions, stat-strip, body, section, filters, person-grid, task-list) so we get consistent visual weight with Training Log for free. Title styled in the same green (#2e7d52) as the early-completion badge. Three action buttons: Copy Summary / Refresh / Close. (4) openEarlyLogView / exitEarlyLogView: mirror the Training Log open/exit shape. openEarlyLogView sets state.earlyLogView=true, resets every other top-level view flag (homeView, statusSnapshotView, projectTimelineView, teamWorkloadView, openSlotsView, tiView, trainingLogView, projectsListView), hides the sticky countdown bar, saves state, renders. exitEarlyLogView flips the flag off and re-renders. (5) All existing openXView functions batch-updated to reset state.earlyLogView=false alongside the existing state.trainingLogView=false reset — sed pass touched 28 sites so no matter how you navigate away from Early Log it clears cleanly. (6) Router branch: inserted after the Training Log branch in the render dispatcher. Same shape (hide all other view elements, unhide earlyLogView, run renderEarlyLogView, applySidebarState, return). Follow-through hides earlyLogView when the flag is off so subsequent views don't leak into it. (7) _collectEarlyCompletions helper: walks every non-archived project's tasks, filters status==='done' && completedEarly && completedDaysBefore>0, returns items with task, project, leads (via getTaskLeads with fallback), daysEarly, completedAt, dueDate — so downstream rendering doesn't have to re-derive. (8) _buildEarlyPersonSummary aggregates per-person stats — count, totalDaysEarly, avgDaysEarly, best. Each lead on a task gets credited for the pull-forward (co-leads share the win). (9) _filterEarlyCompletions applies the active window + person filters. Windows use standard boundaries: week=last 7 days, month=1st of current month, quarter=first day of current quarter, year=Jan 1. Person filter matches against the leads array. (10) renderEarlyLogView orchestrates it all — populates the four stat tiles at the top (Total Pull-Forwards / This Month / YTD / Total Days Pulled Forward in gold), builds the per-person leaderboard cards sorted by count then total days (rank medals for top 3, avatar with brand color, count as subtitle, three stats per card: Total Days Early / Avg / Best Pull), refreshes the person filter dropdown to include everyone with an early completion, sorts the detail list by the active sort mode, renders each row with title + project + workstream + lead + due date + completion date + green badge. Click any row → jumpToTaskFromEarlyLog(projectId, taskId) exits the Early Log view, switches active project, and pops the task modal. Copy Summary generates a plain-text export with team totals, leaderboard (with rank emojis), and the most recent 25 filtered rows — copies to clipboard with prompt fallback for browsers where clipboard API is blocked. Full diagnostic run stayed green (68/68 static + 19/19 live). JS syntax clean. Backward-compatible: existing done tasks that were completed before v158 don't appear (they have completedEarly=false by default from the loadState backfill), so the log starts fresh with the wins that were tracked from v158 onward. Deferred: Team Insights aggregation tile that mirrors this data in the KPI dashboard, project-scoped early-completion counter on the Home page, and an 'export as CSV' variant of the summary for month-end reporting."),
     advImplemented('quality-of-life', 'New Not Required tab on Project Alerts — recent scope-drops stay visible without cluttering urgency indicators', "Users needed a way to keep Not Required tasks in view for team review — quality checks, coaching conversations, audit trails — without having those tasks nag as past-due (fixed in v169). This ship adds a new muted-grey ⊘ Not Required tab to the Project Alerts strip. Only appears when there's at least one task marked Not Required in the last 30 days. Tab and panel use grey palette instead of red/gold urgency colors — visually recedes so it's clearly informational, not action-required. Same click-through-to-task-modal behavior as every other alert tab. Available in both the Project scope and My scope strips.", "Shipped Aug 1, 2026 in response to: 'I would also like a project alerts for Not Required so they still maintain some visibility if needed.' Six pieces. (1) getTasksByAlertTier gained a 'not-required' tier branch: filters project.tasks for status === 'not-required' AND notRequiredAt within the last 30 days (30 * 24 * 60 * 60 * 1000 ms cutoff). Legacy not-required tasks that pre-date v158's notRequiredAt stamp (no timestamp = 0) are included anyway so nothing's silently hidden. Recent-window keeps the tab from growing unbounded — a team doing weekly scope reviews will see the last month of drops without every historical skip. (2) Tier populated in the alerts strip builder: const notRequired = getTasksByAlertTier(project, 'not-required', scope). (3) New tab button in the tabs.push sequence, placed after unacknowledged since it's informational not urgent: '⊘ Not Required <count>' with tooltip 'Tasks marked Not Required in the last 30 days — visible for team review, no action needed'. Only rendered when notRequired.length > 0 (empty tab suppression). (4) Titles map entry: 'not-required': '⊘ Not Required — Scope-Dropped Tasks (Last 30 Days)'. (5) Tier map (used by filterTasksByAlertTier when dispatching to getTasksByAlertTier) got 'not-required': 'not-required' — added to BOTH the project-scope AND my-scope maps via Python replace. (6) CSS for .alert-tab.tab-notrequired (muted grey background, greyer border, dark-grey text — no red / gold urgency signals) and .alert-panel.panel-not-required (grey border, grey title, 0.85 opacity on items so scope-dropped work visually recedes). Full dark-mode variants included. Manual JS syntax check passed. All alert-tab conventions (scope='my' vs 'project', empty-tab suppression, active-state class, escapeHtml on user-facing text) preserved."),
     advImplemented('high-impact', 'New Sub Bids Due (Trade Partners) anchor + post-preload warning for tasks with unresolved anchor dates', "Bundle covering both parts of the request. (1) New fifth date anchor type — 'sub-bids-due' — with a new project field project.subBidsDueDate. Task authors can now anchor a task offset to when SBG's subs are expected to have their pricing in (upstream of Bid Day, common trigger for scope-leveling + estimating tasks). New SB button in the Edit Task modal anchor toggle and template editor row, colored teal (#2e8b8b) to distinguish from S/B/P/R. Reanchor pipeline updated so editing the Sub Bids Due date in the Project modal triggers task recomputation the same way editing other anchor dates does. (2) Post-preload warning: when a template loads into a project and one or more tasks are anchored to a date that isn't set on the project (Pre-Bid, RFI Due, Sub Bids Due, or Bid Day), a deferred alert 400ms after render tells the user exactly how many tasks are affected per anchor type and how to fix it — the silent failure that had users reporting 'pre-bid tasks aren't anchoring' now surfaces itself as an actionable message.", "Shipped Aug 1, 2026 in response to: 'task being loaded that anchor to Prebid are not anchoring, also I would like an additional anchor from Sub Bids Due from Trade Partners'. Two-part diagnosis: (a) plumbing for the pre-bid anchor was correct all along — resolveTaskAnchorDate reads project.prebidDate, reanchorProjectTaskDates walks each task's own anchor, saveProject reanchors when prebidDate changes. What was happening: template preload silently produced tasks with dueDate='' when project.prebidDate was empty at preload time. Task modal shows a per-task warning when opened, but nothing at the project level ever told the user. Fixed with a project-level post-preload summary alert. (b) User's ask for a new anchor type is a clean additive schema change. Twelve pieces. (1) _TASK_ANCHOR_LABELS table (v82) got a fifth entry: sub-bids-due -> {short:'Sub Bids', long:'Sub Bids Due (Trade Ptr)', dateField:'subBidsDueDate', warnLabel:'Sub Bids Due Date'}. This table drives label text, hint text, calc-badge format, and warning messages across the app. (2) resolveTaskAnchorDate got the fifth branch — reads (project.subBidsDueDate || '').trim() || null. Returns null when the anchor date isn't set so the UI's warning path fires per usual. (3) Load-time backfill — if (typeof p.subBidsDueDate === 'undefined') p.subBidsDueDate = ''. Runs on every state load next to prebidDate/rfiDueDate backfills. (4) Validation lists — batch sed replaced all 14 occurrences of ['bid-start','bid-day','pre-bid','rfi-due'] with the 5-element version including 'sub-bids-due'. Covers task backfill validators, template-task validators, and the _addTemplateTasksToProject anchor-picker. Unrecognized values still default to 'bid-start' for backward compat. (5) _addTemplateTasksToProject anchor picker — new else-if branch reads project.subBidsDueDate. (6) Project modal form — new form-row with #projSubBidsDueDate date input and hint text 'The date SBG's subs are expected to have pricing in. Tasks can anchor to this.' Placed after the prebid/rfi row inside the same data-bidding-only container. (7) openProjectModal loads existing value into the new input; new-project init falls through to empty string by default. (8) saveProject reads newSubBidsDueDate from the input, includes it in the data object passed to Object.assign(p, data). (9) Reanchor detection extended: oldSubBidsDueDate snapshot before Object.assign, subBidsChanged = oldSubBidsDueDate !== newSubBidsDueDate, subBidsChanged added to the trigger condition. When it fires, the existing reanchorProjectTaskDates walk correctly resolves via task.dateAnchor which now includes sub-bids-due. (10) Task modal anchor toggle — new button 'SB' with data-anchor='sub-bids-due' and title 'Anchor offset from Sub Bids Due date (from Trade Partners)'. CSS active state background #2e8b8b (teal) matches template editor button. (11) Template editor row — new SB button in the mtt-anchor-toggle, active-state check inspects t.dateAnchor === 'sub-bids-due', onClick calls setMasterTaskAnchor(index, 'sub-bids-due'). Same teal accent. (12) Post-preload warning — new try/catch block at the end of _addTemplateTasksToProject that walks the just-created tasks, counts any with empty dueDate AND typeof dayOffset === 'number' (meaning it SHOULD have computed one), buckets by anchor type. For each anchor type where count > 0 AND the corresponding project field is empty, adds a human-readable line to a missingParts array. If missingParts is non-empty, a setTimeout(400ms) alert fires: '⚠ N tasks loaded without a computed due date: • 3 anchored to Pre-Bid Walk Date • 2 anchored to Sub Bids Due Date. Edit the project to set the missing anchor date(s) — the tasks will auto-reanchor and pick up their due dates.' Deferred so it doesn't block the save/render pipeline. Wrapped in try/catch so any edge-case error can't kill state persistence. Follow-up ideas: (a) also fire this warning during JSON merge import so users notice when someone else's tasks come in with anchors we can't resolve, (b) inline 'Fix now' button on the alert that opens the project modal, (c) anchor-warning badge on the task card itself for tasks with unresolved anchors."),
-    advImplemented('bugfix', 'Not Required truly terminal EVERYWHERE — Today module, all alert tiers, all counters', "v169 fixed the low-level helpers (isTaskOverdue / isTaskDueImminent / isTaskDueSoon) but multiple higher-level detectors used inline done-only checks instead of the helpers, so Not Required tasks still surfaced on the Today module's Overdue bucket, in the At-Risk / Unassigned / Unacknowledged / Rejected / Healthy alert tiers, in the assignee alerts strip's unack count, in the PTV per-project overdue counter, and in the Awaiting Ack rollup. v172 pushes the not-required exclusion through every remaining detector.", "Shipped Aug 18, 2026 in response to: 'On my Today module page it still shows items Not Required under past due, also does the same under any alerts, I need system to recognize that in all areas if if is not required than it doesnt show up as late at risk etc.' Nine pieces. (1) getMyTasksAcrossProjects (Today module core) — the CORE bucket function had `if (t.status === 'done') return;` — didn't exclude not-required, so Not Required tasks with past due dates landed straight in the Overdue bucket on Today. This is the primary bug the user was seeing. Extended to `if (t.status === 'done' || t.status === 'not-required') return;`. (2) getMyUnackedTasksAcrossProjects — same one-word bug, same fix. (3) getTasksByAlertTier — added a single top-of-function gate: `if (t.status === 'not-required' && tier !== 'not-required') return false;`. Now every alert tier (unassigned, at-risk, rejected, unacknowledged, imminent, soon, overdue, etc.) automatically excludes not-required tasks unless the caller specifically asks for the not-required tier. Single point of truth means no risk of missing a tier. (4) filterTasksByAlertTier 'all' branch — was `return project.tasks.slice()`. Not Required tasks were showing on the 'All' alert tab. Now `filter(t => t.status !== 'not-required')`. (5) filterTasksByAlertTier 'healthy' branch — added `|| t.status === 'not-required'` to the terminal-exit gate. Not Required tasks are terminal, not 'healthy on the plan'. (6) filterTasksByAlertTierScoped — same treatments applied to the 'my' scope variants of 'all' and 'healthy'. (7) PTV per-project overdue counter (line 34846) — inline check `if (status !== 'done') counts.overdue++;` was counting not-required tasks with past due dates. Extended to `if (status !== 'done' && status !== 'not-required')`. (8) renderAssigneeAlertsStrip (line 58640) — the unacknowledged counter was `if (t.status !== 'done' && !t.acknowledged)`. Not Required tasks don't need acknowledgment; they were dropped from scope. Extended. (9) Additional assignee alerts unack counter (line 55805) — same one-word bug, same fix. All changes are gate-tightening (never widening a check to include more tasks). Container reset means no full diagnostic pass this session; manual JS syntax check passed. Post-ship expectation: mark a task as Not Required, and it disappears from Today's Overdue bucket, from the Project Alerts 'At Risk' / 'Unassigned' / 'Unack' / 'Rejected' / 'Healthy' tabs, from the assignee alerts strip's unack chip, and from the PTV project's overdue counter — showing up only in the ⊘ Not Required tab (v171)."),
+    advImplemented('high-impact', 'Reschedule modal — full UX with live preview + reason picker (Reschedule Anchor Date vs Push For Past Due)', "v174 shipped the in-task Reschedule as a window.prompt() with text-based shortcuts — user asked for a proper modal that mirrors the Reschedule Past-Due workspace. v175 replaces the prompt with a real modal. Task summary card at top shows the current due date + anchor context (e.g., 'Bid Day + 3 days'). Reason radio group forces user to declare intent: (a) 📐 Reschedule Anchor Date — the plan moved (design date pushed, subs got extra time). Updates dayOffset so the task stays aligned to its anchor going forward. NO slip badge. (b) 🔁 Push For Past Due — the task got missed and needs to be pushed. Stamps the v89 red accountability badge everywhere the task appears. Default reason is auto-picked based on whether the task is currently past-due. Six shortcut buttons for the common push amounts (+1, +2, +3, +5, +1 week, +2 weeks). Custom N business days number input. Specific date picker. Clear-date checkbox. Only one input method is active at a time — picking one clears the others. LIVE preview panel updates on every change showing '<old date> → <new date> (+N calendar days)' plus a reason-specific cue ('slip badge will be stamped' vs 'dayOffset will be updated') plus (for Anchor mode) the computed new dayOffset value with the anchor date used. Confirm button disabled until a valid selection is made.", "Shipped Aug 18, 2026 in response to: 'i need the rescheduke function to be more user friendly and see previews of dates pushed, be more similar to current reschedule function, also I need to add reason for push options (Reschedule Anchor Date, Push For Past Due).' Ten pieces. (1) rescheduleThisTask() rewritten as a thin wrapper that opens _openRescheduleTaskModal(project, task). (2) _openRescheduleTaskModal — injects a <div class='modal-backdrop' id='rescheduleTaskModal'> into the DOM on first open (same pattern as openReschedulePastDueModal), reuses on subsequent opens. Modal shell has header + body + actions bar with Cancel + Confirm buttons. Caches projectId + taskId on the modal dataset so the confirm handler can find them. Backdrop click closes. (3) _renderRescheduleTaskModalBody — builds the body markup: task summary card (title, current due, anchor+offset context, PAST DUE badge when applicable) + reason radio tiles + shortcut buttons row + custom N days input + specific date input + clear checkbox + live preview panel. Default reason is auto-selected based on isTaskOverdue(task). (4) Reason tiles use styled label wrappers with the radio input inside; CSS class rtm-reason-tile with :has() checked selector gives the selected tile a purple ring + light purple background. (5) Six shortcut buttons (data-days attribute) call _selectRescheduleShortcut(days) which computes newDue via addBusinessDays from the current due date, stamps modal.dataset.pendingNewDue + pendingMode='shortcut', clears the other input types, highlights the picked button purple, calls _updateRescheduleModalPreview. (6) Custom N input calls _selectRescheduleCustomDays — same but reads the number input. (7) Specific date input calls _selectRescheduleSpecificDate — writes date directly. (8) Clear checkbox calls _selectRescheduleClear — sets pendingMode='clear'. (9) _updateRescheduleModalPreview computes and renders the preview: old→new date with calendar-day delta, reason-specific message, and (for anchor mode) the recomputed dayOffset via _businessDaysBetween helper. Warns when anchor mode is picked but the project's anchor date isn't set. Toggles Confirm button disabled state. (10) _confirmRescheduleTaskModal applies the change: writes task.dueDate, stamps lastEditedAt + lastEditedBy. Branch on reason: (a) 'anchor' + newDue → resolveTaskAnchorDate, recompute dayOffset via _businessDaysBetween, write task.dayOffset. NO v89 badge. (b) 'past-due' + oldDue + newDue → append oldDue to rescheduledFromPastDue, stamp rescheduledFromPastDueMeta {source: 'in-task-reschedule', when, rescheduledBy, originalDueDate, newDueDate, pushCount++}. This IS the v89 accountability badge. Clears _recurrenceSpawned, syncs #taskDueDate + #taskDayOffset inputs, calls refreshHeaderStatusPill + render + closes modal + showToast with reason-specific suffix ('slip badge stamped' vs 'anchor offset updated'). New helper _businessDaysBetween(a, b) counts business days between two Dates, signed. Manual JS syntax check passed."),
+    advImplemented('quality-of-life', 'Board + Table dropdowns show Not Required + Missed Deadline options · new in-task Reschedule button', "Two follow-ups on the v158/v173 status work. (1) Board card inline status dropdown and Table view status column dropdown were still hardcoded to the original five statuses (not-started / in-progress / blocked / pending / done). Not Required + Missed Deadline weren't options there — the only way to reach them was the calendar picker or the task modal. Added both to the dynamic dropdown templates with their status emojis (⊘ Not Required, ✗ Missed Deadline). (2) New '🔁 Reschedule' button in the task modal action bar (between Duplicate and Copy to Project). Purple accent to match the visual language of the Reschedule Past-Due modal. Clicking prompts for +1/+2/+3/+7 business days, a custom +N, an explicit YYYY-MM-DD, or 'clear'. Pushes t.dueDate forward, stamps rescheduledFromPastDue metadata so the v89 accountability badge fires, clears any recurrence-spawn flag so recurring instances get a fresh window, syncs the modal's due-date input, and shows a confirmation toast.", "Shipped Aug 18, 2026 in response to: 'on board and possible other view the missing Deadline and Not Required is not showing up as pull down option Also, I need when opening task details option to Reschedule directly on task.' Five pieces. (1) Board card renderTaskCard inline dropdown at line 59387 — the dynamically emitted <select class='card-status-select'> with data-driven <option> per status. Added the two missing options: <option value='not-required'>⊘ Not Required</option> and <option value='missed-deadline'>✗ Missed Deadline</option>. Selected-state gating preserved with the ternary. Same changeTaskStatusInline handler wires through updateTaskStatus which already stamps the correct completedAt / notRequiredAt / missedDeadlineAt metadata per v158/v173. (2) Table view row status column at line 59640 — parallel dropdown, same two additions. (3) Task modal action bar — new button #rescheduleTaskBtn inserted between Duplicate and Copy to Project. Purple color (#6b46c1) borrowed from the workload page's Reschedule Past-Due button so the visual language is consistent. Tooltip explains the shortcut format. (4) New function rescheduleThisTask() — reads editingTaskId, resolves the task on activeProject, computes current due-date label, prompts with the shortcut menu, parses the answer through three branches: 'clear' → empty dueDate; /^\\+?\\d+$/ → addBusinessDays from current base; /^\\d{4}-\\d{2}-\\d{2}$/ → literal date. Invalid input aborts with an alert. Same-date rejected with an alert. On success: writes t.dueDate + lastEditedAt + lastEditedBy, appends oldDue to t.rescheduledFromPastDue array, stamps rescheduledFromPastDueMeta.source='in-task-reschedule' so the v89 accountability badge distinguishes this from workload-page reschedules. Clears _recurrenceSpawned so recurring instances that had already spawned their next one get a fresh window. Syncs the modal's #taskDueDate input value so the visible field reflects the new date. Calls refreshHeaderStatusPill + render + showToast. (5) Anchor date (dateAnchor) is intentionally left alone — this is a concrete date override, not a plan revision. Users who want to also change the anchor can edit dayOffset directly in the modal. All Not Required + Missed Deadline transition logic (stamping timestamps, clearing on reverse) still fires normally through changeTaskStatusInline → updateTaskStatus since the dropdown values match the KNOWN_STATUSES entries. Manual JS syntax check passed."),
+    advImplemented('high-impact', 'New Missed Deadline status — terminal like Not Required but rust palette, own alerts tab, own badge', "When a task's deadline has passed and there's genuinely no path to completing it (window closed, upstream decision moot, no longer relevant), users need a way to close the task out without either lying (marking Complete) or leaving it as active-overdue nagging on every alert tier. Missed Deadline gives that path. Semantically identical to Not Required: fully terminal in every counter, filter, past-due detector, workload aggregator, and alert tier via the same top-of-function gate that v172 introduced. Visually distinct via a rust palette (#a44029) — darker + warmer than Not Required's neutral grey — so the two terminal-but-not-completed states are clearly distinguishable at a glance. New dedicated Missed Deadline tab in both Project Alerts and My Alerts showing tasks marked Missed in the last 30 days. New notification type + badge + task-modal header banner variant.", "Shipped Aug 18, 2026 in response to: 'If an task item is just basisally Missed Deadline and can no longer be completed and I do not want it to show up as past due can we create a status Missed Deadline and treat it exactly the same way in all functions as current Not Required?' Fifteen pieces mirroring the Not Required infrastructure. (1) KNOWN_STATUSES constant extended with 'missed-deadline'. (2) All three status label maps updated ('missed-deadline': 'Missed Deadline') — project timeline row, home task item, activity log. (3) Calendar status picker (v150) gained 7th option: {id:'missed-deadline', label:'Missed Deadline', icon:'✗', color:'#a44029'}. (4) Calendar icon map got 'missed-deadline':'✗'. (5) Task modal header pill picker got the 7th button. (6) Task modal Column 1 dropdown got the 7th option. (7) isTaskTerminal helper (v158) extended: returns true for done OR not-required OR missed-deadline. Fixes any caller of the helper automatically. (8) Batch python regex added missed-deadline as a parallel check to every compound `status === 'done' || status === 'not-required'` and `status !== 'done' && status !== 'not-required'` pattern across the codebase (14 sites). (9) updateTaskStatus transition handling: on transition INTO missed-deadline, stamp completedAt + missedDeadlineAt + missedDeadlineBy. On transition OUT, clear metadata (unless flipping to done). Same pattern as not-required from v158. (10) saveTask parallel transition handling for the task-modal Save path (v160 hook pattern). (11) _buildCompletionSideBadgeHtml gained missed-deadline branch: returns `<span class='missed-deadline-badge'>✗ Missed</span>` with tooltip showing when/by whom. Emitted on every surface that already shows the not-required badge (13 sites from v161). (12) _notifyTaskStatusChange gained missed-deadline branch: emits task-missed-deadline notification with `✗ ${actor} marked ${title} as Missed Deadline`. Neutral tone — factual, not alarming since the window has already closed. (13) _notificationSeverity: task-missed-deadline gets severity='warning' + title='DEADLINE MISSED'. _notificationIcon: '✗'. (14) Alert tabs: added `{id:'missed-deadline', icon:'✗', label:'Missed Deadline', ...}` spec to both getAlertBuckets AND getMyAlertBuckets, positioned right after Not Required. getTasksByAlertTier gained: (a) top-of-fn gate `if (t.status === 'missed-deadline' && tier !== 'missed-deadline') return false;` so every OTHER tier auto-excludes missed-deadline; (b) tier resolver for tier==='missed-deadline' matching status + 30-day window on missedDeadlineAt. tierMap in both project + my scoped variants got 'missed-deadline':'missed-deadline'. (15) CSS: .task-card.status-missed-deadline (rust-tinted background, italic strikethrough title, dark-mode variant), .missed-deadline-badge (rust pill, dark-mode variant), .tmpc-status[data-status='missed-deadline'] whole-pill tint + dot color, .tmpc-completion-banner.variant-missed-deadline (rust gradient banner). loadState backfill for missedDeadlineAt/missedDeadlineBy fields. All UI plumbing complete. Manual JS syntax check passed. Container reset means no full diagnostic pass this session; changes follow the exact pattern that worked cleanly for v158's Not Required infrastructure and v172's gate-tightening. Post-ship: mark a task as Missed Deadline via any status control, and it disappears from Overdue / At-Risk / Unack / Healthy / All tiers everywhere (same treatment as Not Required got in v172), showing up only in the new ✗ Missed Deadline tab + surfaced on task cards / rows / modals with the rust badge."),
+    advImplemented('bugfix', 'Not Required truly terminal EVERYWHERE — Today module, all alert tiers, all counters', "v169 fixed the low-level helpers (isTaskOverdue / isTaskDueImminent / isTaskDueSoon) but multiple higher-level detectors used inline done-only checks instead of the helpers, so Not Required tasks still surfaced on the Today module's Overdue bucket, in the At-Risk / Unassigned / Unacknowledged / Rejected / Healthy alert tiers, in the assignee alerts strip's unack count, in the PTV per-project overdue counter, and in the Awaiting Ack rollup. v172 pushes the not-required exclusion through every remaining detector.", "Shipped Aug 18, 2026 in response to: 'On my Today module page it still shows items Not Required under past due, also does the same under any alerts, I need system to recognize that in all areas if if is not required than it doesnt show up as late at risk etc.' Nine pieces. (1) getMyTasksAcrossProjects (Today module core) — the CORE bucket function had `if (t.status === 'done') return;` — didn't exclude not-required, so Not Required tasks with past due dates landed straight in the Overdue bucket on Today. This is the primary bug the user was seeing. Extended to `if (t.status === 'done' || t.status === 'not-required' || t.status === 'missed-deadline') return;`. (2) getMyUnackedTasksAcrossProjects — same one-word bug, same fix. (3) getTasksByAlertTier — added a single top-of-function gate: `if (t.status === 'not-required' && tier !== 'not-required') return false;`. Now every alert tier (unassigned, at-risk, rejected, unacknowledged, imminent, soon, overdue, etc.) automatically excludes not-required tasks unless the caller specifically asks for the not-required tier. Single point of truth means no risk of missing a tier. (4) filterTasksByAlertTier 'all' branch — was `return project.tasks.slice()`. Not Required tasks were showing on the 'All' alert tab. Now `filter(t => t.status !== 'not-required')`. (5) filterTasksByAlertTier 'healthy' branch — added `|| t.status === 'not-required'` to the terminal-exit gate. Not Required tasks are terminal, not 'healthy on the plan'. (6) filterTasksByAlertTierScoped — same treatments applied to the 'my' scope variants of 'all' and 'healthy'. (7) PTV per-project overdue counter (line 34846) — inline check `if (status !== 'done') counts.overdue++;` was counting not-required tasks with past due dates. Extended to `if (status !== 'done' && status !== 'not-required' && status !== 'missed-deadline')`. (8) renderAssigneeAlertsStrip (line 58640) — the unacknowledged counter was `if (t.status !== 'done' && !t.acknowledged)`. Not Required tasks don't need acknowledgment; they were dropped from scope. Extended. (9) Additional assignee alerts unack counter (line 55805) — same one-word bug, same fix. All changes are gate-tightening (never widening a check to include more tasks). Container reset means no full diagnostic pass this session; manual JS syntax check passed. Post-ship expectation: mark a task as Not Required, and it disappears from Today's Overdue bucket, from the Project Alerts 'At Risk' / 'Unassigned' / 'Unack' / 'Rejected' / 'Healthy' tabs, from the assignee alerts strip's unack chip, and from the PTV project's overdue counter — showing up only in the ⊘ Not Required tab (v171)."),
     advImplemented('high-impact', 'New Sub Bids Due (Trade Partners) anchor + Not Required project alerts tab + preload warning when anchor dates are missing', "Three coordinated additions. (1) Sub Bids Due from Trade Partners — a new fifth date anchor alongside Bid Start / Bid Day / Pre-Bid / RFI Due. Tasks (or template tasks) can anchor their day-offset to project.subBidsDueDate. New form field in the Project modal, new SB button in the task modal anchor toggle (teal), new SB button on every template editor row (same teal), full reanchor detection so changing the date recomputes every dependent task's due date. Perfect for scope-leveling and estimating tasks that need to happen a fixed number of days after subs turn in their pricing. (2) Not Required project alerts tab — since v169 made not-required a fully terminal state (invisible to past-due everywhere), users had no way to see or review the tasks that got dropped. New '⊘ Not Required' tab in both Project Alerts and My Alerts, showing tasks marked Not Required in the last 30 days. Not urgent — no red styling — but present so scope-drops stay reviewable and accountable. (3) Post-preload warning — when a template loads tasks anchored to Pre-Bid / RFI Due / Sub Bids Due / Bid Day and the corresponding project date is empty, tasks land with empty dueDate silently. Users reported 'pre-bid tasks aren't anchoring' — turns out they were loading fine, just without dates. A deferred alert now surfaces the counts per anchor type ('3 anchored to Pre-Bid Walk Date, 2 anchored to Sub Bids Due Date') and tells the user to set the missing date via Edit Project — the reanchor will recompute them.", "Shipped Aug 1, 2026 in response to two asks: 'task being loaded that anchor to Prebid are not anchoring, also I would like an additional anchor from Sub Bids Due from Trade Partners' AND 'I would also like a project alerts for Not Required so they still maintain some visibility if needed.' Bundled since they share the same anchor/scope-visibility theme. Twelve pieces. (1) _TASK_ANCHOR_LABELS table — added 'sub-bids-due' entry with dateField='subBidsDueDate', warnLabel='Sub Bids Due Date', short='Sub Bids', long='Sub Bids Due (Trade Ptr)'. (2) resolveTaskAnchorDate — new branch reads project.subBidsDueDate for the sub-bids-due anchor. Returns null if empty, same convention as other anchors. (3) State load backfill — projects get p.subBidsDueDate = '' if undefined, mirroring the prebidDate / rfiDueDate backfill from v82. (4) Validation lists — all 14 occurrences of the ['bid-start','bid-day','pre-bid','rfi-due'] tuple batch-updated to include 'sub-bids-due' via sed. Covers task load-time validation, template-task validation, and any downstream anchor-value check. (5) _addTemplateTasksToProject anchor-date pick — new branch: else if (anchor === 'sub-bids-due') anchorDate = (project.subBidsDueDate || '').trim();. (6) Project modal — new form-row-2 block with data-bidding-only='true' containing input[type=date]#projSubBidsDueDate with hint text 'The date SBG's subs are expected to have pricing in. Tasks can anchor to this (e.g., Sub Bids +1 = 1 day after subs are due).' Placeholder second column left for a future anchor field. (7) openProjectModal / saveProject — read + write flow: value loaded from p.subBidsDueDate on modal open, read from #projSubBidsDueDate on save, snapshot old value before Object.assign for reanchor detection, subBidsChanged computed, added to reanchor trigger condition alongside prebidChanged / rfiDueChanged / etc. (8) Task modal SB button — new .task-anchor-btn with data-anchor='sub-bids-due' appended after the R (RFI Due) button. Same setTaskAnchor handler. CSS: .task-anchor-btn.active[data-anchor='sub-bids-due'] { background: #2e8b8b } — teal to distinguish from navy/red/gold/purple. (9) Template editor SB button — same button pattern added to each mtt-anchor-toggle row, same teal color. Fits within the 5-button width since v82 already tightened per-button width to 14px. (10) Not Required project alert tab — added spec { id: 'not-required', icon: '⊘', label: 'Not Required', title: '...' } to both getAlertBuckets AND getMyAlertBuckets, positioned between 'pending' and 'healthy' since it's terminal-adjacent. filterTasksByAlertTier already had 'not-required' in its tierMap from a prior touch — the getTasksByAlertTier body's not-required case filters status === 'not-required' AND notRequiredAt within last 30 days (uses Date.now() - 30d as cutoff). Legacy pre-v158 not-required tasks without a timestamp pass through unfiltered. (11) Post-preload warning in _addTemplateTasksToProject — after the templateTasks.forEach loop finishes and count is finalized, walks project.tasks once, counts tasks with empty dueDate grouped by their dateAnchor. Skips 'bid-start' since startDate is almost always populated. Only counts an anchor category if the corresponding project date is actually empty (so a pre-bid task with empty dueDate but a set prebidDate — shouldn't happen but defensive — doesn't trip the warning). Assembles the parts list, fires a setTimeout 400ms alert with the total count + per-anchor breakdown + hint that Edit Project will trigger auto-reanchor. Wrapped in try/catch so a bad task shape can't kill preload. (12) All changes verified: JS syntax check passed, container-reset diagnostics harness still absent this session so relying on additive/gate-tightening pattern. Follow-up ideas from prior lists still open (Clean View for Board/Table, header customization, landscape print, date-range slider, auto-fit-to-page, etc.)."),
     advImplemented('bugfix', 'Not Required tasks now fully terminal — no more phantom past-due indicators on Board / Table / Home / Project Timeline', "v158 introduced the Not Required status and correctly excluded it from workload capacity + the past-due drill-down modal + past-due collector. But the low-level helpers isTaskOverdue / isTaskDueImminent / isTaskDueSoon / getDueClass were never updated — they only excluded 'done' — and those helpers are called from dozens of surface renderers (Board card overdue red styling, Table row past-due class, project overdue count in the project switcher, alerts, Home page bucketing). Result: a task marked Not Required was still rendering with overdue-red styling on Board, still lit up the past-due chip on Home, still counted in the project's overdue total. This ship pushes the not-required-is-terminal rule all the way down to those helpers so it propagates through every consumer with zero call-site changes.", "Shipped Jul 31, 2026 in response to: 'I would like when a task is marked not applicable that is treated like a complete so it is not showing up past due thoughts?' User's ask is the same completion-parity we started in v158 but for the past-due presentation layer. Six pieces. (1) isTaskOverdue helper — added `|| t.status === 'not-required'` to the terminal-exit gate at the top. This is the highest-leverage change since the helper is called by Board card overdue styling, Table row is-overdue class, project overdue counts, alerts, workload cards. Every caller now correctly excludes not-required tasks with zero call-site edits. (2) isTaskDueImminent helper — same gate expansion. Task marked not-required 1 day before due date no longer shows the imminent warning. (3) isTaskDueSoon helper — same. (4) getDueClass helper (returns 'overdue' / 'soon' / '' CSS class based on days-left) — same gate. Table due-date cells stop turning red when the task is not-required. (5) Two inline detectors that didn't use the helpers: (a) _renderPtvTaskRow's is-overdue class assignment on the Project Timeline row — the row was going red-tinted for not-required tasks even though the timeline is where users EXPLICITLY mark tasks as skipped. Now checks both done + not-required. (b) Home page bucket detector at line 38561 — the Skip Done Tasks guard was only `if (t.status === 'done') return;`, so not-required tasks flowed into the Home page's past-due / Due Today / Due Tomorrow buckets. Now excludes both terminal states. (6) Two adjacent metric fixes that also benefit from the terminal-parity: (a) Team Insights on-time percentage denominator — not-required tasks were being counted as if they'd been overdue (getting 0 credit in the numerator), unfairly dragging down a person's on-time rate for work that was correctly dropped from scope. Now excluded from both numerator and denominator entirely. (b) Project end-date calculation (line 42047) — was walking not-done tasks to find the latest dueDate for progress %; not-required tasks were inflating the timeline's perceived end date. Now excluded. Manual JS syntax check passed. Container reset means no full diagnostic pass this session but changes are additive/gate-tightening (never widening a check to include more tasks). Every isTask* helper consumer benefits automatically — no call-site enumeration required. Cross-check: earlier v158 changes to _collectPastDueTasks (past-due drill-down) and workload aggregator's overdue count (line 35836) already excluded not-required, and those still work — this ship just brings the low-level helpers up to the same standard."),
     advImplemented('quality-of-life', 'Project Timeline Compact mode — halves row heights so more tasks fit per printed page', "Third stackable toggle in the Project Timeline header alongside Clean View + Monochrome. Compact mode tightens row padding, reduces font sizes, shrinks status dots and pills, and compresses group headers so the same timeline fits significantly more tasks per printed page. Toggle button '📏 Compact' with gold active state; label flips to '📐 Normal Density' when engaged. State slot state.ptvCompactMode persists through reload. Print CSS has additional compact-mode overrides that go EVEN denser than the on-screen version (9pt titles, 1.5pt row padding, 0.25pt borders) since printed output has more vertical real estate to work with than a screen. Stacks freely with Clean View (hide badges) and Monochrome (no colors) — turn on all three for a stripped-down, colorless, ultra-dense handout that can pack ~50 tasks on a Letter page.", "Shipped Jul 31, 2026 in response to: 'Compact mode — halves row heights for even denser one-page fits.' This was the (e) follow-up idea from v167's list; user picked it up. Same pattern as v166/v167 — the toggle infrastructure is now a well-worn path so this ship was fast. Five pieces. (1) New button 'ptv-compact-toggle' (id=ptvCompactToggle) added to the ptv-actions block after Monochrome. Tooltip explains stacking behavior with the other two toggles. (2) State slot state.ptvCompactMode (bool, default false), init'd in the loadState block alongside state.ptvMonoMode. (3) togglePtvCompactMode() function mirrors the existing togglePtv* pair — flips state, updates button label + active class, toggles body.ptv-compact-mode class, re-renders. (4) renderProjectTimelineView() preamble extended to sync the third toggle. printProjectTimeline() extended to toggle the third class before window.print(). (5) CSS block for body.ptv-compact-mode: rows go from ~10-14px padding to 3px 8px; task titles from 14px to 12px; stage pills from 12px to 10px; assignees from 13px to 11px; status dots from 12px to 8px; status labels from ~11px to 9px; group headers from ~10-14px padding to 4px 10px. Completion badges (early/late/not-required/rescheduled) drop to 9px font + 1px 4px padding. Line-height everywhere tightened to 1.15-1.2 so text sits closer to its own baseline without overlapping. Print-only sub-block goes even smaller (9pt titles, 7pt stages, 8pt assignees, 1.5pt row padding, 0.25pt borders). Gold active state on the toggle button (var(--sbg-gold, #c07f00)) to distinguish from Clean's green + Mono's charcoal. Manual JS syntax check passed. Combined with the previous two toggles the user can now dial in four print flavors that stack independently — normal internal timeline (all off), simplified plan (Clean), pure B&W (Mono), maximum density (Compact), or any combination for a total of 8 configurations. Follow-up ideas still open from v166/v167: (a) Clean View for Board / Table views, (b) 'Include done tasks' filter in print, (c) header customization with company logo + project number + prepared-for line, (d) landscape orientation checkbox, (e) date range slider on print. New follow-up: (f) 'Auto-fit to one page' mode that scales font-size dynamically until everything fits on a single page."),
@@ -22921,6 +23383,13 @@ function refreshHeaderStatusPill() {
           banner.textContent = '⊘ Not Required';
           banner.title = dt ? `Marked Not Required on ${dt}` + (t.notRequiredBy ? ` by ${t.notRequiredBy}` : '') : 'Marked Not Required';
           banner.className = 'tmpc-completion-banner variant-not-required';
+          banner.style.display = 'inline-flex';
+        } else if (t.status === 'missed-deadline') {
+          // v173: Missed Deadline banner variant — rust color
+          const dt = t.missedDeadlineAt ? new Date(t.missedDeadlineAt).toLocaleDateString('en-US', {month:'short', day:'numeric'}) : '';
+          banner.textContent = '✗ Missed Deadline';
+          banner.title = dt ? `Marked Missed Deadline on ${dt}` + (t.missedDeadlineBy ? ` by ${t.missedDeadlineBy}` : '') : 'Marked Missed Deadline';
+          banner.className = 'tmpc-completion-banner variant-missed-deadline';
           banner.style.display = 'inline-flex';
         } else if (t.status === 'done' && t.completedEarly && t.completedDaysBefore > 0) {
           const n = t.completedDaysBefore;
@@ -26253,7 +26722,7 @@ function renderTabNav(project) {
           if (t.status !== 'done' && t.dueDate && isTaskOverdue(t)) overdueN++;
           else if (t.status !== 'done' && t.dueDate && isTaskDueImminent(t)) imminentN++;
           else if (t.status !== 'done' && t.dueDate && isTaskDueSoon(t)) soonN++;
-          if (t.status !== 'done' && t.status !== 'not-required' && !t.acknowledged) unackN++;
+          if (t.status !== 'done' && t.status !== 'not-required' && t.status !== 'missed-deadline' && !t.acknowledged) unackN++;
           if (t.status === 'pending') pendingN++;
           if (t.status === 'done' && !t.completionAcknowledged) completionN++;
         });
@@ -26434,6 +26903,7 @@ function getAlertBuckets(project) {
     { id: 'unassigned',  icon: '👤', label: 'Unassigned',   title: 'Tasks with no Lead assignee' },
     { id: 'pending',     icon: '⏳', label: 'Pending',      title: 'Tasks with status Pending (waiting on something)' },
     { id: 'not-required', icon: '⊘', label: 'Not Required', title: 'Tasks marked Not Required in the last 30 days — visible for review + accountability' },
+    { id: 'missed-deadline', icon: '✗', label: 'Missed Deadline', title: 'Tasks marked Missed Deadline in the last 30 days — the window closed, terminal but still visible for review' },
     { id: 'healthy',     icon: '✅', label: 'Healthy',      title: 'Tasks with no active alerts and not yet done — on track' },
     { id: 'done',        icon: '✓',  label: 'Done',         title: 'Completed tasks' }
   ];
@@ -26459,6 +26929,7 @@ function getMyAlertBuckets(project) {
     { id: 'unack',       icon: '🔔', label: 'Unack',        title: 'Your assigned tasks not yet acknowledged' },
     { id: 'pending',     icon: '⏳', label: 'Pending',      title: 'Your tasks with status Pending' },
     { id: 'not-required', icon: '⊘', label: 'Not Required', title: 'Your tasks marked Not Required in the last 30 days — visible for review' },
+    { id: 'missed-deadline', icon: '✗', label: 'Missed Deadline', title: 'Your tasks marked Missed Deadline in the last 30 days — visible for review' },
     { id: 'healthy',     icon: '✅', label: 'Healthy',      title: 'Your tasks with no active alerts and not yet done — comfortably on track' },
     { id: 'done',        icon: '✓',  label: 'Done',         title: 'Your completed tasks' }
     // Note: 'unassigned' tier is not included in My scope (it's tasks WITHOUT an assignee, by definition not yours)
@@ -26774,7 +27245,7 @@ function filterTasksByAlertTier(project, tier) {
   if (tier === 'healthy') {
     // Healthy = not done AND not-required AND not in any active alert tier
     return project.tasks.filter(t => {
-      if (t.status === 'done' || t.status === 'not-required') return false;
+      if (t.status === 'done' || t.status === 'not-required' || t.status === 'missed-deadline') return false;
       if (typeof isTaskOverdue === 'function' && isTaskOverdue(t)) return false;
       if (typeof isStartByEnabledForStage === 'function' && isStartByEnabledForStage(t.stage)
           && typeof isTaskLateStart === 'function' && isTaskLateStart(t)) return false;
@@ -26810,7 +27281,8 @@ function filterTasksByAlertTier(project, tier) {
       'rejected': 'rejected',
       'unassigned': 'unassigned',
       'pending': 'pending',
-      'not-required': 'not-required'
+      'not-required': 'not-required',
+      'missed-deadline': 'missed-deadline'
     };
     const apiTier = tierMap[tier] || tier;
     return getTasksByAlertTier(project, apiTier, 'project');
@@ -26848,7 +27320,7 @@ function filterTasksByAlertTierScoped(project, tier, scope) {
     return project.tasks.filter(t => {
       if (!isMine(t)) return false;
       // v172: not-required is terminal; excluded from healthy
-      if (t.status === 'done' || t.status === 'not-required') return false;
+      if (t.status === 'done' || t.status === 'not-required' || t.status === 'missed-deadline') return false;
       if (typeof isTaskOverdue === 'function' && isTaskOverdue(t)) return false;
       if (typeof isStartByEnabledForStage === 'function' && isStartByEnabledForStage(t.stage)
           && typeof isTaskLateStart === 'function' && isTaskLateStart(t)) return false;
@@ -26885,7 +27357,8 @@ function filterTasksByAlertTierScoped(project, tier, scope) {
       'rejected': 'rejected',
       'unassigned': 'unassigned',
       'pending': 'pending',
-      'not-required': 'not-required'
+      'not-required': 'not-required',
+      'missed-deadline': 'missed-deadline'
     };
     const apiTier = tierMap[tier] || tier;
     return getTasksByAlertTier(project, apiTier, 'my');
@@ -26997,7 +27470,9 @@ function getTasksByAlertTier(project, tier, scope) {
     // tier (past-due, at-risk, unassigned, unack, rejected, healthy, etc.)
     // BEFORE any tier-specific logic runs. The 'not-required' tier itself
     // (added v171) intentionally handles this status and is checked below.
+    // v173: same treatment for 'missed-deadline'.
     if (t.status === 'not-required' && tier !== 'not-required') return false;
+    if (t.status === 'missed-deadline' && tier !== 'missed-deadline') return false;
     if (tier === 'unassigned') {
       // Multi-Lead aware: a task is unassigned only if it has NO Leads
       const leads = (typeof getTaskLeads === 'function') ? getTaskLeads(t) : [];
@@ -27023,6 +27498,16 @@ function getTasksByAlertTier(project, tier, scope) {
         return stamp >= cutoff;
       }
       // No timestamp (legacy pre-v158 not-required tasks) — include anyway
+      return true;
+    }
+    // v173: Missed Deadline tier — same shape as not-required, 30-day window
+    if (tier === 'missed-deadline') {
+      if (t.status !== 'missed-deadline') return false;
+      const stamp = t.missedDeadlineAt || 0;
+      if (stamp > 0) {
+        const cutoff = Date.now() - (30 * 24 * 60 * 60 * 1000);
+        return stamp >= cutoff;
+      }
       return true;
     }
     if (tier === 'late-start') {
@@ -29089,7 +29574,7 @@ function renderAssigneeAlertsStrip(project) {
 
     // Unacknowledged (newly assigned, not yet ack'd) — v172: not-required tasks
     // don't need acknowledgment; they were dropped from scope.
-    if (t.status !== 'done' && t.status !== 'not-required' && !t.acknowledged) ensure(assignee).unacknowledged++;
+    if (t.status !== 'done' && t.status !== 'not-required' && t.status !== 'missed-deadline' && !t.acknowledged) ensure(assignee).unacknowledged++;
 
     // Pending status
     if (t.status === 'pending') ensure(assignee).pending++;
@@ -29699,6 +30184,8 @@ function renderTaskCard(t) {
           <option value="blocked"${t.status==='blocked'?' selected':''}>Blocked</option>
           <option value="pending"${t.status==='pending'?' selected':''}>Pending</option>
           <option value="done"${t.status==='done'?' selected':''}>Complete</option>
+          <option value="not-required"${t.status==='not-required'?' selected':''}>⊘ Not Required</option>
+          <option value="missed-deadline"${t.status==='missed-deadline'?' selected':''}>✗ Missed Deadline</option>
         </select>
         <span class="csi-code">${escapeHtml(catShort)}</span>
         ${offsetBadge}
@@ -29734,20 +30221,20 @@ function renderTaskCard(t) {
 function isTaskOverdue(t) {
   // v169: not-required is a terminal state (like done) — a task the team
   // decided didn't need to happen shouldn't be flagged as overdue.
-  if (!t.dueDate || t.status === 'done' || t.status === 'not-required') return false;
+  if (!t.dueDate || t.status === 'done' || t.status === 'not-required' || t.status === 'missed-deadline') return false;
   return getDaysLeft(t.dueDate) < 0;
 }
 
 function isTaskDueImminent(t) {
   // 0 or 1 days out — more urgent tier
-  if (!t.dueDate || t.status === 'done' || t.status === 'not-required') return false;
+  if (!t.dueDate || t.status === 'done' || t.status === 'not-required' || t.status === 'missed-deadline') return false;
   const d = getDaysLeft(t.dueDate);
   return d !== null && d >= 0 && d <= 1;
 }
 
 function isTaskDueSoon(t) {
   // Exactly 2 days out — mutually exclusive with imminent
-  if (!t.dueDate || t.status === 'done' || t.status === 'not-required') return false;
+  if (!t.dueDate || t.status === 'done' || t.status === 'not-required' || t.status === 'missed-deadline') return false;
   const d = getDaysLeft(t.dueDate);
   return d === 2;
 }
@@ -29951,6 +30438,8 @@ function renderTableRow(t, statusLabels) {
           <option value="blocked"${t.status==='blocked'?' selected':''}>Blocked / RFI</option>
           <option value="pending"${t.status==='pending'?' selected':''}>Pending</option>
           <option value="done"${t.status==='done'?' selected':''}>Complete</option>
+          <option value="not-required"${t.status==='not-required'?' selected':''}>⊘ Not Required</option>
+          <option value="missed-deadline"${t.status==='missed-deadline'?' selected':''}>✗ Missed Deadline</option>
         </select>
         ${dueInline}${signOffTable}
       </td>
@@ -31340,7 +31829,8 @@ function renderCalDayCell(d, tasks, project, opts) {
       'blocked': '⚠',
       'pending': '⏳',
       'done': '✓',
-      'not-required': '⊘'
+      'not-required': '⊘',
+      'missed-deadline': '✗'
     };
     const currentStatusIcon = statusIconMap[t.status] || '○';
     const calStatusPicker = `<button class="cal-status-picker" onclick="event.stopPropagation();_openCalStatusMenu('${escapeAttr(t.id)}', event);" title="Change status (current: ${escapeAttr(t.status || 'not-started')})">${currentStatusIcon}</button>`;
