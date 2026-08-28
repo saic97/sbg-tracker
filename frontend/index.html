@@ -3,7 +3,7 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <meta name="application-name" content="SBG Preconstruction Bid Tracker">
-<meta name="version" content="V172">
+<meta name="version" content="V175">
 <!--
   =============================================================================
   BUILD DATE — SINGLE SOURCE OF TRUTH
@@ -16,7 +16,7 @@
 <meta name="build-date" content="Jul 31, 2026">
 <meta name="created" content="2026-04-18">
 <meta name="built" content="2026-04-19T23:56:18Z">
-<title>SBG Preconstruction Bid Tracker · V172</title>
+<title>SBG Preconstruction Bid Tracker · V175</title>
 <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;600;700&amp;family=Barlow+Condensed:wght@500;600;700;800&amp;family=Inter:wght@300;400;500;600;700;800&amp;display=swap" rel="stylesheet">
 
 <meta name="api-base" content="">
@@ -30,7 +30,7 @@
     <div class="brand-logo" id="brandLogo" onclick="openSettingsModal()" title="Click to edit company logo"><img src="data:image/gif;base64,R0lGODlhAQABAAAAACH5BAEKAAEALAAAAAABAAEAAAICTAEAOw==" alt="Company Logo" style="width:100%;height:100%;object-fit:contain;border-radius:4px;background:#fff;"></div>
     <div class="brand-text">
       <h1>SOURCE BUILDING GR<span class="accent">O</span>UP</h1>
-      <div class="subtitle">Preconstruction · Bid Pursuit Tracker <span class="version-stamp version-stamp-milestone" title="v172 · Not Required fully excluded from Today, alerts, at-risk, unassigned, unack, healthy, all tiers">🎉 V172</span><span class="version-built" data-role="build-date"></span></div>
+      <div class="subtitle">Preconstruction · Bid Pursuit Tracker <span class="version-stamp version-stamp-milestone" title="v175 · Reschedule modal with live preview + reason picker (Anchor vs Past-Due)">🎉 V175</span><span class="version-built" data-role="build-date"></span></div>
     </div>
   </div>
   <div class="header-stats">
@@ -334,7 +334,7 @@
     <!-- File creation/version footer — stays pinned to the bottom of the sidebar -->
     <div class="sidebar-footer" id="sidebarFooter">
       <div class="sf-brand">SBG Precon Tracker</div>
-      <div class="sf-version sf-version-milestone" title="v172 · Not Required fully excluded from Today, alerts, at-risk, unassigned, unack, healthy, all tiers">🎉 V172</div>
+      <div class="sf-version sf-version-milestone" title="v175 · Reschedule modal with live preview + reason picker (Anchor vs Past-Due)">🎉 V175</div>
       <div class="sf-created">Created April 18, 2026</div>
       <div class="sf-built" data-role="build-date" title="Exact timestamp when this HTML file was generated"></div>
       <div class="sf-org">Source Building Group · Mansfield, TX</div>
@@ -5113,6 +5113,9 @@
           <button type="button" class="tmpc-status-opt" data-status="not-required" onclick="setHeaderStatus(event, 'not-required')">
             <span class="tmpc-status-opt-dot status-not-required"></span> Not Required
           </button>
+          <button type="button" class="tmpc-status-opt" data-status="missed-deadline" onclick="setHeaderStatus(event, 'missed-deadline')">
+            <span class="tmpc-status-opt-dot status-missed-deadline"></span> Missed Deadline
+          </button>
         </div>
       </div>
 
@@ -5275,6 +5278,7 @@
         <option value="pending">Pending – Waiting on Others</option>
         <option value="done">Complete</option>
         <option value="not-required">Not Required</option>
+        <option value="missed-deadline">Missed Deadline</option>
       </select>
     </div>
     <div class="form-group" id="taskCategoryFormGroup"><label>CSI Division / Tag</label>
@@ -5528,6 +5532,7 @@
       <button class="btn" onclick="closeModal('taskModal')">Cancel</button>
       <button class="btn" id="deleteTaskBtn" style="color:var(--red);" onclick="deleteTask()">Delete</button>
       <button class="btn" id="duplicateTaskBtn" style="color:var(--sbg-navy, #0a2540);border-color:var(--sbg-navy, #0a2540);font-weight:600;" onclick="duplicateTask()" title="Create a copy of this task in the same project. Keeps title/stage/source/hours/checklist/deliverables/best-practice; resets assignee, support, and due date.">📋 Duplicate</button>
+      <button class="btn" id="rescheduleTaskBtn" style="color:#6b46c1;border-color:#6b46c1;font-weight:600;" onclick="rescheduleThisTask()" title="Push this task's due date forward. Opens a modal with shortcut buttons, custom N days, or specific date — plus a reason picker (Reschedule Anchor Date vs Push For Past Due).">🔁 Reschedule</button>
       <button class="btn" id="copyToProjectBtn" style="color:var(--sbg-navy, #0a2540);border-color:var(--sbg-navy, #0a2540);font-weight:600;" onclick="copyTaskToProject()" title="Copy this task to another project. Keeps work-defining fields; resets assignee, support, and due date (recalculated from the target project's bid dates).">📤 Copy to Project</button>
       <button class="btn" id="emailTaskBtn" style="color:#0078d4;border-color:#0078d4;font-weight:600;" onclick="openEmailTaskDialog()" title="Open a pre-filled draft email about this task in your default email client (Outlook)">✉ Email Task</button>
       <button class="btn" id="calendarTaskBtn" style="color:#107c41;border-color:#107c41;font-weight:600;" onclick="openCalendarInviteDialog()" title="Generate a calendar invite (.ics file) for this task — opens in Outlook">📅 Add to Calendar</button>
