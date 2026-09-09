@@ -16483,7 +16483,7 @@ function _confirmRescheduleTaskModal() {
     if (anchorDate) {
       const dAnchor = new Date(anchorDate + 'T00:00:00');
       const dNew = new Date(newDue + 'T00:00:00');
-      task.dayOffset = _businessDaysBetween(dAnchor, dNew);
+      task.dayOffset = Math.round((dNew - dAnchor) / 86400000);
     }
   } else if (reason === 'past-due' && oldDue && newDue) {
     // Stamp the v89 accountability badge

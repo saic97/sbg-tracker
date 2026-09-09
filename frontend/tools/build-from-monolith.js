@@ -96,6 +96,20 @@ const FIXUPS = [
     find: /if \(Array\.isArray\(task\.leads\)\) \{\n(\s*)task\.leads\.forEach\(n => \{ if \(n && n\.trim\(\)\) assignees\.add\(n\.trim\(\)\); \}\);/g,
     replace: 'if (Array.isArray(task.leads) && task.leads.length > 0) {\n$1task.leads.forEach(n => { if (n && n.trim()) assignees.add(n.trim()); });',
   },
+  {
+    // Reschedule modal (V175) writes dayOffset as a BUSINESS-day count via
+    // _businessDaysBetween, but the forward math consumes it as CALENDAR days:
+    // addBusinessDays(d, n) === snapToBusinessDay(addDays(d, n)). The units
+    // disagree, so the offset stored by an "anchor" reschedule is wrong, and
+    // the next project save (saveProject -> reanchorProjectTaskDates) recomputes
+    // the task to an EARLIER date -- the user's reschedule silently reverts.
+    // Verified live: 250/250 anchored tasks failed the round-trip before this,
+    // 250/250 hold exactly after. Every other dayOffset in the data is already
+    // calendar-based, so this matches the established convention (no migration).
+    name: 'reschedule modal: dayOffset must be calendar days, not business days',
+    find: /task\.dayOffset = _businessDaysBetween\(dAnchor, dNew\);/g,
+    replace: 'task.dayOffset = Math.round((dNew - dAnchor) / 86400000);',
+  },
 ];
 for (const f of FIXUPS) {
   const n = (js.match(f.find) || []).length;
