@@ -11,6 +11,11 @@ function uid() {
 
 function now() { return Date.now(); }
 
+function dateColumn(input, camel, snake) {
+  // An explicitly cleared UI date must override the old snake_case alias.
+  return (Object.prototype.hasOwnProperty.call(input, camel) ? input[camel] : input[snake]) || null;
+}
+
 const kv = {
   get(key) {
     const row = getDb().prepare('SELECT value FROM key_value WHERE key=?').get(key);
@@ -200,11 +205,9 @@ function audit(action, entity, entityId, payload) {
 // any DELETE runs.
 //
 // `state_version` is stored in key_value (initialized to 0 by 007). It is
-// bumped only by saveStateBlob; per-entity routes do not change it because
-// they don't compete with the bulk PUT for the same fields. Sub-bid /
-// bid-intake mutations also leave it alone -- they preserve unrelated state
-// via the `preservedProjectData` map below, so a stale bulk PUT can't drop
-// their changes.
+// bumped by state writes, legacy entity routes, and bid-intake mutations.
+// Every workspace mutation must invalidate GET /state's ETag and mark the
+// affected subdomains so stale state replacements cannot undo it.
 // ---------------------------------------------------------------------------
 const SNAPSHOT_RETENTION = 50;
 // Snapshot cadence for incremental (subdomain) writes. Snapshotting every
@@ -486,8 +489,8 @@ function saveStateBlob(state, opts = {}) {
           location: p.location || null,
           status: p.status || null,
           archived: p.archived ? 1 : 0,
-          start_date: p.startDate || p.start_date || null,
-          due_date: p.dueDate || p.due_date || null,
+          start_date: dateColumn(p, 'startDate', 'start_date'),
+          due_date: dateColumn(p, 'dueDate', 'due_date'),
           subBids: hasSubBids ? p.subBids : preserved.subBids,
         };
         delete projRow.tasks;
@@ -503,8 +506,8 @@ function saveStateBlob(state, opts = {}) {
               category: t.category || null,
               priority: t.priority || null,
               status: t.status || 'not-started',
-              due_date: t.dueDate || t.due_date || null,
-              start_by_date: t.startByDate || t.start_by_date || null,
+              due_date: dateColumn(t, 'dueDate', 'due_date'),
+              start_by_date: dateColumn(t, 'startByDate', 'start_by_date'),
               day_offset: typeof t.dayOffset === 'number' ? t.dayOffset : null,
               assignee: t.assignee || null,
               source: t.source || null,
@@ -589,8 +592,8 @@ function upsertProjectRow(project) {
     location: project.location || null,
     status: project.status || null,
     archived: project.archived ? 1 : 0,
-    start_date: project.startDate || project.start_date || null,
-    due_date: project.dueDate || project.due_date || null,
+    start_date: dateColumn(project, 'startDate', 'start_date'),
+    due_date: dateColumn(project, 'dueDate', 'due_date'),
     subBids: hasSubBids ? project.subBids : preservedData.subBids,
   };
 
@@ -627,8 +630,8 @@ function upsertTaskRow(projectId, t) {
     category: t.category || null,
     priority: t.priority || null,
     status: t.status || 'not-started',
-    due_date: t.dueDate || t.due_date || null,
-    start_by_date: t.startByDate || t.start_by_date || null,
+    due_date: dateColumn(t, 'dueDate', 'due_date'),
+    start_by_date: dateColumn(t, 'startByDate', 'start_by_date'),
     day_offset: typeof t.dayOffset === 'number' ? t.dayOffset : null,
     assignee: t.assignee || null,
     source: t.source || null,

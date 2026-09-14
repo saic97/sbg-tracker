@@ -165,8 +165,12 @@ function listSubBids(projectId) {
 }
 
 function saveSubBids(projectId, rows) {
-  const updated = m.projects.update(projectId, { subBids: rows || [] });
-  return Array.isArray(updated.subBids) ? updated.subBids : [];
+  return getDb().transaction(() => {
+    const updated = m.projects.update(projectId, { subBids: rows || [] });
+    const version = m.bumpStateVersion();
+    m.markSubdomainsWritten(['project:' + projectId], version);
+    return Array.isArray(updated.subBids) ? updated.subBids : [];
+  })();
 }
 
 function normalizeExtract(extract, meta) {
@@ -444,7 +448,11 @@ async function pollInbox(options = {}) {
     const selected = uids.slice(-limit);
     if (!selected.length) return { scanned: 0, imported: 0, duplicates: 0, errors: 0, skipped: 0, results };
 
-    for await (const msg of client.fetch(selected, { uid: true, envelope: true, source: true, internalDate: true })) {
+    // Finish each FETCH before issuing flags/move commands. Using one UID
+    // at a time also avoids buffering every PDF in a large inbox batch.
+    for (const uid of selected) {
+      const msg = await client.fetchOne(uid, { uid: true, envelope: true, source: true, internalDate: true }, { uid: true });
+      if (!msg) continue; // Message may have been removed since SEARCH.
       scanned += 1;
       let messageHadError = false;
       const parsed = await simpleParser(msg.source);
@@ -551,7 +559,7 @@ function startAutoPoller() {
       if (summary.imported) {
         try {
           const rt = require('./realtime');
-          rt.broadcastStateChange({ state: m.loadStateBlob(), byUserId: null, byUserName: 'Bid Intake', clientId: null });
+          rt.broadcastStateChange({ state: m.loadStateBlob(), version: m.getStateVersion(), byUserId: null, byUserName: 'Bid Intake', clientId: null });
         } catch (err) {
           console.warn('[bid-intake] realtime broadcast skipped:', err.message);
         }

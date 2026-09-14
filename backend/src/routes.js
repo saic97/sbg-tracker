@@ -28,18 +28,15 @@ function asyncRoute(fn) {
 // When the mutation touched a single project, pass its id so only that
 // project rides the wire instead of the entire workspace blob.
 //
-// We include the current state version in the payload so receivers can keep
-// their `expectedVersion` in sync. (The version isn't bumped here because
-// these mutations don't compete with a bulk PUT /api/state for the same
-// fields -- they touch project.subBids, which saveStateBlob preserves.)
+// Bid intake bumps the version with its database mutation; the broadcast
+// carries that version so cached state and subsequent writes stay current.
 function broadcastState(req, projectId = null) {
   try {
     const rt = require('./realtime');
     let statePayload = null;
     if (projectId) {
-      const p = m.projects.get(projectId);
+      const p = m.loadStateBlob().projects.find(project => project.id === projectId);
       if (p) {
-        p.tasks = m.projectTasks.list(p.id);
         statePayload = { projects: [p] };
       }
     }
@@ -53,6 +50,31 @@ function broadcastState(req, projectId = null) {
   } catch (e) {
     console.warn('[routes] realtime broadcast skipped:', e.message);
   }
+}
+
+// Legacy entity endpoints participate in the same concurrency protocol as
+// state writes. Mutation and version bookkeeping commit together; failed or
+// missing-entity writes leave both unchanged. A full authoritative broadcast
+// also communicates deletions to connected clients.
+function mutateWorkspace(req, key, write) {
+  const db = require('./db').getDb();
+  let version;
+  const result = db.transaction(() => {
+    const value = write();
+    if (value === null || value === false) return value;
+    version = m.bumpStateVersion();
+    m.markSubdomainsWritten([typeof key === 'function' ? key(value) : key], version);
+    return value;
+  })();
+  if (version !== undefined) {
+    m.maybeRecordSnapshot(version, req.user.id);
+    require('./realtime').broadcastStateChange({
+      state: m.loadStateBlob(), replaceState: true, version,
+      byUserId: req.user.id, byUserName: req.user.name || req.user.email,
+      clientId: null,
+    });
+  }
+  return result;
 }
 
 function buildRouter() {
@@ -135,6 +157,7 @@ function buildRouter() {
       const rt = require('./realtime');
       rt.broadcastStateChange({
         state: merged,
+        replaceState: true,
         version,
         byUserId: req.user.id,
         byUserName: (req.body && req.body.actingAs) || req.user.name || req.user.email,
@@ -402,7 +425,7 @@ function buildRouter() {
   // ---- projects ----
   r.get('/projects', asyncRoute(async (req, res) => res.json(m.projects.list())));
   r.post('/projects', asyncRoute(async (req, res) => {
-    const created = m.projects.create(req.body || {});
+    const created = mutateWorkspace(req, p => 'project:' + p.id, () => m.projects.create(req.body || {}));
     m.audit('create', 'project', created.id, { user: req.user.id });
     res.status(201).json(created);
   }));
@@ -413,13 +436,13 @@ function buildRouter() {
     res.json(p);
   }));
   r.patch('/projects/:id', asyncRoute(async (req, res) => {
-    const updated = m.projects.update(req.params.id, req.body || {});
+    const updated = mutateWorkspace(req, 'project:' + req.params.id, () => m.projects.update(req.params.id, req.body || {}));
     if (!updated) return res.status(404).json({ error: 'not found' });
     m.audit('update', 'project', updated.id, { user: req.user.id });
     res.json(updated);
   }));
   r.delete('/projects/:id', asyncRoute(async (req, res) => {
-    const ok = m.projects.remove(req.params.id);
+    const ok = mutateWorkspace(req, 'project:' + req.params.id, () => m.projects.remove(req.params.id));
     if (!ok) return res.status(404).json({ error: 'not found' });
     m.audit('delete', 'project', req.params.id, { user: req.user.id });
     res.status(204).end();
@@ -430,7 +453,7 @@ function buildRouter() {
     res.json(m.projectTasks.list(req.params.id));
   }));
   r.post('/projects/:id/tasks', asyncRoute(async (req, res) => {
-    const created = m.projectTasks.create(req.params.id, req.body || {});
+    const created = mutateWorkspace(req, t => 'project:' + req.params.id + ':task:' + t.id, () => m.projectTasks.create(req.params.id, req.body || {}));
     m.audit('create', 'task', created.id, { project_id: req.params.id, user: req.user.id });
     res.status(201).json(created);
   }));
@@ -440,13 +463,13 @@ function buildRouter() {
     res.json(t);
   }));
   r.patch('/projects/:id/tasks/:taskId', asyncRoute(async (req, res) => {
-    const updated = m.projectTasks.update(req.params.id, req.params.taskId, req.body || {});
+    const updated = mutateWorkspace(req, 'project:' + req.params.id + ':task:' + req.params.taskId, () => m.projectTasks.update(req.params.id, req.params.taskId, req.body || {}));
     if (!updated) return res.status(404).json({ error: 'not found' });
     m.audit('update', 'task', updated.id, { user: req.user.id });
     res.json(updated);
   }));
   r.delete('/projects/:id/tasks/:taskId', asyncRoute(async (req, res) => {
-    const ok = m.projectTasks.remove(req.params.id, req.params.taskId);
+    const ok = mutateWorkspace(req, 'project:' + req.params.id + ':task:' + req.params.taskId, () => m.projectTasks.remove(req.params.id, req.params.taskId));
     if (!ok) return res.status(404).json({ error: 'not found' });
     m.audit('delete', 'task', req.params.taskId, { user: req.user.id });
     res.status(204).end();
@@ -464,14 +487,20 @@ function buildRouter() {
   r.get('/settings/:key', asyncRoute(async (req, res) => {
     res.json({ key: req.params.key, value: m.kv.get(req.params.key) });
   }));
+  r.use('/settings/:key', (req, res, next) => {
+    if (req.method !== 'GET' && ['state_version', 'subdomain_versions'].includes(req.params.key)) {
+      return res.status(400).json({ error: 'reserved internal setting' });
+    }
+    next();
+  });
   r.put('/settings/:key', asyncRoute(async (req, res) => {
     const { value } = req.body || {};
-    m.kv.set(req.params.key, value);
+    mutateWorkspace(req, '*', () => m.kv.set(req.params.key, value));
     m.audit('update', 'setting', req.params.key, { user: req.user.id });
     res.json({ key: req.params.key, value });
   }));
   r.delete('/settings/:key', asyncRoute(async (req, res) => {
-    m.kv.remove(req.params.key);
+    mutateWorkspace(req, '*', () => m.kv.remove(req.params.key));
     m.audit('delete', 'setting', req.params.key, { user: req.user.id });
     res.status(204).end();
   }));
@@ -656,9 +685,9 @@ function buildRouter() {
     const target = getDb().prepare('SELECT * FROM users WHERE id=?').get(req.params.id);
     if (!target) return res.status(404).json({ error: 'user not found' });
     // Prevent the only admin from accidentally demoting themselves and locking the workspace out.
-    if (target.role === 'admin' && role && role !== 'admin') {
+    if (target.role === 'admin' && !target.disabled && ((role && role !== 'admin') || disabled)) {
       const adminCount = getDb().prepare("SELECT COUNT(*) AS n FROM users WHERE role='admin' AND disabled=0").get().n;
-      if (adminCount <= 1) return res.status(400).json({ error: 'cannot demote the last admin' });
+      if (adminCount <= 1) return res.status(400).json({ error: 'cannot demote or disable the last admin' });
     }
     const updates = [];
     const params = [];
@@ -721,9 +750,10 @@ function buildRouter() {
 }
 
 function attachCrud(router, prefix, entity, kind) {
+  const subdomainKey = kind === 'team_member' ? 'teamMembers' : 'templates';
   router.get(prefix, asyncRoute(async (req, res) => res.json(entity.list())));
   router.post(prefix, asyncRoute(async (req, res) => {
-    const created = entity.create(req.body || {});
+    const created = mutateWorkspace(req, subdomainKey, () => entity.create(req.body || {}));
     m.audit('create', kind, created.id, { user: req.user.id });
     res.status(201).json(created);
   }));
@@ -733,13 +763,13 @@ function attachCrud(router, prefix, entity, kind) {
     res.json(item);
   }));
   router.patch(`${prefix}/:id`, asyncRoute(async (req, res) => {
-    const updated = entity.update(req.params.id, req.body || {});
+    const updated = mutateWorkspace(req, subdomainKey, () => entity.update(req.params.id, req.body || {}));
     if (!updated) return res.status(404).json({ error: 'not found' });
     m.audit('update', kind, updated.id, { user: req.user.id });
     res.json(updated);
   }));
   router.delete(`${prefix}/:id`, asyncRoute(async (req, res) => {
-    const ok = entity.remove(req.params.id);
+    const ok = mutateWorkspace(req, subdomainKey, () => entity.remove(req.params.id));
     if (!ok) return res.status(404).json({ error: 'not found' });
     m.audit('delete', kind, req.params.id, { user: req.user.id });
     res.status(204).end();
@@ -747,13 +777,14 @@ function attachCrud(router, prefix, entity, kind) {
 }
 
 function attachReplaceAll(router, prefix, entity, bodyKey) {
+  const subdomainKey = bodyKey === 'holidays' ? 'settings:calendar' : 'settings:lists';
   router.get(prefix, asyncRoute(async (req, res) => {
     res.json(entity.list().sort((a, b) => (a.position || 0) - (b.position || 0)));
   }));
   router.put(prefix, asyncRoute(async (req, res) => {
     const items = (req.body && (req.body[bodyKey] || req.body.items)) || [];
     if (!Array.isArray(items)) return res.status(400).json({ error: `body must include \`${bodyKey}\` array` });
-    const replaced = entity.replaceAll(items.map((it, i) => ({ ...it, position: i })));
+    const replaced = mutateWorkspace(req, subdomainKey, () => entity.replaceAll(items.map((it, i) => ({ ...it, position: i }))));
     m.audit('update', bodyKey, null, { user: req.user.id });
     res.json(replaced);
   }));

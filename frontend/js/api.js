@@ -40,10 +40,11 @@
   const status = { online: false, lastSync: null, lastError: null };
 
   const VERSION_KEY = 'sbg_state_version';
+  const CACHE_FORMAT_KEY = 'sbg_state_cache_format';
   const STORAGE_KEY = 'sbg_precon_tracker_v3';
 
   // The server-assigned monotonic version of the state we last saw. Updated
-  // by getState(), putState() success, conflict responses, and the realtime
+  // by getState(), putState() success, and the realtime
   // state:updated handler (see realtime.js). Persisted to localStorage so
   // the next boot can send If-None-Match and skip re-downloading the whole
   // workspace when nothing changed (the server answers 304).
@@ -58,43 +59,25 @@
   function setVersion(v) {
     if (typeof v !== 'number') return;
     _stateVersion = v;
-    try { localStorage.setItem(VERSION_KEY, String(v)); } catch (e) {}
+    // A version is cacheable only after its matching state has been stored.
+    try { localStorage.removeItem(VERSION_KEY); } catch (e) {}
   }
 
-  // ---- poisoned-cache guards -------------------------------------------------
-  // A cached state with ZERO projects paired with a real server version is the
-  // "empty workspace" trap: boot renders the empty cache, sends
-  // If-None-Match: "v<version>", the server answers 304 ("you're current"),
-  // and the emptiness is confirmed forever -- users see no projects/stages
-  // while the server is perfectly intact. It happens when the app persists its
-  // freshly-initialized default state (0 projects, default stages) while a
-  // version stamp from a successful call is already on disk.
-  function stateLooksEmpty(st) {
-    return !st || !Array.isArray(st.projects) || st.projects.length === 0;
-  }
   function readCachedState() {
-    try {
-      const raw = localStorage.getItem(STORAGE_KEY);
-      return raw ? JSON.parse(raw) : null;
-    } catch (e) { return null; }
+    try { return JSON.parse(localStorage.getItem(STORAGE_KEY) || 'null'); }
+    catch (e) { return null; }
   }
-  // Single funnel for every state-cache write. Refuses to persist an empty
-  // workspace once we know the server has a version (that pairing is the
-  // trap), and stays quota-safe: a failed write purges cache + version so the
-  // next boot does a clean full fetch.
   function cacheState(st) {
-    if (stateLooksEmpty(st) && typeof _stateVersion === 'number') {
-      try {
-        localStorage.removeItem(STORAGE_KEY);
-        localStorage.removeItem(VERSION_KEY);
-      } catch (e) {}
-      _stateVersion = null;
-      console.warn('[api] refused to cache an empty workspace; cleared version so the next load full-fetches');
-      return false;
-    }
-    try { localStorage.setItem(STORAGE_KEY, JSON.stringify(st)); return true; }
-    catch (e) {
-      try { localStorage.removeItem(STORAGE_KEY); localStorage.removeItem(VERSION_KEY); } catch (e2) {}
+    try {
+      // Invalidate first: a quota failure must never leave an old state with
+      // a newer version. Empty project lists are valid server snapshots too.
+      localStorage.removeItem(VERSION_KEY);
+      localStorage.setItem(STORAGE_KEY, JSON.stringify(st));
+      localStorage.setItem(CACHE_FORMAT_KEY, '2');
+      if (typeof _stateVersion === 'number') localStorage.setItem(VERSION_KEY, String(_stateVersion));
+      return true;
+    } catch (e) {
+      try { localStorage.removeItem(VERSION_KEY); } catch (e2) {}
       return false;
     }
   }
@@ -217,59 +200,43 @@
   // Conflict responses are deliberately small (no state payload). Recover by
   // refetching GET /api/state -- compressed at the proxy, and the response
   // also refreshes our version/ETag baseline.
-  let _refetchInFlight = false;
-  async function refetchServerState() {
-    if (_refetchInFlight) return;
-    _refetchInFlight = true;
-    try {
-      // force: skip If-None-Match -- we KNOW our local copy is stale (we just
-      // conflicted), so a 304 here would wrongly bless it as current.
-      const r = await api.getState({ force: true });
-      if (r && r.state) applyServerState(r.state);
-    } catch (e) {
-      console.warn('[api] state refetch after conflict failed:', e.message);
-    } finally {
-      _refetchInFlight = false;
-    }
-  }
-
-  function handleVersionConflict(body) {
-    if (body && typeof body.currentVersion === 'number') setVersion(body.currentVersion);
-    refetchServerState();
-    if (_conflictBannerShown) return;
-    showConflictBanner(
-      "Your tab was out of date — we've refreshed it with the latest data. " +
-      "Any change you just tried to save was NOT applied; please re-make it if needed."
-    );
-  }
-
-  // Send a per-subdomain write (one task / project / meta / roster / settings
-  // group), RETRYING on a version conflict with a refreshed expectedVersion
-  // instead of throwing the caller's change away. A conflict here almost always
-  // just means our version lagged because another tab/device wrote something --
-  // re-sending with the server's current version lets the edit land. Per-
-  // subdomain writes are last-write-wins on the SAME key, so this is safe: the
-  // only behavior change is that same-record edits now APPLY instead of
-  // silently vanishing. `send` must rebuild its body each call so the retry
-  // carries the refreshed _stateVersion. Only after exhausting retries do we
-  // fall back to the disruptive refetch-and-banner.
-  async function subdomainWrite(send, retries = 3) {
-    for (let attempt = 0; ; attempt++) {
+  let _refetchInFlight = null;
+  function refetchServerState() {
+    if (_refetchInFlight) return _refetchInFlight;
+    _refetchInFlight = (async () => {
       try {
-        const r = await send();
-        if (r && typeof r.version === 'number') setVersion(r.version);
-        return r;
+        const r = await api.getState({ force: true });
+        if (r && r.state) applyServerState(r.state);
+        return true;
       } catch (e) {
-        const code = e && e.body && e.body.code;
-        const conflict = (e.status === 400 && code === 'EXPECTED_VERSION_REQUIRED') ||
-                         (e.status === 409 && code === 'VERSION_CONFLICT');
-        if (conflict && attempt < retries && e.body && typeof e.body.currentVersion === 'number') {
-          setVersion(e.body.currentVersion);   // adopt server's version, retry same change
-          continue;
-        }
-        if (conflict) handleVersionConflict(e.body);   // give up: refresh + banner
-        throw e;
+        console.warn('[api] state refetch after conflict failed:', e.message);
+        return false;
+      } finally { _refetchInFlight = null; }
+    })();
+    return _refetchInFlight;
+  }
+
+  async function handleVersionConflict() {
+    const refreshed = await refetchServerState();
+    showConflictBanner(refreshed
+      ? 'Your save conflicted with newer data and was NOT applied. We refreshed this tab; please re-apply your changes.'
+      : 'Your save conflicted with newer data and was NOT applied. Refresh when the connection returns before trying again.');
+  }
+
+  // A conflict means this exact subdomain changed. Retrying the stale body
+  // with a new version would bypass the server's lost-update protection.
+  async function subdomainWrite(send) {
+    try {
+      const r = await send();
+      if (r && typeof r.version === 'number') setVersion(r.version);
+      return r;
+    } catch (e) {
+      const code = e && e.body && e.body.code;
+      if ((e.status === 400 && code === 'EXPECTED_VERSION_REQUIRED') ||
+          (e.status === 409 && code === 'VERSION_CONFLICT')) {
+        await handleVersionConflict();
       }
+      throw e;
     }
   }
 
@@ -320,11 +287,10 @@
 
   const api = {
     status, enabled: ENABLED,
+    showConflictBanner,
     get stateVersion() { return _stateVersion; },
     setStateVersion(v) { setVersion(v); },
-    // Shared, guarded state-cache writer (quota-safe + refuses to persist an
-    // empty workspace beside a version stamp). Other layers route their cache
-    // writes through this so the guards can't be bypassed.
+    // Store state before its version; quota failures leave no reusable ETag.
     cacheState(st) { return cacheState(st || window.state); },
 
     // Coarse state-blob endpoint. Sends If-None-Match with the version we
@@ -334,23 +300,17 @@
     // serve from.
     getState: async (opts = {}) => {
       const headers = {};
-      // Only claim "I already have v<N>" when the local copy is actually
-      // WORTH keeping. A cache with no projects must never earn a 304 --
-      // that's what pins users to an empty workspace while the server is
-      // fine. A poisoned pair is dropped here so this very request
-      // full-fetches and the client self-heals.
       const cached = readCachedState();
-      const usableLocal = !stateLooksEmpty(cached);
-      if (cached && !usableLocal) {
-        try {
-          localStorage.removeItem(STORAGE_KEY);
-          localStorage.removeItem(VERSION_KEY);
-        } catch (e) {}
-        _stateVersion = null;
-        console.warn('[api] discarded an empty cached workspace; fetching the full state from the server');
-      }
-      if (!opts.force && typeof _stateVersion === 'number' && usableLocal) {
-        headers['If-None-Match'] = `"v${_stateVersion}"`;
+      let cachedVersion = null, cacheFormat = null;
+      try {
+        cachedVersion = localStorage.getItem(VERSION_KEY);
+        cacheFormat = localStorage.getItem(CACHE_FORMAT_KEY);
+      } catch (e) {}
+      // Old builds could pair stale data with the latest version. Full-fetch
+      // those caches once on upgrade; empty caches also always revalidate.
+      if (!opts.force && cacheFormat === '2' && cached && Array.isArray(cached.projects) && cached.projects.length > 0 &&
+          typeof _stateVersion === 'number' && cachedVersion === String(_stateVersion)) {
+        headers['If-None-Match'] = '"v' + _stateVersion + '"';
       }
       const r = await request('/api/state', { headers, allow304: true });
       if (r && typeof r.version === 'number') setVersion(r.version);
@@ -372,7 +332,7 @@
         const code = e && e.body && e.body.code;
         if ((e.status === 400 && code === 'EXPECTED_VERSION_REQUIRED') ||
             (e.status === 409 && code === 'VERSION_CONFLICT')) {
-          handleVersionConflict(e.body);
+          await handleVersionConflict(e.body);
         } else if (e.status === 409 && code === 'DESTRUCTIVE_DELETE') {
           const choice = handleDestructiveDelete(e.body);
           if (choice === 'force') {
@@ -387,10 +347,7 @@
       }
     },
     
-    // Subdomain-based sync endpoints. Each retries on a version conflict via
-    // subdomainWrite (re-sending with the server's current version) instead of
-    // discarding the change. The body is rebuilt inside the thunk on every
-    // attempt so the retry carries the refreshed expectedVersion.
+    // Versioned writes reject conflicts without replaying stale data.
     putProjectState: (project) => subdomainWrite(() => request(
       `/api/state/projects/${encodeURIComponent(project.id)}`,
       { method: 'PUT', body: JSON.stringify({ project, ...syncFields() }) }

@@ -212,27 +212,50 @@
     if (!batch || !batch.length) return;
     let lastByUserName = null;
     let lastVersion = null;
+    const baseline = window.lastSyncedState || window.state;
+    let remote = JSON.parse(JSON.stringify(baseline));
     for (const payload of batch) {
-      _applyOneRemotePayload(payload);
+      remote = _applyOneRemotePayload(JSON.parse(JSON.stringify(payload)), remote);
       if (payload.byUserName) lastByUserName = payload.byUserName;
       if (typeof payload.version === 'number') lastVersion = payload.version;
     }
-    window.lastSyncedState = JSON.parse(JSON.stringify(window.state));
-    // Guarded write (see api.cacheState): quota-safe AND refuses to persist an
-    // empty workspace beside a version stamp (the 304 "empty forever" trap).
-    if (window.api && typeof window.api.cacheState === 'function') {
-      window.api.cacheState(window.state);
-    } else {
-      try { localStorage.setItem('sbg_precon_tracker_v3', JSON.stringify(window.state)); }
-      catch(e) {
-        try { localStorage.removeItem('sbg_precon_tracker_v3'); localStorage.removeItem('sbg_state_version'); } catch(e2) {}
+    let conflicts = false;
+    // Rebase pending edits onto the received changes. Keyed arrays (projects,
+    // tasks, roster) merge by id so a sibling edit is never marked synced or
+    // overwritten. For overlapping edits the server wins, with a visible notice.
+    const same = (a, b) => JSON.stringify(a) === JSON.stringify(b);
+    function merge(local, base, incoming) {
+      if (same(local, base) || same(local, incoming)) return incoming;
+      if (same(incoming, base)) return local;
+      const keyed = v => Array.isArray(v) && v.every(x => x && typeof x === 'object' && x.id);
+      if (keyed(local) && keyed(base) && keyed(incoming)) {
+        const lm = new Map(local.map(x => [x.id, x]));
+        const bm = new Map(base.map(x => [x.id, x]));
+        const rm = new Map(incoming.map(x => [x.id, x]));
+        return [...new Set([...rm.keys(), ...lm.keys()])]
+          .map(id => merge(lm.get(id), bm.get(id), rm.get(id))).filter(x => x !== undefined);
       }
+      const object = v => v && typeof v === 'object' && !Array.isArray(v);
+      if (object(local) && object(base) && object(incoming)) {
+        const out = {};
+        for (const key of new Set([...Object.keys(local), ...Object.keys(base), ...Object.keys(incoming)])) {
+          const value = merge(local[key], base[key], incoming[key]);
+          if (value !== undefined) out[key] = value;
+        }
+        return out;
+      }
+      conflicts = true;
+      return incoming;
     }
-    // Track the server's monotonic state version so the next saveState() PUTs
-    // the right `expectedVersion` and doesn't trip the optimistic-concurrency
-    // guard (which would otherwise treat a fresh post-broadcast save as stale).
+    window.state = merge(window.state, baseline, remote);
+    // Keep the server baseline independent from mutable UI objects.
+    window.lastSyncedState = JSON.parse(JSON.stringify(remote));
     if (lastVersion !== null && window.api && typeof window.api.setStateVersion === 'function') {
       window.api.setStateVersion(lastVersion);
+    }
+    if (window.api && typeof window.api.cacheState === 'function') window.api.cacheState(window.state);
+    if (conflicts && window.api && window.api.showConflictBanner) {
+      window.api.showConflictBanner('A teammate changed data you were editing. The server version was kept for overlapping edits; please review and re-apply those changes.');
     }
     if (typeof render === 'function') render();
     if (lastByUserName && shouldShowEditToast(lastByUserName)) showToast('Updated by ' + lastByUserName);
@@ -240,16 +263,16 @@
 
   // Merge ONE payload into window.state (no persist/render -- the batch does
   // that once at the end).
-  function _applyOneRemotePayload(payload) {
-    if (!payload || !payload.state) return;
+  function _applyOneRemotePayload(payload, sourceState) {
+    if (!payload || !payload.state) return sourceState;
 
     // Merge: replace top-level state fields by subdomain to avoid wiping out other data
-    const newState = { ...window.state };
+    const newState = { ...sourceState };
     
     for (const key of Object.keys(payload.state)) {
       if (key === 'projects' && Array.isArray(payload.state.projects)) {
         // Merge projects: update/add received project(s), preserve others
-        const projectMap = new Map(newState.projects.map(p => [p.id, p]));
+        const projectMap = new Map((payload.replaceState ? [] : newState.projects).map(p => [p.id, p]));
         for (const p of payload.state.projects) {
           projectMap.set(p.id, p);
         }
@@ -310,21 +333,25 @@
     }
 
     const localUiFlags = {
-      activeProjectId: window.state.activeProjectId,
-      activeStageId: window.state.activeStageId,
-      activeAssignee: window.state.activeAssignee,
-      grouping: window.state.grouping,
-      viewMode: window.state.viewMode,
+      activeProjectId: sourceState.activeProjectId,
+      activeStageId: sourceState.activeStageId,
+      activeAssignee: sourceState.activeAssignee,
+      grouping: sourceState.grouping,
+      viewMode: sourceState.viewMode,
       // Device-local UI prefs: never let a remote user's values clobber ours
       // (these no longer travel from an up-to-date server, but a peer on an
       // older build could still broadcast them).
-      sidebarCollapsed: window.state.sidebarCollapsed,
-      homeView: window.state.homeView,
-      currentUser: window.state.currentUser,
+      sidebarCollapsed: sourceState.sidebarCollapsed,
+      homeView: sourceState.homeView,
+      currentUser: sourceState.currentUser,
       bulkSelectionMode: false, bulkSelectedTaskIds: [],
     };
     
-    window.state = { ...newState, ...localUiFlags };
+    if (payload.deletedProjectId && sourceState.activeProjectId === payload.deletedProjectId) {
+      localUiFlags.activeProjectId = newState.activeProjectId;
+      localUiFlags.homeView = newState.homeView;
+    }
+    return { ...newState, ...localUiFlags };
   }
 
   function reportActiveProject() {

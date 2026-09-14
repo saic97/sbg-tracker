@@ -71,6 +71,7 @@
         window.state.bulkSelectionMode = false;
         window.state.bulkSelectedTaskIds = [];
         window.lastSyncedState = JSON.parse(JSON.stringify(window.state));
+        window.api.cacheState(window.state);
         return true;
       }
     } catch (err) {
@@ -93,6 +94,10 @@
     _syncInFlight = true;
     try {
       await _performIncrementalSyncInner();
+    } catch (err) {
+      // A conflict refetch replaced the state/baseline. Stop using the stale
+      // references from this pass, including subsequent tasks and deletions.
+      console.warn('Sync pass stopped:', err.message);
     } finally {
       _syncInFlight = false;
       if (_syncQueued) { _syncQueued = false; scheduleApiSync(); }
@@ -103,12 +108,10 @@
     const state = window.state;
     const currentProjects = state.projects || [];
     const syncedProjects = window.lastSyncedState.projects || [];
-    const currentProjMap = new Map(currentProjects.map(p => [p.id, p]));
-    const syncedProjMap = new Map(syncedProjects.map(p => [p.id, p]));
 
     // Projects to delete
     for (const sp of syncedProjects) {
-      if (!currentProjMap.has(sp.id)) {
+      if (!(window.state.projects || []).some(p => p.id === sp.id)) {
         try {
           await window.api.deleteProjectState(sp.id);
           window.lastSyncedState.projects =
@@ -118,15 +121,16 @@
     }
 
     // Projects to add / update (task-level diff)
-    for (const cp of currentProjects) {
-      const sp = syncedProjMap.get(cp.id);
+    for (const queuedProject of currentProjects) {
+      const cp = (window.state.projects || []).find(p => p.id === queuedProject.id);
+      if (!cp) continue;
+      const sp = (window.lastSyncedState.projects || []).find(p => p.id === cp.id);
       if (sp && JSON.stringify(cp) === JSON.stringify(sp)) continue;
       if (!sp) {
         const sentCopy = JSON.parse(JSON.stringify(cp));
         try {
           await window.api.putProjectState(sentCopy);
-          const list = window.lastSyncedState.projects || (window.lastSyncedState.projects = []);
-          list.push(sentCopy);
+          replaceInLastSynced(sentCopy);
         } catch (err) { handleSyncError(err); }
         continue;
       }
@@ -134,8 +138,8 @@
     }
 
     // Team members diff
-    if (JSON.stringify(state.teamMembers) !== JSON.stringify(window.lastSyncedState.teamMembers)) {
-      const sentCopy = JSON.parse(JSON.stringify(state.teamMembers));
+    if (JSON.stringify(window.state.teamMembers) !== JSON.stringify(window.lastSyncedState.teamMembers)) {
+      const sentCopy = JSON.parse(JSON.stringify(window.state.teamMembers));
       try {
         await window.api.putTeamMembersState(sentCopy);
         window.lastSyncedState.teamMembers = sentCopy;
@@ -143,8 +147,8 @@
     }
 
     // Templates diff
-    if (JSON.stringify(state.taskTemplates) !== JSON.stringify(window.lastSyncedState.taskTemplates)) {
-      const sentCopy = JSON.parse(JSON.stringify(state.taskTemplates));
+    if (JSON.stringify(window.state.taskTemplates) !== JSON.stringify(window.lastSyncedState.taskTemplates)) {
+      const sentCopy = JSON.parse(JSON.stringify(window.state.taskTemplates));
       try {
         await window.api.putTemplatesState(sentCopy);
         window.lastSyncedState.taskTemplates = sentCopy;
@@ -157,8 +161,8 @@
       const payload = {};
       const changed = [];
       for (const key of keys) {
-        if (JSON.stringify(state[key]) !== JSON.stringify(window.lastSyncedState[key])) {
-          payload[key] = JSON.parse(JSON.stringify(state[key] === undefined ? null : state[key]));
+        if (JSON.stringify(window.state[key]) !== JSON.stringify(window.lastSyncedState[key])) {
+          payload[key] = JSON.parse(JSON.stringify(window.state[key] === undefined ? null : window.state[key]));
           changed.push(key);
         }
       }
@@ -169,10 +173,10 @@
       } catch (err) { handleSyncError(err); }
     }
 
-    // Guarded write (see api.cacheState): quota-safe AND refuses to persist an
-    // empty workspace beside a version stamp (the 304 "empty forever" trap).
+    // Cache the current UI state, including remote updates received while
+    // this pass was waiting for PUT responses, before persisting its version.
     if (window.api && typeof window.api.cacheState === 'function') {
-      window.api.cacheState(state);
+      window.api.cacheState(window.state);
     } else {
       try { localStorage.setItem(STORAGE_KEY, JSON.stringify(state)); }
       catch (e) {
@@ -210,38 +214,52 @@
       return;
     }
 
-    const syncedProj = JSON.parse(JSON.stringify(sp));
-    syncedProj.tasks = syncedProj.tasks || [];
-    const syncedTaskMap = new Map(syncedProj.tasks.map(t => [t.id, t]));
+    // Remote deltas can arrive while a PUT is awaiting its response. Patch
+    // only the acknowledged entity in the latest baseline, not a pre-await
+    // project snapshot that would erase those sibling changes.
+    function currentBaseline() {
+      return (window.lastSyncedState.projects || []).find(p => p.id === cp.id);
+    }
 
     for (const t of changedTasks) {
-      const sent = JSON.parse(JSON.stringify(t));
+      const live = (window.state.projects || []).find(p => p.id === cp.id);
+      const latest = live && (live.tasks || []).find(task => task.id === t.id);
+      const base = currentBaseline();
+      const synced = base && (base.tasks || []).find(task => task.id === t.id);
+      if (!latest || JSON.stringify(latest) === JSON.stringify(synced)) continue;
+      const sent = JSON.parse(JSON.stringify(latest));
       try {
         await window.api.putTaskState(cp.id, sent);
-        syncedTaskMap.set(sent.id, sent);
+        const proj = currentBaseline();
+        if (proj) {
+          const tasks = (proj.tasks || []).filter(task => task.id !== sent.id);
+          tasks.push(sent);
+          proj.tasks = tasks;
+        }
       } catch (err) { handleSyncError(err); }
     }
     for (const tid of deletedTaskIds) {
+      const live = (window.state.projects || []).find(p => p.id === cp.id);
+      if (!live || (live.tasks || []).some(task => task.id === tid)) continue;
       try {
         await window.api.deleteTaskState(cp.id, tid);
-        syncedTaskMap.delete(tid);
+        const proj = currentBaseline();
+        if (proj) proj.tasks = (proj.tasks || []).filter(task => task.id !== tid);
       } catch (err) { handleSyncError(err); }
     }
     if (metaChanged) {
-      const sentMeta = JSON.parse(JSON.stringify(cpMeta));
+      const live = (window.state.projects || []).find(p => p.id === cp.id);
+      if (!live) return;
+      const sentMeta = JSON.parse(JSON.stringify(live));
+      delete sentMeta.tasks;
+      delete sentMeta.subBids;
       try {
         await window.api.putProjectMeta(sentMeta);
-        Object.assign(syncedProj, sentMeta);
+        const proj = currentBaseline();
+        if (proj) Object.assign(proj, sentMeta);
       } catch (err) { handleSyncError(err); }
     }
 
-    syncedProj.tasks = Array.from(syncedTaskMap.values());
-    if (Object.prototype.hasOwnProperty.call(cp, 'subBids')) {
-      syncedProj.subBids = JSON.parse(JSON.stringify(cp.subBids));
-    } else {
-      delete syncedProj.subBids;
-    }
-    replaceInLastSynced(syncedProj);
   }
 
   function replaceInLastSynced(proj) {
@@ -252,7 +270,7 @@
 
   function handleSyncError(err) {
     if (err.status === 409 || err.status === 400) {
-      console.warn('Sync conflict detected, server state applied:', err.message);
+      throw err;
     } else {
       console.warn('Sync failed:', err.message);
     }

@@ -31,6 +31,9 @@ jobs:
       - name: Validate HTML
         run: npx html-validate frontend/index.html || true   # warnings allowed for now
 
+      - name: Test frontend synchronization
+        run: node --test backend/test/frontend-sync.test.js
+
       - name: JS syntax check (acorn parse)
         run: |
           node -e "
