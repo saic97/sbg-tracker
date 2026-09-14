@@ -126,6 +126,34 @@ const FIXUPS = [
     find: /<\/strong> business days from /g,
     replace: '</strong> calendar days from ',
   },
+  {
+    // Manage Team -> "Reassign person" (executeReassignPerson) swapped only the
+    // legacy assignee scalar. leads[] is authoritative: the load-time sync
+    // rewrites assignee = leads[0], and the task editor loads its lead chips
+    // from leads. So a Colton -> Reshma reassignment reverted to Colton on the
+    // next reload -- or the moment anyone saved that task in the editor, even
+    // with no changes. Reproduced with the real functions (leads ["Colton"] +
+    // assignee "Reshma" -> reload -> assignee "Colton"). Mirror the V153 fix in
+    // applyReassignment: update leads[] (case-insensitive match), then derive
+    // assignee from leads[0]. The match condition is unchanged, so the
+    // confirmation dialog's counts stay accurate.
+    name: 'reassign person: update leads[] (not just assignee)',
+    find: /(if \(\(roles === 'both' \|\| roles === 'assignee'\) && t\.assignee === fromName\) \{)\s*\n\s*t\.assignee = toName;\s*\n\s*actualUpdates\+\+;/g,
+    replace: [
+      '$1',
+      "        const _from = String(fromName).trim().toLowerCase();",
+      "        if (Array.isArray(t.leads) && t.leads.length > 0) {",
+      "          const _li = t.leads.findIndex(n => String(n || '').trim().toLowerCase() === _from);",
+      "          if (_li !== -1) { if (toName) t.leads[_li] = toName; else t.leads.splice(_li, 1); }",
+      "          else if (toName) t.leads.unshift(toName);",
+      "          t.leads = Array.from(new Set(t.leads.filter(n => n && String(n).trim())));",
+      "        } else {",
+      "          t.leads = toName ? [toName] : [];",
+      "        }",
+      "        t.assignee = t.leads[0] || '';",
+      "        actualUpdates++;",
+    ].join('\n'),
+  },
 ];
 for (const f of FIXUPS) {
   const n = (js.match(f.find) || []).length;
