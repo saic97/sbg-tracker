@@ -2793,7 +2793,16 @@ function executeReassignPerson() {
 
       // Lead assignment
       if ((roles === 'both' || roles === 'assignee') && t.assignee === fromName) {
-        t.assignee = toName;
+        const _from = String(fromName).trim().toLowerCase();
+        if (Array.isArray(t.leads) && t.leads.length > 0) {
+          const _li = t.leads.findIndex(n => String(n || '').trim().toLowerCase() === _from);
+          if (_li !== -1) { if (toName) t.leads[_li] = toName; else t.leads.splice(_li, 1); }
+          else if (toName) t.leads.unshift(toName);
+          t.leads = Array.from(new Set(t.leads.filter(n => n && String(n).trim())));
+        } else {
+          t.leads = toName ? [toName] : [];
+        }
+        t.assignee = t.leads[0] || '';
         actualUpdates++;
         // Reset acknowledgment so the new owner sees it as new (when reassigning to someone real)
         if (resetAck && toName) {
