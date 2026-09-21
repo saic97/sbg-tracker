@@ -956,6 +956,1216 @@
      ============================================================ */
   #teamInsightsView { padding: 24px 32px; }
   #teamInsightsView.hidden { display: none; }
+  /* v198: Executive View — clean, minimal layout for at-a-glance scanning.
+     One row per project, ONE overall progress bar, milestone checkpoints
+     below as simple dots (✓ done, ◐ current, ○ pending). Uniform sizing
+     so the eye can compare projects vertically. */
+  .ev-header {
+    margin-bottom: 20px;
+    padding: 18px 22px;
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 6px;
+  }
+  .ev-title-row {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    gap: 16px;
+    flex-wrap: wrap;
+  }
+  .ev-title {
+    font-family: 'Barlow Condensed', sans-serif;
+    font-size: 26px;
+    font-weight: 800;
+    letter-spacing: 0.02em;
+    color: var(--sbg-navy);
+    margin: 0;
+    line-height: 1.1;
+  }
+  .ev-subtitle {
+    margin-top: 3px;
+    font-size: 12px;
+    color: var(--text-dim);
+  }
+  .ev-actions {
+    display: flex;
+    gap: 10px;
+    align-items: center;
+  }
+  .ev-toggle-group {
+    display: inline-flex;
+    background: var(--surface-2);
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    overflow: hidden;
+  }
+  .ev-toggle-btn {
+    padding: 7px 14px;
+    background: transparent;
+    color: var(--text-dim);
+    border: none;
+    font-family: 'Barlow Condensed', sans-serif;
+    font-size: 12px;
+    font-weight: 700;
+    letter-spacing: 0.05em;
+    text-transform: uppercase;
+    cursor: pointer;
+    transition: background 0.15s, color 0.15s;
+  }
+  .ev-toggle-btn:hover { background: var(--surface-3); color: var(--text); }
+  .ev-toggle-btn.active { background: var(--sbg-navy); color: #fff; }
+  .ev-summary-strip {
+    display: flex;
+    gap: 24px;
+    flex-wrap: wrap;
+    margin-top: 14px;
+    padding-top: 12px;
+    border-top: 1px solid var(--border);
+  }
+  .ev-summary-item {
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+  }
+  .ev-summary-item .sm-value {
+    font-family: 'JetBrains Mono', monospace;
+    font-weight: 800;
+    font-size: 20px;
+    color: var(--sbg-navy);
+    line-height: 1;
+  }
+  .ev-summary-item .sm-label {
+    font-family: 'Barlow Condensed', sans-serif;
+    font-size: 10px;
+    font-weight: 700;
+    color: var(--text-dim);
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+  }
+  /* v207: View-mode toggle (Cards / Calendar) — sits before the Hours/Tasks toggle */
+  .ev-viewmode-group {
+    display: inline-flex;
+    background: var(--surface-2);
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    overflow: hidden;
+  }
+  .ev-viewmode-btn {
+    padding: 7px 14px;
+    background: transparent;
+    color: var(--text-dim);
+    border: none;
+    font-family: 'Barlow Condensed', sans-serif;
+    font-size: 12px;
+    font-weight: 700;
+    letter-spacing: 0.05em;
+    text-transform: uppercase;
+    cursor: pointer;
+    transition: background 0.15s, color 0.15s;
+  }
+  .ev-viewmode-btn:hover { background: var(--surface-3); color: var(--text); }
+  .ev-viewmode-btn.active { background: var(--sbg-gold); color: #fff; }
+  /* v210: Group By toggle — same style as viewmode-group but sits next to
+     it. Active button shows solid navy so it visually differs from the
+     gold-active viewmode toggle. */
+  .ev-groupby-group {
+    display: inline-flex;
+    background: var(--surface-2);
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    overflow: hidden;
+  }
+  .ev-groupby-btn {
+    padding: 7px 12px;
+    background: transparent;
+    color: var(--text-dim);
+    border: none;
+    font-family: 'Barlow Condensed', sans-serif;
+    font-size: 12px;
+    font-weight: 700;
+    letter-spacing: 0.05em;
+    text-transform: uppercase;
+    cursor: pointer;
+    transition: background 0.15s, color 0.15s;
+  }
+  .ev-groupby-btn:hover { background: var(--surface-3); color: var(--text); }
+  .ev-groupby-btn.active { background: var(--sbg-navy); color: #fff; }
+  /* v210: Lead-estimator section header — same base as ev-section-header
+     but with a stats row and optional support-count note */
+  .ev-section-header.ev-section-lead {
+    background: linear-gradient(90deg, var(--sbg-navy) 0%, #143a5f 100%);
+  }
+  .ev-section-header.ev-section-lead.has-urgent {
+    background: linear-gradient(90deg, var(--sbg-navy) 0%, #4a2320 100%);
+    border-left: 3px solid var(--sbg-red);
+  }
+  .ev-section-header.ev-section-unassigned {
+    background: linear-gradient(90deg, #6b7687 0%, #4a5568 100%);
+  }
+  .ev-lead-stats {
+    display: inline-flex;
+    align-items: baseline;
+    gap: 10px;
+    font-family: 'Barlow Condensed', sans-serif;
+    font-size: 11px;
+    letter-spacing: 0.06em;
+    text-transform: uppercase;
+    color: rgba(255,255,255,0.85);
+    font-weight: 600;
+    margin-left: 4px;
+  }
+  .ev-lead-stat strong {
+    color: #fff;
+    font-family: 'JetBrains Mono', monospace;
+    font-weight: 800;
+    font-size: 13px;
+    margin-right: 2px;
+  }
+  .ev-lead-stat.is-urgent { color: #fff; }
+  .ev-lead-stat.is-urgent strong {
+    color: #ff8a80;
+    text-shadow: 0 0 6px rgba(255,138,128,0.35);
+  }
+  /* v207: Bid Calendar — monthly grid showing all Currently Bidding due dates */
+  .ev-calendar {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    padding: 16px 18px;
+  }
+  .ev-cal-toolbar {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    margin-bottom: 12px;
+    flex-wrap: wrap;
+  }
+  .ev-cal-title {
+    font-family: 'Barlow Condensed', sans-serif;
+    font-size: 22px;
+    font-weight: 800;
+    color: var(--sbg-navy);
+    letter-spacing: 0.03em;
+    text-transform: uppercase;
+    margin-left: 10px;
+  }
+  .ev-cal-monthstat {
+    margin-left: auto;
+    font-family: 'Barlow Condensed', sans-serif;
+    font-size: 12px;
+    color: var(--text-dim);
+    letter-spacing: 0.06em;
+    text-transform: uppercase;
+  }
+  .ev-cal-monthstat strong {
+    color: var(--sbg-navy);
+    font-family: 'JetBrains Mono', monospace;
+    font-weight: 800;
+    font-size: 15px;
+  }
+  .ev-cal-legend {
+    display: flex;
+    gap: 14px;
+    padding: 8px 10px;
+    background: var(--surface-2);
+    border-radius: 4px;
+    margin-bottom: 10px;
+    font-size: 11px;
+    color: var(--text-dim);
+    flex-wrap: wrap;
+    font-family: 'Barlow Condensed', sans-serif;
+    letter-spacing: 0.04em;
+    text-transform: uppercase;
+    font-weight: 700;
+  }
+  .ev-cal-legend-item {
+    display: inline-flex;
+    align-items: center;
+    gap: 5px;
+  }
+  .ev-cal-legend-dot {
+    width: 10px;
+    height: 10px;
+    border-radius: 2px;
+    display: inline-block;
+  }
+  .ev-cal-legend-dot.is-urgent   { background: var(--sbg-red); }
+  .ev-cal-legend-dot.is-warning  { background: var(--sbg-gold); }
+  .ev-cal-legend-dot.is-safe     { background: #2e7d52; }
+  .ev-cal-legend-dot.is-past-bid { background: #6b7687; }
+  /* Grid — 7 day columns */
+  .ev-cal-grid {
+    display: flex;
+    flex-direction: column;
+    border: 1px solid var(--border);
+    border-radius: 4px;
+    overflow: hidden;
+  }
+  .ev-cal-dowrow {
+    display: grid;
+    grid-template-columns: repeat(7, 1fr);
+    background: var(--sbg-navy);
+    color: #fff;
+  }
+  .ev-cal-dowheader {
+    padding: 6px 8px;
+    font-family: 'Barlow Condensed', sans-serif;
+    font-size: 10px;
+    font-weight: 800;
+    letter-spacing: 0.1em;
+    text-transform: uppercase;
+    text-align: center;
+    color: #fff;
+  }
+  .ev-cal-dowheader.is-weekend { background: rgba(0,0,0,0.15); color: rgba(255,255,255,0.75); }
+  .ev-cal-cells {
+    display: grid;
+    grid-template-columns: repeat(7, 1fr);
+    grid-auto-rows: minmax(80px, auto);
+  }
+  .ev-cal-day {
+    background: var(--surface);
+    border-right: 1px solid var(--border);
+    border-bottom: 1px solid var(--border);
+    padding: 4px 6px;
+    display: flex;
+    flex-direction: column;
+    gap: 3px;
+    min-height: 80px;
+    position: relative;
+  }
+  .ev-cal-day:nth-child(7n) { border-right: none; }
+  .ev-cal-day.is-other-month { background: var(--surface-2); opacity: 0.55; }
+  .ev-cal-day.is-weekend { background: rgba(107,118,135,0.04); }
+  .ev-cal-day.is-past .ev-cal-day-num { color: var(--text-faint); }
+  .ev-cal-day.is-today {
+    background: rgba(192,127,0,0.08);
+    outline: 2px solid var(--sbg-gold);
+    outline-offset: -2px;
+    z-index: 1;
+  }
+  .ev-cal-day.has-bids { background: rgba(200,50,43,0.02); }
+  .ev-cal-day-num {
+    font-family: 'JetBrains Mono', monospace;
+    font-size: 12px;
+    font-weight: 700;
+    color: var(--text);
+    line-height: 1;
+  }
+  .ev-cal-day.is-today .ev-cal-day-num {
+    color: var(--sbg-gold);
+    font-weight: 800;
+    font-size: 13px;
+  }
+  .ev-cal-bids {
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+    overflow: hidden;
+  }
+  .ev-cal-bid {
+    font-family: 'Barlow Condensed', sans-serif;
+    font-size: 10px;
+    font-weight: 700;
+    letter-spacing: 0.02em;
+    text-transform: uppercase;
+    padding: 2px 5px;
+    border-radius: 3px;
+    color: #fff;
+    background: #6b7687;
+    cursor: pointer;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    line-height: 1.2;
+  }
+  .ev-cal-bid:hover { filter: brightness(1.1); }
+  .ev-cal-bid.is-urgent   { background: var(--sbg-red); }
+  .ev-cal-bid.is-warning  { background: var(--sbg-gold); }
+  .ev-cal-bid.is-safe     { background: #2e7d52; }
+  .ev-cal-bid.is-past-bid { background: #6b7687; opacity: 0.75; }
+  body.dark-mode .ev-calendar { background: var(--surface); }
+  body.dark-mode .ev-cal-day { background: var(--surface); border-color: var(--border-dark, #30363d); }
+  body.dark-mode .ev-cal-day.is-other-month { background: rgba(255,255,255,0.02); }
+
+  /* v200: Project filter chip strip — click a chip to show/hide that
+     project. Active chips have solid navy background; inactive are
+     muted with strikethrough so it's obvious which are hidden. */
+  .ev-filter-strip {
+    margin-top: 14px;
+    padding-top: 12px;
+    border-top: 1px solid var(--border);
+  }
+  .ev-filter-header {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    margin-bottom: 8px;
+  }
+  .ev-filter-label {
+    font-family: 'Barlow Condensed', sans-serif;
+    font-size: 11px;
+    font-weight: 700;
+    color: var(--text-dim);
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+  }
+  .ev-filter-all-btn {
+    background: transparent;
+    border: 1px solid var(--border);
+    color: var(--text-dim);
+    font-family: 'Barlow Condensed', sans-serif;
+    font-size: 10px;
+    font-weight: 700;
+    letter-spacing: 0.05em;
+    text-transform: uppercase;
+    padding: 3px 8px;
+    border-radius: 3px;
+    cursor: pointer;
+    transition: background 0.15s, color 0.15s;
+  }
+  .ev-filter-all-btn:hover {
+    background: var(--surface-2);
+    color: var(--text);
+    border-color: var(--sbg-navy);
+  }
+  .ev-filter-chips {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 6px;
+  }
+  .ev-filter-chip {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    padding: 4px 10px;
+    background: var(--sbg-navy);
+    color: #fff;
+    border-radius: 12px;
+    border: 1px solid var(--sbg-navy);
+    font-family: 'Barlow Condensed', sans-serif;
+    font-size: 11px;
+    font-weight: 700;
+    letter-spacing: 0.03em;
+    cursor: pointer;
+    transition: background 0.15s, opacity 0.15s;
+    max-width: 220px;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    user-select: none;
+  }
+  .ev-filter-chip:hover { opacity: 0.85; }
+  .ev-filter-chip.is-hidden {
+    background: transparent;
+    color: var(--text-dim);
+    border-color: var(--border);
+    text-decoration: line-through;
+    opacity: 0.7;
+  }
+  .ev-filter-chip .fc-check { font-size: 10px; opacity: 0.9; }
+  .ev-filter-chip.is-hidden .fc-check { visibility: hidden; }
+  /* v198: ONE column list, not a grid — vertical scan is what executives do */
+  .ev-grid {
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+  }
+  /* v204: Big section headers between Currently Bidding and Post Bid
+     groups. Prominent and unmissable so executives can visually
+     distinguish active pursuits from completed ones. */
+  .ev-section-header {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    padding: 8px 14px;
+    margin: 6px 0 3px 0;
+    border-radius: 5px;
+    background: var(--sbg-navy);
+    color: #fff;
+    font-family: 'Barlow Condensed', sans-serif;
+    letter-spacing: 0.04em;
+  }
+  .ev-section-header:first-child { margin-top: 0; }
+  .ev-section-header .ev-section-icon {
+    font-size: 18px;
+    line-height: 1;
+  }
+  .ev-section-header .ev-section-title {
+    font-size: 17px;
+    font-weight: 800;
+    letter-spacing: 0.03em;
+    text-transform: uppercase;
+    color: #fff;
+    flex-shrink: 0;
+  }
+  .ev-section-header .ev-section-count {
+    padding: 2px 8px;
+    background: rgba(255,255,255,0.18);
+    border-radius: 10px;
+    font-size: 10px;
+    font-weight: 700;
+    letter-spacing: 0.06em;
+    text-transform: uppercase;
+    color: #fff;
+  }
+  .ev-section-header .ev-section-note {
+    margin-left: auto;
+    font-size: 10px;
+    font-weight: 600;
+    color: rgba(255,255,255,0.75);
+    font-style: italic;
+    letter-spacing: 0.03em;
+  }
+  /* Post Bid variant: muted grey tone so it reads as secondary */
+  .ev-section-header.ev-section-post-bid {
+    background: linear-gradient(135deg, #4a5568 0%, #2d3748 100%);
+  }
+  .ev-section-header.ev-section-post-bid .ev-section-title {
+    color: #fff;
+  }
+  body.dark-mode .ev-section-header {
+    box-shadow: 0 2px 6px rgba(0,0,0,0.3);
+  }
+  /* v206: More condensed. Padding + gap reduced. Footer row eliminated
+     — all meta lives in the header now. Card shorter overall. */
+  .ev-card {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-left: 3px solid var(--text-faint);
+    border-radius: 5px;
+    padding: 6px 10px;
+    cursor: pointer;
+    transition: box-shadow 0.15s;
+    display: flex;
+    flex-direction: column;
+    gap: 3px;
+  }
+  .ev-card:hover {
+    box-shadow: 0 4px 14px rgba(10, 37, 64, 0.10);
+  }
+  .ev-card.is-urgent  { border-left-color: var(--sbg-red); }
+  .ev-card.is-warning { border-left-color: var(--sbg-gold); }
+  .ev-card.is-safe    { border-left-color: #2e7d52; }
+  /* HEADER ROW — title + dense meta line + current stage on left, compact % on right */
+  .ev-card-header-row {
+    display: flex;
+    justify-content: space-between;
+    align-items: flex-start;
+    gap: 10px;
+  }
+  /* v209: Header-left is a single horizontal flex row — title (large) at the
+     start, then all meta info (small) baseline-aligned to its right. Fills
+     the space between the title and the % column. Metaline wraps naturally
+     when there isn't enough horizontal room. */
+  .ev-card-header-left {
+    flex: 1;
+    min-width: 0;
+    display: flex;
+    align-items: baseline;
+    flex-wrap: wrap;
+    gap: 8px;
+    row-gap: 2px;
+  }
+  .ev-card-title {
+    font-family: 'Barlow Condensed', sans-serif;
+    font-size: 16px;
+    font-weight: 800;
+    letter-spacing: 0.02em;
+    color: var(--sbg-navy);
+    margin: 0;
+    line-height: 1.05;
+    flex-shrink: 0;
+  }
+  .ev-card-metaline {
+    font-family: 'JetBrains Mono', monospace;
+    font-size: 10px;
+    color: var(--text-dim);
+    display: inline-flex;
+    gap: 4px;
+    align-items: baseline;
+    flex-wrap: wrap;
+    line-height: 1.2;
+    flex: 1;
+    min-width: 0;
+  }
+  .ev-card-metaline .mli strong { color: var(--text); font-weight: 700; }
+  .ev-card-metaline .mli-sep { color: var(--text-faint); }
+  .ev-card-metaline .bi-days {
+    font-weight: 800;
+    padding: 1px 6px;
+    border-radius: 8px;
+    font-size: 9.5px;
+  }
+  .ev-card.is-urgent  .bi-days { background: rgba(200,50,43,0.12); color: var(--sbg-red); }
+  .ev-card.is-warning .bi-days { background: rgba(192,127,0,0.12); color: var(--sbg-gold); }
+  .ev-card.is-safe    .bi-days { background: rgba(46,125,82,0.12); color: #2e7d52; }
+  /* v209: Currently: STAGE now lives inline in the metaline — gold-styled
+     so the eye still catches it, but no dedicated row. */
+  .mli-current-inline {
+    display: inline-flex;
+    align-items: baseline;
+    gap: 4px;
+    flex-shrink: 0;
+  }
+  .mli-current-label {
+    font-family: 'Barlow Condensed', sans-serif;
+    font-weight: 700;
+    letter-spacing: 0.05em;
+    text-transform: uppercase;
+    color: var(--text-dim);
+    font-size: 9.5px;
+  }
+  .mli-current-stage {
+    font-family: 'Barlow Condensed', sans-serif;
+    font-weight: 800;
+    letter-spacing: 0.03em;
+    text-transform: uppercase;
+    color: var(--sbg-gold);
+    font-size: 11.5px;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    min-width: 0;
+  }
+  .ev-card.is-safe .mli-current-stage { color: #2e7d52; }
+  /* v212: Small badge shown on cards when they represent a per-assignee slice.
+     Makes it unambiguous that all numbers/percent/chain reflect only that
+     person's tasks — not the whole project. */
+  .ev-slice-badge {
+    display: inline-flex;
+    align-items: center;
+    padding: 2px 7px;
+    background: rgba(192,127,0,0.15);
+    color: var(--sbg-gold);
+    border: 1px solid rgba(192,127,0,0.35);
+    border-radius: 3px;
+    font-family: 'Barlow Condensed', sans-serif;
+    font-size: 9px;
+    font-weight: 800;
+    letter-spacing: 0.09em;
+    text-transform: uppercase;
+    line-height: 1;
+    flex-shrink: 0;
+  }
+  .ev-card-header-pct {
+    display: flex;
+    flex-direction: column;
+    align-items: flex-end;
+    gap: 0;
+    flex-shrink: 0;
+    padding-left: 8px;
+    border-left: 1px solid var(--border);
+  }
+  .ev-card-percent {
+    font-family: 'JetBrains Mono', monospace;
+    font-size: 24px;
+    font-weight: 800;
+    color: var(--sbg-navy);
+    line-height: 0.9;
+    display: flex;
+    align-items: baseline;
+    gap: 1px;
+  }
+  .ev-pct-sign {
+    font-size: 13px;
+    font-weight: 700;
+    color: var(--text-dim);
+    line-height: 1;
+  }
+  .ev-card.is-urgent  .ev-card-percent { color: var(--sbg-red); }
+  .ev-card.is-warning .ev-card-percent { color: var(--sbg-gold); }
+  .ev-card.is-safe    .ev-card-percent { color: #2e7d52; }
+  .ev-card-percent-label {
+    font-family: 'Barlow Condensed', sans-serif;
+    font-size: 9px;
+    font-weight: 700;
+    color: var(--text-dim);
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+  }
+  /* PROGRESS BAR */
+  .ev-progress-track {
+    position: relative;
+    height: 6px;
+    background: var(--surface-2);
+    border-radius: 3px;
+    overflow: hidden;
+    border: 1px solid var(--border);
+  }
+  .ev-progress-fill {
+    position: absolute;
+    top: 0; left: 0; bottom: 0;
+    background: var(--sbg-navy);
+    border-radius: 4px 0 0 4px;
+    transition: width 0.3s ease;
+  }
+  .ev-card.is-urgent  .ev-progress-fill { background: var(--sbg-red); }
+  .ev-card.is-warning .ev-progress-fill { background: var(--sbg-gold); }
+  .ev-card.is-safe    .ev-progress-fill { background: #2e7d52; }
+  /* MILESTONE CHAIN — full card width, labels wrap */
+  .ev-milestones {
+    display: flex;
+    gap: 2px;
+    align-items: flex-start;
+    justify-content: space-between;
+    position: relative;
+    padding: 2px 0 1px 0;
+  }
+  .ev-milestone {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 1px;
+    flex: 1 1 0;
+    min-width: 0;
+    text-align: center;
+    position: relative;
+    z-index: 2;
+  }
+  .ev-milestone-icon {
+    width: 17px;
+    height: 17px;
+    border-radius: 50%;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-size: 9px;
+    font-weight: 700;
+    background: var(--surface-2);
+    border: 1.5px solid var(--border);
+    color: var(--text-dim);
+    flex-shrink: 0;
+  }
+  .ev-milestone.mstate-done    .ev-milestone-icon { background: #2e7d52; border-color: #2e7d52; color: #fff; }
+  .ev-milestone.mstate-current .ev-milestone-icon { background: var(--sbg-gold); border-color: var(--sbg-gold); color: #fff; box-shadow: 0 0 0 3px rgba(192,127,0,0.20); }
+  .ev-milestone.mstate-partial .ev-milestone-icon { background: var(--sbg-navy); border-color: var(--sbg-navy); color: #fff; }
+  .ev-milestone.mstate-blocked .ev-milestone-icon { background: var(--sbg-red); border-color: var(--sbg-red); color: #fff; }
+  .ev-milestone-label {
+    font-family: 'Barlow Condensed', sans-serif;
+    font-size: 8px;
+    font-weight: 700;
+    letter-spacing: 0.01em;
+    text-transform: uppercase;
+    color: var(--text-dim);
+    line-height: 1.05;
+    width: 100%;
+    overflow-wrap: break-word;
+    word-break: break-word;
+    hyphens: auto;
+    margin-top: 1px;
+  }
+  .ev-milestone.mstate-current .ev-milestone-label { color: var(--sbg-gold); font-weight: 800; }
+  .ev-milestone.mstate-done    .ev-milestone-label { color: var(--text); }
+  .ev-milestone-sub {
+    font-family: 'JetBrains Mono', monospace;
+    font-size: 8.5px;
+    font-weight: 600;
+    color: var(--text-dim);
+    line-height: 1;
+    margin-top: 0;
+  }
+  .ev-milestone-sub.is-current-sub {
+    color: var(--sbg-gold);
+    font-weight: 800;
+    font-size: 9.5px;
+  }
+  .ev-milestone-sub.is-done-sub { color: #2e7d52; }
+  /* Connector line behind milestones */
+  .ev-milestones::before {
+    content: "";
+    position: absolute;
+    top: 11px;
+    left: 3%;
+    right: 3%;
+    height: 1.5px;
+    background: var(--border);
+    z-index: 1;
+  }
+  /* v205: Print-only report title block. Hidden on screen; only shows
+     when printing so the report reads as a formal PDF document. */
+  .ev-print-title { display: none; }
+  @media print {
+    /* Page setup — letter portrait, small margins */
+    @page {
+      size: letter portrait;
+      margin: 0.4in 0.5in;
+    }
+    /* Kill all screen chrome */
+    html, body {
+      background: #fff !important;
+      color: #000 !important;
+      margin: 0 !important;
+      padding: 0 !important;
+      font-size: 10pt;
+    }
+    /* Hide EVERY off-report UI element */
+    .app-shell > .sidebar,
+    .app-shell > .sidebar-toggle,
+    .top-bar,
+    .global-header,
+    .notif-bell-container,
+    #stickyCountdownBar,
+    .modal-overlay,
+    .toast-container,
+    .main-nav,
+    #hamburgerButton,
+    .search-bar-wrapper,
+    .header-actions,
+    .side-panel { display: none !important; }
+    /* Main content takes full page */
+    .main, .content-area, .app-shell, .app-shell > .main {
+      display: block !important;
+      width: 100% !important;
+      max-width: 100% !important;
+      margin: 0 !important;
+      padding: 0 !important;
+      background: #fff !important;
+      overflow: visible !important;
+    }
+    /* Only Executive View content prints */
+    #executiveView { display: block !important; }
+    #executiveView.hidden { display: block !important; }
+    /* Show the print title block, hide interactive header controls */
+    .ev-print-title {
+      display: block !important;
+      text-align: center;
+      padding: 0 0 12pt 0;
+      border-bottom: 2pt solid #0a2540;
+      margin-bottom: 12pt;
+      break-after: avoid;
+    }
+    .ev-print-brand {
+      display: flex;
+      justify-content: space-between;
+      align-items: baseline;
+      font-family: 'Barlow Condensed', Arial, sans-serif;
+      margin-bottom: 8pt;
+    }
+    .ev-print-brand .epb-name {
+      font-size: 16pt;
+      font-weight: 800;
+      letter-spacing: 0.06em;
+      color: #0a2540;
+    }
+    .ev-print-brand .epb-tag {
+      font-size: 9pt;
+      color: #666;
+      letter-spacing: 0.04em;
+    }
+    .ev-print-report-title {
+      font-family: 'Barlow Condensed', Arial, sans-serif;
+      font-size: 22pt;
+      font-weight: 800;
+      color: #0a2540;
+      margin: 4pt 0 4pt 0;
+      letter-spacing: 0.02em;
+    }
+    .ev-print-report-sub {
+      font-size: 10pt;
+      color: #555;
+      font-style: italic;
+    }
+    /* Hide interactive toolbar + filter + close buttons */
+    .ev-header .ev-actions,
+    .ev-filter-strip,
+    .ev-header .ev-title,
+    .ev-header .ev-subtitle,
+    .ev-header .ev-title-row > div:first-child { display: none !important; }
+    /* Keep the summary strip visible but tighten */
+    .ev-header {
+      margin: 0 0 10pt 0 !important;
+      padding: 6pt 8pt !important;
+      background: #f5f7fa !important;
+      border: 1pt solid #ccc !important;
+      border-radius: 3pt !important;
+    }
+    .ev-summary-strip {
+      display: flex !important;
+      justify-content: space-around;
+      gap: 12pt;
+      margin: 0 !important;
+      padding: 0 !important;
+      border: none !important;
+    }
+    .ev-summary-item .sm-value { font-size: 14pt !important; }
+    .ev-summary-item .sm-label { font-size: 7pt !important; }
+    /* Section headers — flat print-friendly style */
+    .ev-section-header {
+      background: #0a2540 !important;
+      color: #fff !important;
+      padding: 6pt 10pt !important;
+      margin: 8pt 0 4pt 0 !important;
+      border-radius: 3pt !important;
+      break-after: avoid !important;
+      page-break-after: avoid !important;
+    }
+    .ev-section-header.ev-section-post-bid {
+      background: #4a5568 !important;
+    }
+    .ev-section-header.ev-section-lead {
+      background: #143a5f !important;
+    }
+    .ev-section-header.ev-section-lead.has-urgent {
+      background: #4a2320 !important;
+      border-left: 2pt solid #c8322b !important;
+    }
+    .ev-section-header.ev-section-unassigned {
+      background: #6b7687 !important;
+    }
+    .ev-lead-stats { font-size: 8pt !important; gap: 6pt !important; }
+    .ev-lead-stat strong { font-size: 9pt !important; }
+    .ev-groupby-group { display: none !important; }
+    .ev-section-header .ev-section-title { font-size: 14pt !important; }
+    .ev-section-header .ev-section-count { font-size: 8pt !important; }
+    .ev-section-header .ev-section-note  { font-size: 8pt !important; }
+    .ev-section-header .ev-section-icon  { font-size: 14pt !important; }
+    /* Cards — clean, keep on one page each */
+    .ev-card {
+      background: #fff !important;
+      border: 1pt solid #999 !important;
+      border-left-width: 3pt !important;
+      box-shadow: none !important;
+      break-inside: avoid !important;
+      page-break-inside: avoid !important;
+      padding: 8pt 10pt !important;
+      margin-bottom: 6pt !important;
+      gap: 6pt !important;
+      cursor: default !important;
+    }
+    .ev-card:hover { box-shadow: none !important; transform: none !important; }
+    .ev-card.is-urgent  { border-left-color: #c8322b !important; }
+    .ev-card.is-warning { border-left-color: #c07f00 !important; }
+    .ev-card.is-safe    { border-left-color: #2e7d52 !important; }
+    /* Card header */
+    .ev-card-title { font-size: 12pt !important; margin: 0 !important; }
+    .ev-card-header-left { gap: 6pt !important; row-gap: 1pt !important; }
+    .ev-card-metaline { font-size: 7.5pt !important; gap: 3pt !important; }
+    .ev-card-metaline .bi-days { font-size: 7pt !important; padding: 1pt 4pt !important; }
+    .mli-current-label { font-size: 7pt !important; }
+    .mli-current-stage { font-size: 9pt !important; }
+    .ev-slice-badge {
+      font-size: 6.5pt !important;
+      padding: 1pt 4pt !important;
+      background: rgba(192,127,0,0.15) !important;
+      color: #c07f00 !important;
+      border-color: rgba(192,127,0,0.35) !important;
+    }
+    .ev-card-header-pct { padding-left: 6pt !important; }
+    .ev-card-percent { font-size: 18pt !important; }
+    .ev-pct-sign { font-size: 10pt !important; }
+    .ev-card-percent-label { font-size: 6.5pt !important; }
+    /* Progress bar */
+    .ev-progress-track {
+      height: 6pt !important;
+      background: #e8ebef !important;
+      border-color: #ccc !important;
+    }
+    /* Milestone chain */
+    .ev-milestones { padding: 4pt 0 2pt 0 !important; gap: 3pt !important; }
+    .ev-milestone-icon {
+      width: 16pt !important;
+      height: 16pt !important;
+      font-size: 8pt !important;
+      border-width: 1.5pt !important;
+    }
+    .ev-milestone.mstate-done .ev-milestone-icon    { background: #2e7d52 !important; color: #fff !important; }
+    .ev-milestone.mstate-current .ev-milestone-icon { background: #c07f00 !important; color: #fff !important; box-shadow: none !important; }
+    .ev-milestone.mstate-partial .ev-milestone-icon { background: #0a2540 !important; color: #fff !important; }
+    .ev-milestone.mstate-blocked .ev-milestone-icon { background: #c8322b !important; color: #fff !important; }
+    .ev-milestone-label {
+      font-size: 6.5pt !important;
+      line-height: 1.1 !important;
+      color: #000 !important;
+    }
+    .ev-milestone.mstate-current .ev-milestone-label { color: #c07f00 !important; font-weight: 800 !important; }
+    .ev-milestone.mstate-pending .ev-milestone-label { color: #999 !important; }
+    .ev-milestone-sub {
+      font-size: 6.5pt !important;
+      color: #555 !important;
+    }
+    .ev-milestone-sub.is-current-sub { color: #c07f00 !important; font-size: 8pt !important; }
+    .ev-milestone-sub.is-done-sub    { color: #2e7d52 !important; }
+    .ev-milestones::before { top: 12pt !important; height: 1pt !important; background: #ccc !important; }
+    /* Grid */
+    .ev-grid { gap: 6pt !important; }
+    /* v207: Print styles for calendar view */
+    .ev-viewmode-group { display: none !important; }
+    .ev-calendar { padding: 0 !important; border: none !important; }
+    .ev-cal-toolbar > button { display: none !important; }
+    .ev-cal-title { font-size: 18pt !important; margin-left: 0 !important; }
+    .ev-cal-legend { padding: 4pt 6pt !important; font-size: 7pt !important; }
+    .ev-cal-dowheader { font-size: 7pt !important; padding: 3pt 4pt !important; }
+    .ev-cal-cells { grid-auto-rows: minmax(60pt, auto) !important; }
+    .ev-cal-day { padding: 2pt 3pt !important; min-height: 60pt !important; }
+    .ev-cal-day-num { font-size: 8pt !important; }
+    .ev-cal-bid { font-size: 6.5pt !important; padding: 1pt 3pt !important; }
+    /* Ensure colors print (Chrome/Safari) */
+    * { -webkit-print-color-adjust: exact !important; print-color-adjust: exact !important; }
+  }
+  /* SCREEN styles for print title — hidden by default */
+  /* LEFT column: project identity + progress bar + milestone chain */
+  .ev-card-main { min-width: 0; display: flex; flex-direction: column; gap: 10px; }
+  .ev-card-identity {
+    display: flex;
+    justify-content: space-between;
+    align-items: baseline;
+    gap: 16px;
+    flex-wrap: wrap;
+  }
+  .ev-card-title {
+    font-family: 'Barlow Condensed', sans-serif;
+    font-size: 20px;
+    font-weight: 800;
+    letter-spacing: 0.02em;
+    color: var(--sbg-navy);
+    margin: 0;
+    line-height: 1.1;
+    flex: 1;
+    min-width: 200px;
+  }
+  .ev-card-bidinfo {
+    font-family: 'JetBrains Mono', monospace;
+    font-size: 12px;
+    color: var(--text-dim);
+    display: flex;
+    gap: 10px;
+    align-items: baseline;
+  }
+  .ev-card-bidinfo .bi-days {
+    font-weight: 800;
+    padding: 2px 8px;
+    border-radius: 10px;
+    font-size: 11px;
+  }
+  .ev-card.is-urgent  .bi-days { background: rgba(200,50,43,0.12); color: var(--sbg-red); }
+  .ev-card.is-warning .bi-days { background: rgba(192,127,0,0.12); color: var(--sbg-gold); }
+  .ev-card.is-safe    .bi-days { background: rgba(46,125,82,0.12); color: #2e7d52; }
+  /* Progress bar — one clean strip, no segments */
+  .ev-progress-track {
+    position: relative;
+    height: 12px;
+    background: var(--surface-2);
+    border-radius: 6px;
+    overflow: hidden;
+    border: 1px solid var(--border);
+  }
+  .ev-progress-fill {
+    position: absolute;
+    top: 0; left: 0; bottom: 0;
+    background: var(--sbg-navy);
+    border-radius: 6px 0 0 6px;
+    transition: width 0.3s ease;
+  }
+  .ev-card.is-urgent  .ev-progress-fill { background: var(--sbg-red); }
+  .ev-card.is-warning .ev-progress-fill { background: var(--sbg-gold); }
+  .ev-card.is-safe    .ev-progress-fill { background: #2e7d52; }
+  /* Milestone chain — one dot per stage, with icon showing state */
+  .ev-milestones {
+    display: flex;
+    gap: 0;
+    align-items: center;
+    justify-content: space-between;
+    position: relative;
+  }
+  .ev-milestone {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 4px;
+    flex: 1;
+    min-width: 0;
+    text-align: center;
+    position: relative;
+    z-index: 2;
+  }
+  .ev-milestone-icon {
+    width: 20px;
+    height: 20px;
+    border-radius: 50%;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-size: 11px;
+    font-weight: 700;
+    background: var(--surface-2);
+    border: 2px solid var(--border);
+    color: var(--text-dim);
+  }
+  .ev-milestone.mstate-done    .ev-milestone-icon { background: #2e7d52; border-color: #2e7d52; color: #fff; }
+  .ev-milestone.mstate-current .ev-milestone-icon { background: var(--sbg-gold); border-color: var(--sbg-gold); color: #fff; box-shadow: 0 0 0 3px rgba(192,127,0,0.18); }
+  .ev-milestone.mstate-partial .ev-milestone-icon { background: var(--sbg-navy); border-color: var(--sbg-navy); color: #fff; }
+  .ev-milestone.mstate-blocked .ev-milestone-icon { background: var(--sbg-red); border-color: var(--sbg-red); color: #fff; }
+  /* v201: Stage number under each dot — replaces the per-stage name label
+     which collided with adjacent labels when projects had many stages.
+     Just a numeric marker (1..N); full stage name is in the tooltip. */
+  .ev-milestone-num {
+    font-family: 'JetBrains Mono', monospace;
+    font-size: 9px;
+    font-weight: 700;
+    color: var(--text-dim);
+    line-height: 1;
+    margin-top: 1px;
+  }
+  .ev-milestone.mstate-current .ev-milestone-num { color: var(--sbg-gold); font-weight: 800; }
+  .ev-milestone.mstate-done    .ev-milestone-num { color: var(--text); }
+  /* v201: Current stage callout — sits below the milestone chain and clearly
+     names the active stage + its % + next stage. Executives always see where
+     the project is without hovering. */
+  .ev-current-callout {
+    display: flex;
+    align-items: center;
+    flex-wrap: wrap;
+    gap: 10px;
+    padding: 8px 12px;
+    background: linear-gradient(90deg, rgba(192,127,0,0.08) 0%, transparent 60%);
+    border-left: 3px solid var(--sbg-gold);
+    border-radius: 4px;
+    margin: 4px 0 4px 0;
+  }
+  .ev-current-callout .ecc-badge {
+    font-family: 'Barlow Condensed', sans-serif;
+    font-size: 10px;
+    font-weight: 800;
+    letter-spacing: 0.08em;
+    color: var(--sbg-gold);
+    background: rgba(192,127,0,0.15);
+    padding: 3px 8px;
+    border-radius: 3px;
+    white-space: nowrap;
+  }
+  .ev-current-callout .ecc-stage {
+    font-family: 'Barlow Condensed', sans-serif;
+    font-size: 16px;
+    font-weight: 800;
+    letter-spacing: 0.02em;
+    color: var(--sbg-navy);
+    text-transform: uppercase;
+    flex: 1;
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+  .ev-current-callout .ecc-pct {
+    font-family: 'JetBrains Mono', monospace;
+    font-size: 15px;
+    font-weight: 800;
+    color: var(--sbg-gold);
+    white-space: nowrap;
+  }
+  .ev-current-callout .ecc-next {
+    font-family: 'Barlow Condensed', sans-serif;
+    font-size: 11px;
+    font-weight: 600;
+    color: var(--text-dim);
+    letter-spacing: 0.04em;
+    white-space: nowrap;
+  }
+  .ev-current-callout.mstate-done {
+    background: linear-gradient(90deg, rgba(46,125,82,0.10) 0%, transparent 60%);
+    border-left-color: #2e7d52;
+  }
+  .ev-current-callout.mstate-done .ecc-badge { color: #2e7d52; background: rgba(46,125,82,0.15); }
+  .ev-current-callout.mstate-done .ecc-stage { color: #2e7d52; }
+  .ev-current-callout.mstate-pending {
+    background: transparent;
+    border-left-color: var(--border);
+  }
+  .ev-current-callout.mstate-pending .ecc-badge { color: var(--text-dim); background: var(--surface-2); }
+  .ev-current-callout.mstate-pending .ecc-stage { color: var(--text-dim); }
+  /* Connector line behind milestones */
+  .ev-milestones::before {
+    content: "";
+    position: absolute;
+    top: 10px;
+    left: 5%;
+    right: 5%;
+    height: 2px;
+    background: var(--border);
+    z-index: 1;
+  }
+  .ev-card-meta-row {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    gap: 12px;
+    font-size: 12px;
+    color: var(--text-dim);
+    padding-top: 4px;
+  }
+  .ev-card-meta-row .mr-lead { display: inline-flex; gap: 4px; }
+  .ev-card-meta-row .mr-lead strong { color: var(--text); font-weight: 600; }
+  .ev-card-meta-row .mr-counts { display: flex; gap: 14px; }
+  .ev-card-meta-row .mr-counts .mrc-item strong {
+    font-family: 'JetBrains Mono', monospace;
+    color: var(--text);
+    font-weight: 700;
+  }
+  /* RIGHT column: giant percent number */
+  .ev-card-percent-wrap {
+    display: flex;
+    flex-direction: column;
+    align-items: flex-end;
+    justify-content: center;
+    gap: 2px;
+    min-width: 72px;
+    padding-left: 12px;
+    border-left: 1px solid var(--border);
+  }
+  .ev-card-percent {
+    font-family: 'JetBrains Mono', monospace;
+    font-size: 28px;
+    font-weight: 800;
+    color: var(--sbg-navy);
+    line-height: 0.9;
+    display: flex;
+    align-items: baseline;
+    gap: 1px;
+  }
+  .ev-pct-sign {
+    font-size: 15px;
+    font-weight: 700;
+    color: var(--text-dim);
+    line-height: 1;
+  }
+  .ev-card.is-urgent  .ev-pct-sign { color: var(--sbg-red); }
+  .ev-card.is-warning .ev-pct-sign { color: var(--sbg-gold); }
+  .ev-card.is-safe    .ev-pct-sign { color: #2e7d52; }
+  .ev-card.is-urgent  .ev-card-percent { color: var(--sbg-red); }
+  .ev-card.is-warning .ev-card-percent { color: var(--sbg-gold); }
+  .ev-card.is-safe    .ev-card-percent { color: #2e7d52; }
+  .ev-card-percent-label {
+    font-family: 'Barlow Condensed', sans-serif;
+    font-size: 9px;
+    font-weight: 700;
+    color: var(--text-dim);
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+    text-align: right;
+  }
+  .ev-empty-state {
+    text-align: center;
+    padding: 80px 20px;
+    color: var(--text-dim);
+    font-size: 14px;
+    font-style: italic;
+  }
+  .ev-milestones-empty {
+    text-align: center;
+    padding: 12px;
+    color: var(--text-dim);
+    font-size: 11px;
+    font-style: italic;
+    background: var(--surface-2);
+    border-radius: 4px;
+  }
+  body.dark-mode .ev-header,
+  body.dark-mode .ev-card { border-color: var(--border-dark, #30363d); }
+  body.dark-mode .ev-progress-track { background: rgba(255,255,255,0.05); }
+  body.dark-mode .ev-milestone-icon { background: rgba(255,255,255,0.06); }
+
   .tiv-header { margin-bottom: 18px; }
   .tiv-title-row {
     display: flex;
@@ -1866,6 +3076,62 @@
   .ptv-task-status-dot.status-blocked { background: var(--sbg-red); }
   .ptv-task-status-dot.status-pending { background: var(--purple); }
   .ptv-task-status-dot.status-done { background: var(--green); }
+  /* v187: Inline status select on PTV rows — replaces the static dot with
+     a compact clickable dropdown. Sized to be no larger than the dot slot
+     so row layout is unaffected; colored per status like the dot was. */
+  .ptv-task-status-select {
+    appearance: none;
+    -webkit-appearance: none;
+    width: 16px;
+    height: 16px;
+    border-radius: 50%;
+    border: 2px solid transparent;
+    padding: 0;
+    margin: 0;
+    cursor: pointer;
+    font-size: 0;
+    color: transparent;
+    flex-shrink: 0;
+    background-image: none !important;
+  }
+  .ptv-task-status-select:hover {
+    box-shadow: 0 0 0 2px rgba(192, 127, 0, 0.4);
+  }
+  .ptv-task-status-select.status-not-started    { background: var(--text-faint); }
+  .ptv-task-status-select.status-in-progress    { background: var(--blue); }
+  .ptv-task-status-select.status-blocked        { background: var(--sbg-red); }
+  .ptv-task-status-select.status-pending        { background: var(--purple); }
+  .ptv-task-status-select.status-done           { background: var(--green); }
+  .ptv-task-status-select.status-not-required   { background: #6b7687; }
+  .ptv-task-status-select.status-missed-deadline{ background: #a44029; }
+  .ptv-task-status-select option {
+    background: var(--surface);
+    color: var(--text);
+    font-size: 12px;
+  }
+  /* v187: Inline status select on Home Today/Week timeline rows */
+  .htl-row-status-select {
+    appearance: none;
+    -webkit-appearance: none;
+    width: 14px;
+    height: 14px;
+    border-radius: 50%;
+    border: 2px solid transparent;
+    padding: 0;
+    margin: 0;
+    cursor: pointer;
+    font-size: 0;
+    color: transparent;
+    background-image: none !important;
+  }
+  .htl-row-status-select:hover {
+    box-shadow: 0 0 0 2px rgba(192, 127, 0, 0.4);
+  }
+  .htl-row-status-select option {
+    background: var(--surface, #fff);
+    color: var(--text, #0a2540);
+    font-size: 12px;
+  }
   .ptv-task-title {
     font-size: 13px;
     color: var(--text);
@@ -4164,31 +5430,32 @@
 
   /* Home view container */
   .home-header {
-    margin-bottom: 20px;
-    padding: 16px 20px;
+    margin-bottom: 6px;
+    padding: 8px 12px;
     background: linear-gradient(135deg, var(--surface-2) 0%, var(--surface) 100%);
     border: 1px solid var(--border);
-    border-left: 4px solid var(--sbg-red);
-    border-radius: 6px;
+    border-left: 3px solid var(--sbg-red);
+    border-radius: 4px;
   }
   .home-title-row {
     display: flex;
     justify-content: space-between;
-    align-items: flex-start;
-    gap: 16px;
+    align-items: center;
+    gap: 12px;
     flex-wrap: wrap;
   }
   .home-title {
     font-family: 'Barlow Condensed', sans-serif;
-    font-size: 28px;
+    font-size: 18px;
     font-weight: 800;
     letter-spacing: 0.02em;
     color: var(--sbg-navy);
     margin: 0;
+    line-height: 1.1;
   }
   .home-subtitle {
-    margin-top: 4px;
-    font-size: 13px;
+    margin-top: 1px;
+    font-size: 11px;
     color: var(--text-dim);
   }
   .home-actions {
@@ -4196,6 +5463,394 @@
     gap: 8px;
     align-items: center;
   }
+  /* v177: Sticky split hero — Workload (left) + Alerts (right) always visible at top of Today */
+  .home-hero-split {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 8px;
+    margin: 0 0 8px 0;
+    position: sticky;
+    top: 0;
+    z-index: 30;
+    background: var(--bg, #fff);
+    padding: 4px 0 6px 0;
+    border-bottom: 1px solid var(--border, #d9dde4);
+  }
+  body.dark-mode .home-hero-split {
+    background: var(--bg-dark, #0d1117);
+    border-bottom-color: var(--border-dark, #30363d);
+  }
+  .home-hero-card {
+    background: var(--surface, #fff);
+    border: 1px solid var(--border, #d9dde4);
+    border-radius: 8px;
+    padding: 8px 10px;
+    min-height: 60px;
+    max-height: 220px;
+    overflow-y: auto;
+    display: flex;
+    flex-direction: column;
+    gap: 5px;
+    box-shadow: 0 1px 2px rgba(10, 37, 64, 0.04);
+    /* v188: Compact scrollbar so it doesn't dominate the tight card */
+    scrollbar-width: thin;
+  }
+  .home-hero-card::-webkit-scrollbar { width: 6px; }
+  .home-hero-card::-webkit-scrollbar-thumb { background: var(--border, #d9dde4); border-radius: 3px; }
+  /* v189: Workload card should NOT scroll — content must fit naturally.
+     Remove the max-height + overflow. The internal .twv-card content is
+     compacted via targeted overrides below so it fits without scrolling. */
+  #homeHeroWorkload {
+    max-height: none;
+    overflow: visible;
+  }
+  /* v189: Compact every internal element of the Team Workload estimator
+     card only when it renders inside the Today hero. Team Workload page
+     itself is untouched. */
+  #homeHeroWorkloadBody .twv-card {
+    padding: 4px 6px;
+    border-left-width: 2px;
+  }
+  #homeHeroWorkloadBody .twv-card:hover {
+    box-shadow: none;
+    transform: none;
+  }
+  #homeHeroWorkloadBody .twv-card-header {
+    display: none; /* name + avatar redundant inside hero header */
+  }
+  #homeHeroWorkloadBody .twv-card-week-summary,
+  #homeHeroWorkloadBody .twv-week-summary {
+    font-size: 10px;
+    padding: 2px 4px;
+    margin: 2px 0;
+  }
+  #homeHeroWorkloadBody .twv-week-cap-bar,
+  #homeHeroWorkloadBody .twv-card-week-cap-bar {
+    height: 5px;
+    margin: 2px 0;
+  }
+  #homeHeroWorkloadBody .twv-week-avg-strip,
+  #homeHeroWorkloadBody .twv-card-avg-strip {
+    font-size: 9px;
+    padding: 2px 4px;
+    margin: 2px 0;
+  }
+  #homeHeroWorkloadBody .twv-strip {
+    padding: 4px 6px;
+    margin: 2px 0;
+  }
+  #homeHeroWorkloadBody .twv-strip-header {
+    margin-bottom: 2px;
+  }
+  #homeHeroWorkloadBody .twv-strip-title { font-size: 9px; }
+  #homeHeroWorkloadBody .twv-strip-total { font-size: 9px; }
+  #homeHeroWorkloadBody .twv-strip-bars {
+    height: 34px;
+    gap: 3px;
+  }
+  #homeHeroWorkloadBody .twv-strip-bar-wrap {
+    height: 34px;
+  }
+  #homeHeroWorkloadBody .twv-strip-col-date { font-size: 8.5px; }
+  /* v190/v192/v193: Hour chip on each daily bar — must sit clearly ABOVE
+     the bar top. The base .twv-strip-bars has overflow-y:hidden which
+     was clipping our top:-14px chip. Override overflow:visible at every
+     level from strip-bars down through strip-col and bar-wrap so the
+     chip can escape all the way to the container padding-top area. */
+  #homeHeroWorkloadBody .twv-strip-bars {
+    overflow: visible !important;
+    padding-top: 14px;
+  }
+  #homeHeroWorkloadBody .twv-strip-col {
+    overflow: visible !important;
+  }
+  #homeHeroWorkloadBody .twv-strip-bar-wrap {
+    overflow: visible !important;
+    position: relative;
+  }
+  #homeHeroWorkloadBody .twv-strip-bar-num {
+    position: absolute;
+    top: -12px;
+    right: auto;
+    left: 50%;
+    transform: translateX(-50%);
+    font-family: 'JetBrains Mono', monospace;
+    font-size: 10px;
+    font-weight: 800;
+    padding: 0 4px;
+    background: var(--surface, #fff);
+    color: var(--text, #0a2540);
+    border: 1px solid var(--border, #d9dde4);
+    border-radius: 3px;
+    line-height: 1.15;
+    z-index: 5;
+    box-shadow: 0 1px 3px rgba(10, 37, 64, 0.15);
+    pointer-events: none;
+    white-space: nowrap;
+  }
+  body.dark-mode #homeHeroWorkloadBody .twv-strip-bar-num {
+    background: #14181f;
+    color: #eef1f6;
+    border-color: rgba(255,255,255,0.15);
+  }
+  #homeHeroWorkloadBody .twv-card-slots,
+  #homeHeroWorkloadBody .twv-card-pastdue,
+  #homeHeroWorkloadBody .twv-card-slot-pill,
+  #homeHeroWorkloadBody .twv-card-pastdue-pill {
+    font-size: 9px;
+    padding: 2px 6px;
+    margin: 2px 0;
+  }
+  .home-hero-workload { border-left: 4px solid var(--sbg-navy, #0a2540); }
+  .home-hero-alerts   { border-left: 4px solid var(--sbg-red, #c8322b); }
+  .home-hero-card-header {
+    display: flex;
+    align-items: baseline;
+    gap: 6px;
+    padding-bottom: 4px;
+    border-bottom: 1px solid var(--border, #d9dde4);
+  }
+  .home-hero-card-icon  { font-size: 13px; }
+  .home-hero-card-title {
+    font-family: 'Barlow Condensed', sans-serif;
+    font-weight: 700; font-size: 13px;
+    letter-spacing: 0.04em; text-transform: uppercase;
+    color: var(--text, #0a2540); flex: 1;
+  }
+  .home-hero-card-sub { font-size: 10px; color: var(--text-dim, #6b7687); font-weight: 500; }
+  .home-hero-card-body { flex: 1; display: flex; flex-direction: column; gap: 6px; }
+  .home-hero-wl-row {
+    display: flex; align-items: center; gap: 10px;
+    padding: 6px 0; font-size: 13px; color: var(--text, #0a2540);
+    border-bottom: 1px dashed var(--border, #eef1f6);
+  }
+  .home-hero-wl-row:last-child { border-bottom: none; }
+  .home-hero-wl-label { flex: 1; font-weight: 500; }
+  .home-hero-wl-value {
+    font-family: 'JetBrains Mono', monospace; font-weight: 700;
+    font-size: 14px; color: var(--sbg-navy, #0a2540);
+  }
+  .home-hero-wl-value.hot  { color: var(--sbg-red, #c8322b); }
+  .home-hero-wl-value.warm { color: var(--sbg-gold, #c07f00); }
+  .home-hero-wl-mini-bar {
+    display: flex; gap: 3px; align-items: flex-end;
+    height: 72px; margin: 4px 0 2px 0;
+  }
+  /* v179: Bar column wraps the hour label above the bar + the bar itself.
+     Whole column is clickable to open the day drill-down. */
+  .home-hero-wl-mini-bar-col {
+    flex: 1;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: flex-end;
+    gap: 2px;
+    cursor: pointer;
+    border-radius: 3px;
+    padding: 2px 1px;
+    transition: background 0.12s;
+  }
+  .home-hero-wl-mini-bar-col:hover {
+    background: rgba(192, 127, 0, 0.08);
+  }
+  .home-hero-wl-mini-bar-hrs {
+    font-family: 'JetBrains Mono', monospace;
+    font-size: 10px;
+    font-weight: 700;
+    color: var(--sbg-navy, #0a2540);
+    line-height: 1;
+  }
+  .home-hero-wl-mini-bar-hrs.warm { color: var(--sbg-gold, #c07f00); }
+  .home-hero-wl-mini-bar-hrs.hot  { color: var(--sbg-red, #c8322b); }
+  .home-hero-wl-mini-bar-hrs.muted {
+    color: var(--text-dim, #6b7687);
+    font-weight: 500;
+  }
+  /* v180: Capacity track — 100% cap frame that fills bottom-up.
+     Every column shows the full track height so users see exactly
+     how much of the 8h cap each day consumes. */
+  .home-hero-wl-mini-bar-track {
+    width: 100%;
+    height: 100%;
+    background: var(--surface-2, #f5f7fa);
+    border: 1px solid var(--border, #eef1f6);
+    border-radius: 3px 3px 0 0;
+    display: flex;
+    align-items: flex-end;
+    overflow: hidden;
+    position: relative;
+  }
+  .home-hero-wl-mini-bar-track.is-today {
+    border-color: var(--sbg-gold, #c07f00);
+    box-shadow: inset 0 0 0 1px var(--sbg-gold, #c07f00);
+  }
+  body.dark-mode .home-hero-wl-mini-bar-track {
+    background: rgba(255, 255, 255, 0.04);
+    border-color: rgba(255, 255, 255, 0.08);
+  }
+  .home-hero-wl-mini-bar-day {
+    width: 100%;
+    border-radius: 2px 2px 0 0;
+    min-height: 3px;
+    transition: filter 0.15s;
+  }
+  /* v180: Bar-fill states match Team Workload — navy < 75% cap,
+     gold 75-100%, red > 100%. Empty stays transparent so the track shows. */
+  .home-hero-wl-mini-bar-day.bar-empty { background: transparent; min-height: 0; }
+  .home-hero-wl-mini-bar-day.bar-some  { background: var(--sbg-navy, #0a2540); }
+  .home-hero-wl-mini-bar-day.bar-high  { background: var(--sbg-gold, #c07f00); }
+  .home-hero-wl-mini-bar-day.bar-over  { background: var(--sbg-red, #c8322b); }
+  .home-hero-wl-mini-bar-col:hover .home-hero-wl-mini-bar-day { filter: brightness(1.15); }
+  .home-hero-wl-mini-bar-labels {
+    display: flex; gap: 3px; font-size: 9px;
+    color: var(--text-dim, #6b7687);
+    font-family: 'JetBrains Mono', monospace; text-align: center;
+  }
+  .home-hero-wl-mini-bar-labels > div { flex: 1; }
+  .home-hero-wl-mini-bar-labels > div.is-today {
+    color: var(--sbg-gold, #c07f00);
+    font-weight: 700;
+  }
+  .home-hero-wl-mini-bar-hint {
+    font-size: 10px;
+    color: var(--text-dim, #6b7687);
+    text-align: right;
+    font-style: italic;
+    margin-top: 2px;
+  }
+  /* v183: Hide the "Top projects:" block inside the Today hero's estimator
+     card only. Team Workload page (which uses the same _buildEstimatorCardHtml
+     builder) still shows it. Scoping by parent id keeps the change surgical. */
+  #homeHeroWorkloadBody .twv-card-projects {
+    display: none !important;
+  }
+  /* v179: Drill-down modal section headers */
+  .hdd-section-header {
+    font-family: 'Barlow Condensed', sans-serif;
+    font-weight: 700;
+    font-size: 12px;
+    letter-spacing: 0.05em;
+    text-transform: uppercase;
+    padding: 8px 10px;
+    margin: 8px 0 4px 0;
+    border-radius: 3px;
+  }
+  .hdd-section-header.hdd-current {
+    color: var(--sbg-navy, #0a2540);
+    background: rgba(10, 37, 64, 0.06);
+    border-left: 3px solid var(--sbg-navy, #0a2540);
+  }
+  .hdd-section-header.hdd-done {
+    color: var(--text-dim, #6b7687);
+    background: var(--surface-2, #f5f7fa);
+    border-left: 3px solid var(--text-dim, #6b7687);
+    margin-top: 12px;
+  }
+  .home-hero-alert-tile {
+    display: flex; align-items: center; justify-content: space-between;
+    padding: 4px 8px; background: var(--surface-2, #f5f7fa);
+    border-radius: 4px; cursor: pointer;
+    transition: background 0.15s; border-left: 3px solid transparent;
+  }
+  .home-hero-alert-tile:hover { background: var(--surface-3, #eef1f6); }
+  .home-hero-alert-tile.tier-critical { border-left-color: var(--sbg-red, #c8322b); background: rgba(200, 50, 43, 0.06); }
+  .home-hero-alert-tile.tier-warning  { border-left-color: var(--sbg-gold, #c07f00); background: rgba(192, 127, 0, 0.06); }
+  .home-hero-alert-tile.tier-info     { border-left-color: #4a90c2; background: rgba(74, 144, 194, 0.06); }
+  .home-hero-alert-tile.tier-quiet    { border-left-color: var(--text-dim, #6b7687); background: var(--surface-2, #f5f7fa); }
+  .home-hero-alert-tile-label { font-size: 11px; font-weight: 500; color: var(--text, #0a2540); flex: 1; }
+  .home-hero-alert-tile-count {
+    font-family: 'JetBrains Mono', monospace; font-weight: 700;
+    font-size: 13px; color: var(--text, #0a2540);
+  }
+  .home-hero-alert-tile.tier-critical .home-hero-alert-tile-count { color: var(--sbg-red, #c8322b); }
+  .home-hero-alert-tile.tier-warning  .home-hero-alert-tile-count { color: var(--sbg-gold, #c07f00); }
+  .home-hero-alert-tile.tier-info     .home-hero-alert-tile-count { color: #4a90c2; }
+  .home-hero-empty {
+    padding: 10px 4px; color: var(--text-dim, #6b7687);
+    font-size: 12px; font-style: italic; text-align: center;
+  }
+  .home-timeline-list { padding: 4px 0; }
+  .htl-day-group { margin-bottom: 12px; }
+  .htl-day-header {
+    display: flex; align-items: baseline; gap: 10px;
+    padding: 6px 0 6px 8px; background: var(--surface-2, #f5f7fa);
+    border-left: 3px solid var(--sbg-navy, #0a2540);
+    border-radius: 3px; margin-bottom: 4px;
+  }
+  .htl-day-header.is-today { border-left-color: var(--sbg-gold, #c07f00); background: rgba(192, 127, 0, 0.06); }
+  .htl-day-header.is-over  { border-left-color: var(--sbg-red, #c8322b); background: rgba(200, 50, 43, 0.06); }
+  .htl-day-label {
+    font-family: 'Barlow Condensed', sans-serif;
+    font-weight: 700; font-size: 14px;
+    letter-spacing: 0.05em; text-transform: uppercase;
+    color: var(--text, #0a2540);
+  }
+  .htl-day-hours {
+    font-family: 'JetBrains Mono', monospace;
+    font-size: 12px; font-weight: 700;
+    color: var(--sbg-navy, #0a2540);
+  }
+  .htl-day-count { font-size: 11px; color: var(--text-dim, #6b7687); }
+  .htl-row {
+    display: grid;
+    grid-template-columns: 24px 1fr 1.2fr 60px 90px;
+    gap: 10px; padding: 6px 10px; align-items: center;
+    border-bottom: 1px solid var(--border, #eef1f6);
+    border-left: 3px solid transparent;
+    cursor: pointer; transition: background 0.12s; font-size: 12.5px;
+  }
+  .htl-row:hover { background: var(--surface-2, #f5f7fa); }
+  /* v178: Status-color left border on each row (mirrors PTV row treatment).
+     Faint left band signals status at a glance without shouting. */
+  .htl-row.status-not-started   { border-left-color: #94a3b8; }
+  .htl-row.status-in-progress   { border-left-color: #4a90c2; background: rgba(74, 144, 194, 0.03); }
+  .htl-row.status-blocked       { border-left-color: #c8322b; background: rgba(200, 50, 43, 0.04); }
+  .htl-row.status-pending       { border-left-color: #c07f00; background: rgba(192, 127, 0, 0.04); }
+  .htl-row.status-done          { border-left-color: #2e7d52; background: rgba(46, 125, 82, 0.03); }
+  .htl-row.status-not-required  { border-left-color: #6b7687; background: rgba(107, 118, 135, 0.04); }
+  .htl-row.status-missed-deadline { border-left-color: #a44029; background: rgba(164, 64, 41, 0.04); }
+  .htl-row-status { display: inline-block; width: 10px; height: 10px; border-radius: 50%; }
+  .htl-row-title {
+    font-weight: 600; color: var(--text, #0a2540);
+    overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  }
+  .htl-row-project {
+    color: var(--text-dim, #6b7687); font-size: 11px;
+    overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  }
+  .htl-row-hours {
+    font-family: 'JetBrains Mono', monospace; font-weight: 700;
+    color: var(--sbg-navy, #0a2540); text-align: right; font-size: 12px;
+  }
+  .htl-row-role {
+    font-size: 10px; text-transform: uppercase;
+    letter-spacing: 0.05em; color: var(--text-dim, #6b7687); text-align: right;
+  }
+  .htl-row-role.is-lead { color: var(--sbg-navy, #0a2540); font-weight: 700; }
+  /* v178: All three terminal statuses render struck-through + muted so
+     completed / dropped / missed items stay visible in the list but read
+     as "already handled". */
+  .htl-row.status-done .htl-row-title,
+  .htl-row.status-not-required .htl-row-title,
+  .htl-row.status-missed-deadline .htl-row-title {
+    text-decoration: line-through;
+    opacity: 0.55;
+  }
+  .htl-row.status-done .htl-row-hours,
+  .htl-row.status-not-required .htl-row-hours,
+  .htl-row.status-missed-deadline .htl-row-hours {
+    opacity: 0.55;
+  }
+
+  /* v180: Timeline sections no longer scroll internally — user wants the
+     full list visible so the team can see everything at a glance without
+     hunting through a scroll container. Long lists just extend the page.
+     Sticky day headers are also removed since they only made sense with
+     an internal scroll. */
+  .home-timeline-list .htl-day-header {
+    /* Non-sticky — sits inline in the natural flow */
+  }
+
   .home-stats {
     display: grid;
     grid-template-columns: repeat(auto-fit, minmax(140px, 1fr));
@@ -4612,17 +6267,17 @@
   .home-task-bucket {
     display: flex;
     flex-direction: column;
-    gap: 6px;
+    gap: 3px;
   }
   .home-task-bucket-label {
     font-family: 'Barlow Condensed', sans-serif;
-    font-size: 11px;
+    font-size: 9px;
     font-weight: 800;
-    letter-spacing: 0.12em;
+    letter-spacing: 0.1em;
     text-transform: uppercase;
     color: var(--text-dim);
-    padding: 4px 8px;
-    border-bottom: 2px solid var(--border);
+    padding: 2px 5px;
+    border-bottom: 1px solid var(--border);
   }
   .home-task-bucket.bucket-overdue .home-task-bucket-label { color: var(--sbg-red); border-bottom-color: var(--sbg-red); }
   .home-task-bucket.bucket-today .home-task-bucket-label { color: #e85d04; border-bottom-color: #e85d04; }
@@ -4633,16 +6288,16 @@
   .home-items-list {
     display: flex;
     flex-direction: column;
-    gap: 6px;
+    gap: 3px;
   }
   .home-item {
     display: flex;
     align-items: center;
-    gap: 10px;
-    padding: 8px 12px;
+    gap: 6px;
+    padding: 3px 7px;
     background: var(--surface-2);
     border: 1px solid var(--border);
-    border-radius: 4px;
+    border-radius: 3px;
     cursor: pointer;
     transition: background 0.1s, transform 0.1s;
   }
@@ -4656,19 +6311,17 @@
   }
   .home-item.hi-warning { border-left: 3px solid #c07f00; }
   .home-item.hi-info { border-left: 3px solid var(--sbg-navy); }
-  /* v113: Series occurrence badge on home item titles — visual cue that
-     acknowledging this row covers a whole recurring series. */
   .hi-series-badge {
     display: inline-flex;
     align-items: center;
-    gap: 3px;
-    padding: 1px 6px;
-    margin-left: 6px;
+    gap: 2px;
+    padding: 0 3px;
+    margin-left: 4px;
     background: linear-gradient(135deg, var(--sbg-gold, #c07f00) 0%, #d99b1f 100%);
     color: #fff;
-    border-radius: 8px;
+    border-radius: 6px;
     font-family: 'Barlow Condensed', sans-serif;
-    font-size: 10px;
+    font-size: 8px;
     font-weight: 700;
     letter-spacing: 0.04em;
     text-transform: uppercase;
@@ -4678,48 +6331,50 @@
   .hi-project-chip {
     display: inline-flex;
     align-items: center;
-    gap: 4px;
-    padding: 2px 6px;
+    gap: 3px;
+    padding: 1px 4px;
     background: var(--sbg-navy);
     color: #fff;
     border-radius: 2px;
     font-family: 'Barlow Condensed', sans-serif;
-    font-size: 9px;
+    font-size: 8px;
     font-weight: 700;
-    letter-spacing: 0.08em;
+    letter-spacing: 0.06em;
     text-transform: uppercase;
     flex-shrink: 0;
-    max-width: 140px;
+    max-width: 120px;
     overflow: hidden;
     text-overflow: ellipsis;
     white-space: nowrap;
   }
   .hi-body { flex: 1; min-width: 0; }
   .hi-title {
-    font-size: 13px;
+    font-size: 11px;
     font-weight: 600;
     color: var(--text);
     white-space: nowrap;
     overflow: hidden;
     text-overflow: ellipsis;
+    line-height: 1.25;
   }
   .hi-meta {
-    font-size: 10px;
+    font-size: 9px;
     color: var(--text-dim);
-    margin-top: 2px;
+    margin-top: 1px;
+    line-height: 1.2;
   }
   .hi-meta .hi-meta-strong { color: var(--text); font-weight: 600; }
   .hi-right {
     text-align: right;
     flex-shrink: 0;
-    font-size: 10px;
+    font-size: 9px;
     color: var(--text-dim);
   }
   .hi-due-badge {
     display: inline-block;
-    padding: 2px 6px;
+    padding: 1px 4px;
     font-family: 'Barlow Condensed', sans-serif;
-    font-size: 9px;
+    font-size: 8px;
     font-weight: 800;
     letter-spacing: 0.08em;
     text-transform: uppercase;
