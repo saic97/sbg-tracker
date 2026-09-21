@@ -215,16 +215,24 @@ function loadState() {
     if (typeof state.trainingLogView !== 'boolean') state.trainingLogView = false; state.earlyLogView = false;
     // v163: Completed Early Log — cross-project recognition view
     if (typeof state.earlyLogView !== 'boolean') state.earlyLogView = false;
-    // v166: Project Timeline clean-view toggle — hides completion/status
-    // pills + badges so the timeline can be printed as a shareable plan
-    // without exposing internal actuals.
-    if (typeof state.ptvCleanMode !== 'boolean') state.ptvCleanMode = false;
-    // v167: Monochrome mode — strips ALL colors for a truly B&W-ready
-    // print. Stacks with Clean View but works independently.
+    // v186: PTV defaults changed per user request — Compact + Clean View
+    // ON by default so the timeline reads as a shareable plan out of the
+    // box; Monochrome stays OFF so status colors show. Users can still
+    // toggle any of the three independently via the toolbar buttons.
+    // v192: Force one-time migration for existing users whose persisted
+    // state.ptv*Mode = false from before v186. The typeof check kept
+    // their old choices intact, so the new defaults never took effect
+    // for anyone who'd already used the tracker. Migration flag flips
+    // once, sets the intended defaults, then future toggles persist normally.
+    if (typeof state.ptvCleanMode !== 'boolean') state.ptvCleanMode = true;
     if (typeof state.ptvMonoMode !== 'boolean') state.ptvMonoMode = false;
-    // v168: Compact mode — halves row heights so more tasks fit per page.
-    // Stacks with Clean View and Monochrome; independent toggle.
-    if (typeof state.ptvCompactMode !== 'boolean') state.ptvCompactMode = false;
+    if (typeof state.ptvCompactMode !== 'boolean') state.ptvCompactMode = true;
+    if (!state.ptvDefaultsMigrated_v192) {
+      state.ptvCleanMode = true;
+      state.ptvCompactMode = true;
+      state.ptvMonoMode = false;
+      state.ptvDefaultsMigrated_v192 = true;
+    }
     if (typeof state.earlyLogWindowFilter !== 'string') state.earlyLogWindowFilter = 'all';
     if (typeof state.earlyLogPersonFilter !== 'string') state.earlyLogPersonFilter = 'all';
     if (typeof state.earlyLogSort !== 'string') state.earlyLogSort = 'daysDesc';
@@ -380,6 +388,18 @@ function loadState() {
     if (typeof state.sidebarCollapsed === 'undefined') state.sidebarCollapsed = false;
     if (typeof state.activeAlertTierMine === 'undefined') state.activeAlertTierMine = null;
     if (typeof state.homeView === 'undefined') state.homeView = false;
+    // v197: Executive View toggle + progress mode
+    if (typeof state.execView === 'undefined') state.execView = false;
+    if (typeof state.execProgressMode !== 'string') state.execProgressMode = 'hours';
+    if (!Array.isArray(state.execHiddenProjects)) state.execHiddenProjects = [];
+    // v207: Executive View mode toggle — 'cards' or 'calendar'.
+    // Calendar month cursor is a date string YYYY-MM-01.
+    if (typeof state.execViewMode !== 'string') state.execViewMode = 'cards';
+    if (typeof state.execCalendarMonth !== 'string') state.execCalendarMonth = '';
+    // v210: Executive View grouping mode. 'bid-date' = existing Currently
+    // Bidding / Post Bid sections; 'lead' = one section per lead estimator
+    // for workload distribution across the team.
+    if (typeof state.execGroupBy !== 'string') state.execGroupBy = 'bid-date';
     // v96: per-section collapse state on the Today page. Keys are section
     // element IDs; values are true when collapsed. Persists across reloads.
     if (!state.homeCollapse || typeof state.homeCollapse !== 'object') state.homeCollapse = {};
@@ -390,7 +410,6 @@ function loadState() {
       const defaultCollapsed = [
         'homeMyTasksSection',
         'homeUnackSection',
-        'homeMyWorkloadSection',
         'homeCountdownsSection',
         'homeMessagesSection',
         'homeSignoffsSection',
@@ -802,7 +821,7 @@ function loadState() {
       if (ap && ap.archived) {
         const fallback = state.projects.find(x => !x.archived);
         state.activeProjectId = fallback ? fallback.id : null;
-        if (!fallback) state.homeView = true;
+        if (!fallback) { state.homeView = true; state.execView = false; }
       }
     }
     // Seed stages with defaults on first load (or if existing state pre-dates this feature)
@@ -838,9 +857,13 @@ function loadState() {
       if (!p.workstream || typeof p.workstream !== 'string') p.workstream = 'bidding';
     });
     // v123: sidebar per-workstream collapse map. All collapsed by default.
-    if (!state.workstreamExpanded || typeof state.workstreamExpanded !== 'object') {
-      state.workstreamExpanded = {};
-    }
+    // v185: also reset on EVERY load, not just first init. User asked for
+    // sections to always start collapsed on page load — expanding a section
+    // during a session is fine, but a browser refresh should re-collapse
+    // everything so the sidebar starts clean.
+    state.workstreamExpanded = {};
+    state.pastPursuitsExpanded = false;
+    state.archivedExpanded = false;
     state.projects.forEach(p => {
       // Bid extension fields — initialize on existing projects
       if (typeof p.originalStartDate === 'undefined') p.originalStartDate = p.startDate || '';
@@ -4098,7 +4121,7 @@ function archiveProject(projectId) {
   if (state.activeProjectId === projectId) {
     const fallback = getActiveProjects()[0];
     state.activeProjectId = fallback ? fallback.id : null;
-    if (!fallback) state.homeView = true; // nothing to show — go home
+    if (!fallback) { state.homeView = true; state.execView = false; } // nothing to show — go home
   }
   saveState();
   // Close edit modal if it was open for this project
@@ -4181,7 +4204,7 @@ function deleteProject() {
   if (state.activeProjectId === id) {
     const fallback = getActiveProjects()[0];
     state.activeProjectId = fallback ? fallback.id : null;
-    if (!fallback) state.homeView = true;
+    if (!fallback) { state.homeView = true; state.execView = false; }
   }
   saveState();
   closeModal('projectModal');
@@ -4202,6 +4225,7 @@ function selectProject(id) {
   state.activeStageId = 'all';
   state.activeAssignee = 'all';
   state.homeView = false;
+  state.execView = false; // v213: clear exec view flag on navigation
   state.teamWorkloadView = false;
   state.trainingLogView = false; state.earlyLogView = false;
   state.projectsListView = false;
@@ -4217,6 +4241,7 @@ function selectProject(id) {
 // =============================================================
 function openHomeView() {
   state.homeView = true;
+  state.execView = false; // v213: clear exec view flag on navigation
   state.statusSnapshotView = false;
   state.teamWorkloadView = false;
   state.trainingLogView = false; state.earlyLogView = false;
@@ -4229,6 +4254,765 @@ function openHomeView() {
   const main = document.querySelector('.main');
   if (bar) bar.style.display = 'none';
   if (main) main.classList.remove('has-sticky-countdown');
+  saveState();
+  render();
+}
+
+// v197: Executive View — bidding project progress snapshot for leadership.
+// Shows every non-archived Bidding-workstream project with a per-stage
+// progress bar. Toggle between hour-weighted and task-count-weighted.
+function openExecutiveView() {
+  state.execView = true;
+  // v214: Clear every other view flag so we don't leave the app in an
+  // ambiguous state. render() has strict precedence (tiView > execView > ...),
+  // so leaving tiView=true here silently blocks Executive View from showing.
+  // Same class of bug as v213 (the reverse direction).
+  state.homeView = false;
+  state.tiView = false;
+  state.statusSnapshotView = false;
+  state.teamWorkloadView = false;
+  state.trainingLogView = false;
+  state.earlyLogView = false;
+  state.projectsListView = false;
+  state.projectTimelineView = false;
+  state.openSlotsView = false;
+  state.activeProjectId = null;
+  saveState();
+  render();
+}
+
+function exitExecutiveView() {
+  state.execView = false;
+  saveState();
+  render();
+}
+
+function setExecutiveMode(mode) {
+  if (mode !== 'hours' && mode !== 'count') return;
+  state.execProgressMode = mode;
+  saveState();
+  renderExecutiveView();
+}
+
+function refreshExecutiveView() {
+  renderExecutiveView();
+}
+
+// v207: Toggle between Cards view and Bid Calendar view
+function setExecutiveViewMode(mode) {
+  if (mode !== 'cards' && mode !== 'calendar') return;
+  state.execViewMode = mode;
+  saveState();
+  renderExecutiveView();
+}
+
+// v210/v211: Toggle between grouping by bid date vs by task assignee.
+// 'lead' is treated as an alias for 'assignee' for backward compat with v210.
+function setExecutiveGroupBy(mode) {
+  if (mode === 'lead') mode = 'assignee';
+  if (mode !== 'bid-date' && mode !== 'assignee') return;
+  state.execGroupBy = mode;
+  saveState();
+  renderExecutiveView();
+}
+
+function shiftExecutiveCalendar(months) {
+  const cursor = _getExecCalendarCursorDate();
+  cursor.setMonth(cursor.getMonth() + months);
+  state.execCalendarMonth = _formatMonthKey(cursor);
+  saveState();
+  renderExecutiveCalendar();
+}
+
+function resetExecutiveCalendar() {
+  state.execCalendarMonth = '';
+  saveState();
+  renderExecutiveCalendar();
+}
+
+function _getExecCalendarCursorDate() {
+  // Returns Date for the 1st of the currently-viewed month
+  if (state.execCalendarMonth) {
+    const [y, m] = state.execCalendarMonth.split('-');
+    const d = new Date(parseInt(y, 10), parseInt(m, 10) - 1, 1);
+    if (!isNaN(d.getTime())) return d;
+  }
+  const now = new Date();
+  return new Date(now.getFullYear(), now.getMonth(), 1);
+}
+
+function _formatMonthKey(d) {
+  return d.getFullYear() + '-' + String(d.getMonth() + 1).padStart(2, '0') + '-01';
+}
+
+// v205: Trigger native print dialog. Users can either print to paper or
+// choose "Save as PDF" in the browser print dialog to export a PDF report.
+// Print-only report title block is injected via CSS just before printing
+// so the report looks like a formal document, not a screen dashboard.
+function printExecutiveReport() {
+  // Update the print-only title with the current date + mode
+  const titleEl = document.getElementById('evPrintReportTitle');
+  const subEl = document.getElementById('evPrintReportSub');
+  if (titleEl) {
+    titleEl.textContent = 'SBG Preconstruction Executive Snapshot';
+  }
+  if (subEl) {
+    const now = new Date();
+    const dateStr = now.toLocaleDateString('en-US', { weekday: 'long', month: 'long', day: 'numeric', year: 'numeric' });
+    const mode = state.execProgressMode === 'count' ? 'Task-Count' : 'Hours';
+    subEl.textContent = 'Generated ' + dateStr + ' \u00b7 Progress calculated by ' + mode;
+  }
+  // Give the browser a tick to update, then open print dialog
+  setTimeout(() => { window.print(); }, 50);
+}
+
+// v200: Toggle a specific project's visibility in the Executive View
+function toggleExecProject(projectId) {
+  if (!Array.isArray(state.execHiddenProjects)) state.execHiddenProjects = [];
+  const idx = state.execHiddenProjects.indexOf(projectId);
+  if (idx >= 0) state.execHiddenProjects.splice(idx, 1);
+  else state.execHiddenProjects.push(projectId);
+  saveState();
+  renderExecutiveView();
+}
+
+// v200: Show or hide all bidding projects at once
+function setExecFilterAll(showAll) {
+  const projects = (state.projects || []).filter(p => {
+    if (p.archived) return false;
+    const ws = (p.workstream || '').toLowerCase();
+    return ws === 'bidding' || ws === 'currently-bidding' || ws === 'bid' || ws === '';
+  });
+  if (showAll) {
+    state.execHiddenProjects = [];
+  } else {
+    state.execHiddenProjects = projects.map(p => p.id);
+  }
+  saveState();
+  renderExecutiveView();
+}
+
+function renderExecutiveView() {
+  // Sync toggle button active state (mode + view + groupby)
+  document.querySelectorAll('.ev-toggle-btn').forEach(b => {
+    b.classList.toggle('active', b.dataset.mode === state.execProgressMode);
+  });
+  document.querySelectorAll('.ev-viewmode-btn').forEach(b => {
+    b.classList.toggle('active', b.dataset.view === (state.execViewMode || 'cards'));
+  });
+  document.querySelectorAll('.ev-groupby-btn').forEach(b => {
+    let currentGb = state.execGroupBy || 'bid-date';
+    if (currentGb === 'lead') currentGb = 'assignee';
+    b.classList.toggle('active', b.dataset.groupby === currentGb);
+  });
+  const gridEl = document.getElementById('evGrid');
+  const calEl = document.getElementById('evCalendar');
+  const summaryEl = document.getElementById('evSummaryStrip');
+  const filterChipsEl = document.getElementById('evFilterChips');
+  if (!gridEl) return;
+  // Show/hide the two view containers based on active mode
+  const isCalendar = (state.execViewMode || 'cards') === 'calendar';
+  if (calEl) calEl.style.display = isCalendar ? 'block' : 'none';
+  gridEl.style.display = isCalendar ? 'none' : '';
+  if (isCalendar) {
+    renderExecutiveCalendar();
+    // Still render filter + summary so users can filter or see totals
+    renderExecutiveFilterAndSummary();
+    return;
+  }
+  renderExecutiveFilterAndSummary();
+  renderExecutiveCards();
+}
+
+// v207: Extracted helpers so cards and calendar can share filter/summary logic
+function renderExecutiveFilterAndSummary() {
+  const summaryEl = document.getElementById('evSummaryStrip');
+  const filterChipsEl = document.getElementById('evFilterChips');
+  const mode = state.execProgressMode === 'count' ? 'count' : 'hours';
+  const allProjects = (state.projects || []).filter(p => {
+    if (p.archived) return false;
+    const ws = (p.workstream || '').toLowerCase();
+    return ws === 'bidding' || ws === 'currently-bidding' || ws === 'bid' || ws === '';
+  });
+  const hiddenIds = Array.isArray(state.execHiddenProjects) ? state.execHiddenProjects : [];
+  if (filterChipsEl) {
+    if (allProjects.length === 0) {
+      filterChipsEl.innerHTML = '<span style="color:var(--text-dim); font-size:11px; font-style:italic;">No bidding projects</span>';
+    } else {
+      filterChipsEl.innerHTML = allProjects.map(p => {
+        const isHidden = hiddenIds.indexOf(p.id) >= 0;
+        return '<span class="ev-filter-chip' + (isHidden ? ' is-hidden' : '') + '" onclick="toggleExecProject(\'' + escapeAttr(p.id) + '\')" title="Click to ' + (isHidden ? 'show' : 'hide') + ' this project">' +
+          '<span class="fc-check">\u2713</span>' +
+          '<span>' + escapeHtml(p.name || '(untitled)') + '</span>' +
+        '</span>';
+      }).join('');
+    }
+  }
+  const projects = allProjects.filter(p => hiddenIds.indexOf(p.id) < 0);
+  const cards = projects.map(p => _buildExecCardData(p, mode)).filter(c => c);
+  const totalProjects = cards.length;
+  const urgent = cards.filter(c => c.urgency === 'urgent').length;
+  const totalTasks = cards.reduce((s, c) => s + c.totalTasks, 0);
+  const doneTasks = cards.reduce((s, c) => s + c.doneTasks, 0);
+  const avgPct = cards.length > 0 ? Math.round(cards.reduce((s, c) => s + c.pct, 0) / cards.length) : 0;
+  if (summaryEl) {
+    summaryEl.innerHTML =
+      '<div class="ev-summary-item"><span class="sm-value">' + totalProjects + (totalProjects !== allProjects.length ? ' <span style="font-size:12px; color:var(--text-dim);">of ' + allProjects.length + '</span>' : '') + '</span><span class="sm-label">' + (totalProjects !== allProjects.length ? 'Shown' : 'Active Bids') + '</span></div>' +
+      '<div class="ev-summary-item"><span class="sm-value" style="color:' + (urgent > 0 ? 'var(--sbg-red)' : 'var(--sbg-navy)') + ';">' + urgent + '</span><span class="sm-label">Urgent (\u22647 days)</span></div>' +
+      '<div class="ev-summary-item"><span class="sm-value">' + avgPct + '%</span><span class="sm-label">Avg Progress</span></div>' +
+      '<div class="ev-summary-item"><span class="sm-value">' + doneTasks + ' / ' + totalTasks + '</span><span class="sm-label">Tasks Complete</span></div>';
+  }
+}
+
+function renderExecutiveCards() {
+  const gridEl = document.getElementById('evGrid');
+  if (!gridEl) return;
+  const mode = state.execProgressMode === 'count' ? 'count' : 'hours';
+  const allProjects = (state.projects || []).filter(p => {
+    if (p.archived) return false;
+    const ws = (p.workstream || '').toLowerCase();
+    return ws === 'bidding' || ws === 'currently-bidding' || ws === 'bid' || ws === '';
+  });
+  const hiddenIds = Array.isArray(state.execHiddenProjects) ? state.execHiddenProjects : [];
+  const projects = allProjects.filter(p => hiddenIds.indexOf(p.id) < 0);
+  if (allProjects.length === 0) {
+    gridEl.innerHTML = '<div class="ev-empty-state">No active bidding projects to display.</div>';
+    return;
+  }
+  if (projects.length === 0) {
+    gridEl.innerHTML = '<div class="ev-empty-state">All projects hidden. Click "Show All" or a chip above to display projects.</div>';
+    return;
+  }
+  const cards = projects.map(p => _buildExecCardData(p, mode)).filter(c => c);
+  // v210/v211: Branch on groupBy mode. 'lead' aliased to 'assignee' for v210 compat.
+  let groupBy = state.execGroupBy || 'bid-date';
+  if (groupBy === 'lead') groupBy = 'assignee';
+  if (groupBy === 'assignee') {
+    gridEl.innerHTML = _renderExecCardsByAssignee(cards, allProjects, mode);
+  } else {
+    gridEl.innerHTML = _renderExecCardsByBidDate(cards, mode);
+  }
+}
+
+// v210: Existing bid-date grouping extracted into a helper for clarity
+function _renderExecCardsByBidDate(cards, mode) {
+  const currentlyBidding = cards.filter(c => c.daysLeft === null || c.daysLeft >= 0);
+  const postBid = cards.filter(c => c.daysLeft !== null && c.daysLeft < 0);
+  currentlyBidding.sort((a, b) => {
+    if (a.daysLeft === null && b.daysLeft === null) return 0;
+    if (a.daysLeft === null) return 1;
+    if (b.daysLeft === null) return -1;
+    return a.daysLeft - b.daysLeft;
+  });
+  postBid.sort((a, b) => (b.daysLeft || 0) - (a.daysLeft || 0));
+  let gridHtml = '';
+  if (currentlyBidding.length > 0) {
+    gridHtml += '<div class="ev-section-header ev-section-currently-bidding">' +
+      '<span class="ev-section-icon">\ud83c\udfaf</span>' +
+      '<span class="ev-section-title">Currently Bidding</span>' +
+      '<span class="ev-section-count">' + currentlyBidding.length + ' ' + (currentlyBidding.length === 1 ? 'project' : 'projects') + '</span>' +
+      '<span class="ev-section-note">Sorted by soonest bid date</span>' +
+    '</div>';
+    gridHtml += currentlyBidding.map(c => _renderExecCardHtml(c, mode)).join('');
+  }
+  if (postBid.length > 0) {
+    gridHtml += '<div class="ev-section-header ev-section-post-bid">' +
+      '<span class="ev-section-icon">\ud83d\udccb</span>' +
+      '<span class="ev-section-title">Post Bid</span>' +
+      '<span class="ev-section-count">' + postBid.length + ' ' + (postBid.length === 1 ? 'project' : 'projects') + '</span>' +
+      '<span class="ev-section-note">Bids past \u2014 in wrap-up or awaiting award</span>' +
+    '</div>';
+    gridHtml += postBid.map(c => _renderExecCardHtml(c, mode)).join('');
+  }
+  return gridHtml;
+}
+
+// v211: Group cards by TASK ASSIGNEE (task.leads[] + task.supportMembers[]).
+// Real workload lives at the task level — a person may not be leadEstimator
+// on a project but still have 15 open tasks on it. This grouping surfaces
+// the actual load-bearing story. Same project card can appear under multiple
+// people's sections (the point — shows collaboration overlap).
+function _renderExecCardsByAssignee(cards, allProjects, mode) {
+  const today = new Date();
+  today.setHours(0, 0, 0, 0);
+  const oneWeekOut = new Date(today);
+  oneWeekOut.setDate(oneWeekOut.getDate() + 7);
+  const oneWeekOutStr = _formatDateYmd(oneWeekOut);
+  // Build per-person index: name -> stats + set of projectIds they touch
+  const personIndex = {};
+  const _blankStats = () => ({
+    projectIds: new Set(),
+    openTasks: 0,
+    openHours: 0,
+    urgentTasks: 0,
+    pastDueTasks: 0,
+    leadTasks: 0,
+    supportTasks: 0
+  });
+  // Cards is filtered by hidden projects. But we still want to compute stats
+  // only for projects that are visible (respect the filter).
+  const visibleProjectIds = new Set(cards.map(c => c.project.id));
+  allProjects.forEach(p => {
+    if (!visibleProjectIds.has(p.id)) return;
+    (p.tasks || []).forEach(t => {
+      const isDone = !!t.completedAt || t.status === 'done';
+      const isNotRequired = !!t.notRequiredAt || t.status === 'not-required';
+      if (isDone || isNotRequired) return; // only count open work
+      const dueStr = t.dueDate || '';
+      const isPastDue = dueStr && dueStr < _formatDateYmd(today);
+      const isThisWeek = dueStr && dueStr <= oneWeekOutStr && !isPastDue;
+      const hours = Number(t.estimatedHours) || 0;
+      // Dedupe: a person in both leads and supportMembers on the same task
+      // counts as 1 open task. Lead takes precedence for the split count.
+      const leads = Array.isArray(t.leads) ? t.leads.filter(n => n && n.trim()) : [];
+      const supports = Array.isArray(t.supportMembers) ? t.supportMembers.filter(n => n && n.trim()) : [];
+      const leadSet = new Set(leads);
+      const allAssignees = new Set([...leads, ...supports]);
+      allAssignees.forEach(name => {
+        if (!personIndex[name]) personIndex[name] = _blankStats();
+        const s = personIndex[name];
+        s.projectIds.add(p.id);
+        s.openTasks += 1;
+        s.openHours += hours;
+        if (isPastDue) s.pastDueTasks += 1;
+        else if (isThisWeek) s.urgentTasks += 1;
+        if (leadSet.has(name)) s.leadTasks += 1;
+        else s.supportTasks += 1;
+      });
+    });
+  });
+  // Group cards under each person: for each person, rebuild the card data
+  // from ONLY their assigned tasks so % + counts + stage chain reflect
+  // their slice, not the whole project rollup.
+  const groups = Object.keys(personIndex).map(name => {
+    const assigneeFilter = t => {
+      const inLeads = (t.leads || []).indexOf(name) >= 0;
+      const inSup = (t.supportMembers || []).indexOf(name) >= 0;
+      return inLeads || inSup;
+    };
+    const perAssigneeCards = [];
+    personIndex[name].projectIds.forEach(pid => {
+      const project = allProjects.find(p => p.id === pid);
+      if (!project) return;
+      const sliced = _buildExecCardData(project, mode, assigneeFilter);
+      if (sliced) {
+        sliced.assigneeName = name; // marks this card data as a per-assignee slice
+        perAssigneeCards.push(sliced);
+      }
+    });
+    return {
+      name: name,
+      key: name,
+      stats: personIndex[name],
+      cards: perAssigneeCards
+    };
+  });
+  // Unassigned bucket — cards whose project has ZERO task-level assignees anywhere
+  const unassignedCards = cards.filter(c => {
+    const tasks = c.project.tasks || [];
+    for (const t of tasks) {
+      const isDone = !!t.completedAt || t.status === 'done';
+      const isNotRequired = !!t.notRequiredAt || t.status === 'not-required';
+      if (isDone || isNotRequired) continue;
+      if ((t.leads || []).some(n => n && n.trim())) return false;
+      if ((t.supportMembers || []).some(n => n && n.trim())) return false;
+    }
+    return true;
+  });
+  if (unassignedCards.length > 0) {
+    const unStats = _blankStats();
+    unassignedCards.forEach(c => unStats.projectIds.add(c.project.id));
+    groups.push({ name: 'Unassigned', key: '__unassigned__', stats: unStats, cards: unassignedCards });
+  }
+  // Sort persons: unassigned last; then past-due DESC (biggest firefight up top),
+  // then urgent DESC, then open-task count DESC, then alphabetical.
+  groups.sort((a, b) => {
+    if (a.key === '__unassigned__' && b.key !== '__unassigned__') return 1;
+    if (b.key === '__unassigned__' && a.key !== '__unassigned__') return -1;
+    if (b.stats.pastDueTasks !== a.stats.pastDueTasks) return b.stats.pastDueTasks - a.stats.pastDueTasks;
+    if (b.stats.urgentTasks !== a.stats.urgentTasks) return b.stats.urgentTasks - a.stats.urgentTasks;
+    if (b.stats.openTasks !== a.stats.openTasks) return b.stats.openTasks - a.stats.openTasks;
+    return a.name.localeCompare(b.name);
+  });
+  // v212: Compute average completeness across each person's per-slice cards
+  // so the section header shows a real "how done is my slice" number.
+  groups.forEach(g => {
+    g.stats.avgPct = g.cards.length > 0
+      ? Math.round(g.cards.reduce((sum, c) => sum + (c.pct || 0), 0) / g.cards.length)
+      : 0;
+  });
+  // Sort cards within each group: currently-bidding by soonest, then post-bid by most-recent-past
+  groups.forEach(g => {
+    g.cards.sort((a, b) => {
+      const aBidding = a.daysLeft === null || a.daysLeft >= 0;
+      const bBidding = b.daysLeft === null || b.daysLeft >= 0;
+      if (aBidding && !bBidding) return -1;
+      if (!aBidding && bBidding) return 1;
+      if (aBidding) {
+        if (a.daysLeft === null && b.daysLeft === null) return 0;
+        if (a.daysLeft === null) return 1;
+        if (b.daysLeft === null) return -1;
+        return a.daysLeft - b.daysLeft;
+      }
+      return (b.daysLeft || 0) - (a.daysLeft || 0);
+    });
+  });
+  // Render
+  let gridHtml = '';
+  groups.forEach(g => {
+    const isUnassigned = g.key === '__unassigned__';
+    const iconChar = isUnassigned ? '\u2753' : '\ud83d\udc64';
+    const s = g.stats;
+    const hasHeat = (s.pastDueTasks + s.urgentTasks) > 0;
+    const headerCls = 'ev-section-header ev-section-lead' +
+      (isUnassigned ? ' ev-section-unassigned' : '') +
+      (hasHeat ? ' has-urgent' : '');
+    const statParts = [];
+    statParts.push('<span class="ev-lead-stat"><strong>' + s.openTasks + '</strong> open tasks</span>');
+    statParts.push('<span class="ev-lead-stat"><strong>' + Math.round(s.openHours) + 'h</strong> open</span>');
+    statParts.push('<span class="ev-lead-stat">Avg <strong>' + s.avgPct + '%</strong> complete</span>');
+    if (s.pastDueTasks > 0) {
+      statParts.push('<span class="ev-lead-stat is-urgent"><strong>' + s.pastDueTasks + '</strong> past due</span>');
+    }
+    if (s.urgentTasks > 0) {
+      statParts.push('<span class="ev-lead-stat is-urgent"><strong>' + s.urgentTasks + '</strong> this week</span>');
+    }
+    statParts.push('<span class="ev-lead-stat"><strong>' + s.projectIds.size + '</strong> ' + (s.projectIds.size === 1 ? 'project' : 'projects') + '</span>');
+    let splitNote = '';
+    if (!isUnassigned && (s.leadTasks > 0 || s.supportTasks > 0)) {
+      splitNote = '<span class="ev-section-note">' + s.leadTasks + ' as lead \u00b7 ' + s.supportTasks + ' as support</span>';
+    }
+    gridHtml += '<div class="' + headerCls + '">' +
+      '<span class="ev-section-icon">' + iconChar + '</span>' +
+      '<span class="ev-section-title">' + escapeHtml(g.name) + '</span>' +
+      '<span class="ev-lead-stats">' + statParts.join('') + '</span>' +
+      splitNote +
+    '</div>';
+    gridHtml += g.cards.map(c => _renderExecCardHtml(c, mode)).join('');
+  });
+  return gridHtml;
+}
+
+// v207: Bid Calendar — monthly grid showing all Currently Bidding due dates.
+// Shareable / printable overview for the team.
+function renderExecutiveCalendar() {
+  const calEl = document.getElementById('evCalendar');
+  if (!calEl) return;
+  const cursor = _getExecCalendarCursorDate();
+  const year = cursor.getFullYear();
+  const month = cursor.getMonth();
+  // Aggregate all Currently Bidding projects (respecting the hidden filter)
+  const hiddenIds = Array.isArray(state.execHiddenProjects) ? state.execHiddenProjects : [];
+  const bidProjects = (state.projects || []).filter(p => {
+    if (p.archived) return false;
+    if (hiddenIds.indexOf(p.id) >= 0) return false;
+    const ws = (p.workstream || '').toLowerCase();
+    return ws === 'bidding' || ws === 'currently-bidding' || ws === 'bid' || ws === '';
+  });
+  // Build a map: 'YYYY-MM-DD' → [projects]
+  const byDate = {};
+  bidProjects.forEach(p => {
+    const bd = p.dueDate || p.bidDate || '';
+    if (!bd) return;
+    if (!byDate[bd]) byDate[bd] = [];
+    byDate[bd].push(p);
+  });
+  // Compute month grid — 6 rows x 7 cols; start on Sunday of the week
+  // that contains the 1st.
+  const firstOfMonth = new Date(year, month, 1);
+  const lastOfMonth = new Date(year, month + 1, 0);
+  const firstDow = firstOfMonth.getDay(); // 0=Sun
+  const gridStart = new Date(year, month, 1 - firstDow);
+  const today = new Date();
+  today.setHours(0, 0, 0, 0);
+  const todayStr = _formatDateYmd(today);
+  // Header — month name + prev/next + today buttons
+  const monthName = firstOfMonth.toLocaleDateString('en-US', { month: 'long', year: 'numeric' });
+  // Count bids in this month across visible projects
+  let bidsThisMonth = 0;
+  for (const dateStr in byDate) {
+    const d = new Date(dateStr + 'T00:00:00');
+    if (d.getFullYear() === year && d.getMonth() === month) {
+      bidsThisMonth += byDate[dateStr].length;
+    }
+  }
+  // Build day cells — 6 weeks x 7 days = 42 cells
+  const dayCellsHtml = [];
+  for (let i = 0; i < 42; i++) {
+    const cellDate = new Date(gridStart);
+    cellDate.setDate(gridStart.getDate() + i);
+    const cellStr = _formatDateYmd(cellDate);
+    const isCurrentMonth = cellDate.getMonth() === month;
+    const isToday = cellStr === todayStr;
+    const isPast = cellStr < todayStr;
+    const bidsOnDay = byDate[cellStr] || [];
+    const dowIsWeekend = cellDate.getDay() === 0 || cellDate.getDay() === 6;
+    let classes = 'ev-cal-day';
+    if (!isCurrentMonth) classes += ' is-other-month';
+    if (isToday) classes += ' is-today';
+    if (isPast) classes += ' is-past';
+    if (dowIsWeekend) classes += ' is-weekend';
+    if (bidsOnDay.length > 0) classes += ' has-bids';
+    const dayNumHtml = '<div class="ev-cal-day-num">' + cellDate.getDate() + '</div>';
+    const bidsHtml = bidsOnDay.map(p => {
+      const daysUntil = Math.round((cellDate - today) / 86400000);
+      let urgencyCls = 'is-safe';
+      if (daysUntil < 0) urgencyCls = 'is-past-bid';
+      else if (daysUntil <= 7) urgencyCls = 'is-urgent';
+      else if (daysUntil <= 21) urgencyCls = 'is-warning';
+      return '<div class="ev-cal-bid ' + urgencyCls + '" onclick="event.stopPropagation();_openProjectFromExecView(\'' + escapeAttr(p.id) + '\')" title="' + escapeAttr(p.name) + ' \u2014 bids ' + escapeAttr(cellStr) + '">' +
+        escapeHtml(p.name || '(untitled)') +
+      '</div>';
+    }).join('');
+    dayCellsHtml.push('<div class="' + classes + '">' + dayNumHtml + '<div class="ev-cal-bids">' + bidsHtml + '</div></div>');
+  }
+  const dayHeadersHtml = ['SUN','MON','TUE','WED','THU','FRI','SAT']
+    .map((d, i) => '<div class="ev-cal-dowheader' + (i === 0 || i === 6 ? ' is-weekend' : '') + '">' + d + '</div>').join('');
+  calEl.innerHTML =
+    '<div class="ev-cal-toolbar">' +
+      '<button class="btn btn-sm" onclick="shiftExecutiveCalendar(-1)">\u25c0 Prev</button>' +
+      '<button class="btn btn-sm" onclick="resetExecutiveCalendar()">Today</button>' +
+      '<button class="btn btn-sm" onclick="shiftExecutiveCalendar(1)">Next \u25b6</button>' +
+      '<div class="ev-cal-title">' + escapeHtml(monthName) + '</div>' +
+      '<div class="ev-cal-monthstat"><strong>' + bidsThisMonth + '</strong> ' + (bidsThisMonth === 1 ? 'bid' : 'bids') + ' this month</div>' +
+    '</div>' +
+    '<div class="ev-cal-legend">' +
+      '<span class="ev-cal-legend-item"><span class="ev-cal-legend-dot is-urgent"></span> \u22647 days</span>' +
+      '<span class="ev-cal-legend-item"><span class="ev-cal-legend-dot is-warning"></span> \u226421 days</span>' +
+      '<span class="ev-cal-legend-item"><span class="ev-cal-legend-dot is-safe"></span> Later</span>' +
+      '<span class="ev-cal-legend-item"><span class="ev-cal-legend-dot is-past-bid"></span> Past due</span>' +
+    '</div>' +
+    '<div class="ev-cal-grid">' +
+      '<div class="ev-cal-dowrow">' + dayHeadersHtml + '</div>' +
+      '<div class="ev-cal-cells">' + dayCellsHtml.join('') + '</div>' +
+    '</div>';
+}
+
+function _formatDateYmd(d) {
+  return d.getFullYear() + '-' + String(d.getMonth() + 1).padStart(2, '0') + '-' + String(d.getDate()).padStart(2, '0');
+}
+
+function _renderExecCardHtml(c, mode) {
+  // v206: All meta consolidated into the header block on the left of the %.
+  // Footer row removed entirely. Empty space in the header now carries
+  // Bids/Days/Lead/Tasks/Hours/Currently — everything at a glance without
+  // a separate footer strip below the milestone chain.
+  const totalStages = c.stageSegs.length;
+  const currentSeg = c.stageSegs.find(s => s.isCurrent);
+  const milestonesHtml = c.stageSegs.length === 0
+    ? '<div class="ev-milestones-empty">No stages defined for this project</div>'
+    : c.stageSegs.map((seg, idx) => {
+    let mstate = 'pending';
+    let icon = '\u25CB';
+    if (seg.total === 0) {
+      mstate = 'pending';
+      icon = '\u25CB';
+    } else if (seg.pct === 100) {
+      mstate = 'done';
+      icon = '\u2713';
+    } else if (seg.isCurrent) {
+      mstate = 'current';
+      icon = '\u25CF';
+    } else if (seg.fillCls === 'fill-blocked') {
+      mstate = 'blocked';
+      icon = '!';
+    } else if (seg.pct > 0) {
+      mstate = 'partial';
+      icon = '\u25D0';
+    }
+    const numText = mode === 'hours'
+      ? Math.round(seg.doneHours) + '/' + Math.round(seg.hours) + 'h'
+      : seg.done + '/' + seg.total;
+    const subText = mstate === 'current' ? seg.pct + '%' : numText;
+    const subClass = 'ev-milestone-sub' + (mstate === 'current' ? ' is-current-sub' : mstate === 'done' ? ' is-done-sub' : '');
+    return '<div class="ev-milestone mstate-' + mstate + '">' +
+      '<div class="ev-milestone-icon">' + icon + '</div>' +
+      '<div class="ev-milestone-label">' + escapeHtml(seg.label) + '</div>' +
+      '<div class="' + subClass + '">' + subText + '</div>' +
+    '</div>';
+  }).join('');
+  const bidLabel = c.bidDate
+    ? (typeof formatDate === 'function' ? formatDate(c.bidDate) : c.bidDate)
+    : 'No bid date';
+  const daysPill = c.daysLeft === null
+    ? '<span class="bi-days">No date</span>'
+    : c.daysLeft < 0
+      ? '<span class="bi-days">' + Math.abs(c.daysLeft) + ' DAYS PAST</span>'
+      : c.daysLeft === 0
+        ? '<span class="bi-days">DUE TODAY</span>'
+        : '<span class="bi-days">' + c.daysLeft + ' DAYS</span>';
+  const leadEst = c.project.leadEstimator || '';
+  const currentStageLabel = currentSeg ? currentSeg.label : (c.pct === 100 ? 'COMPLETE' : 'Not Started');
+  // v212: When this card represents a per-assignee slice (not the whole
+  // project), all numbers on the card are their-slice-only. Show a small
+  // "Their slice" badge + change the "by hours" label to name whose slice
+  // it is so the numbers are unambiguous.
+  const isSlice = !!c.assigneeName;
+  const sliceBadge = isSlice
+    ? '<span class="ev-slice-badge" title="All numbers on this card are ' + escapeAttr(c.assigneeName) + '\u2019s slice only \u2014 not the whole project">' +
+        escapeHtml(c.assigneeName.toUpperCase()) + '\u2019S SLICE' +
+      '</span>'
+    : '';
+  const currentLabelPrefix = isSlice ? 'Their current:' : 'Currently:';
+  const pctSubLabel = isSlice
+    ? escapeHtml(c.assigneeName) + ' \u00b7 by ' + (mode === 'hours' ? 'hours' : 'tasks')
+    : 'by ' + (mode === 'hours' ? 'hours' : 'tasks');
+  // v209: All meta shifted inline to the RIGHT of the title (fills empty
+  // horizontal space between title and %). One header row instead of three.
+  return '<div class="ev-card is-' + c.urgency + '" onclick="_openProjectFromExecView(\'' + escapeAttr(c.project.id) + '\')">' +
+    '<div class="ev-card-header-row">' +
+      '<div class="ev-card-header-left">' +
+        (sliceBadge ? sliceBadge : '') +
+        '<h3 class="ev-card-title">' + escapeHtml(c.project.name || '(untitled)') + '</h3>' +
+        '<div class="ev-card-metaline">' +
+          '<span class="mli-sep">\u00b7</span>' +
+          '<span class="mli">Bids ' + escapeHtml(bidLabel) + '</span>' +
+          daysPill +
+          (leadEst ? '<span class="mli-sep">\u00b7</span><span class="mli">Lead: <strong>' + escapeHtml(leadEst) + '</strong></span>' : '') +
+          '<span class="mli-sep">\u00b7</span>' +
+          '<span class="mli">Tasks <strong>' + c.doneTasks + '/' + c.totalTasks + '</strong></span>' +
+          '<span class="mli-sep">\u00b7</span>' +
+          '<span class="mli">Hours <strong>' + Math.round(c.doneHours) + '/' + Math.round(c.totalHours) + '</strong></span>' +
+          '<span class="mli-sep">\u00b7</span>' +
+          '<span class="mli-current-inline"><span class="mli-current-label">' + currentLabelPrefix + '</span> <span class="mli-current-stage">' + escapeHtml(currentStageLabel) + '</span></span>' +
+        '</div>' +
+      '</div>' +
+      '<div class="ev-card-header-pct">' +
+        '<div class="ev-card-percent">' + c.pct + '<span class="ev-pct-sign">%</span></div>' +
+        '<div class="ev-card-percent-label">' + pctSubLabel + '</div>' +
+      '</div>' +
+    '</div>' +
+    '<div class="ev-progress-track" title="' + c.pct + '% overall">' +
+      '<div class="ev-progress-fill" style="width:' + c.pct + '%"></div>' +
+    '</div>' +
+    '<div class="ev-milestones">' + milestonesHtml + '</div>' +
+  '</div>';
+}
+
+function _buildExecCardData(project, mode, taskFilter) {
+  const isTerminalStatus = s => s === 'done' || s === 'not-required' || s === 'missed-deadline';
+  // v212: Optional taskFilter lets callers narrow to a slice (e.g. only tasks
+  // assigned to a specific person). Everything downstream (stage segments,
+  // percent, task/hour counts) is computed on the filtered set so per-assignee
+  // views show real per-assignee completeness, not the whole-project rollup.
+  const tasks = (project.tasks || []).filter(t => (typeof taskFilter === 'function') ? taskFilter(t) : true);
+  // Group tasks by stage
+  const stages = Array.isArray(state.stages) ? state.stages : [];
+  const stageOrder = stages.map(s => s.id);
+  const stageMap = {};
+  stages.forEach(s => { stageMap[s.id] = s; });
+  const byStage = {};
+  tasks.forEach(t => {
+    const sid = t.stage || 'other';
+    if (!byStage[sid]) byStage[sid] = { total: 0, done: 0, hours: 0, doneHours: 0, statuses: {} };
+    byStage[sid].total++;
+    if (isTerminalStatus(t.status)) byStage[sid].done++;
+    const hrs = (typeof t.estimatedHours === 'number' && t.estimatedHours > 0) ? t.estimatedHours : 0;
+    byStage[sid].hours += hrs;
+    if (isTerminalStatus(t.status)) byStage[sid].doneHours += hrs;
+    const st = t.status || 'not-started';
+    byStage[sid].statuses[st] = (byStage[sid].statuses[st] || 0) + 1;
+  });
+  // Build stage segments in declared order
+  const stageSegs = [];
+  stageOrder.forEach(sid => {
+    if (!byStage[sid]) return;
+    const st = byStage[sid];
+    const weight = mode === 'hours' ? st.hours : st.total;
+    if (weight === 0 && st.total === 0) return;
+    const doneCount = mode === 'hours' ? st.doneHours : st.done;
+    const pct = weight > 0 ? Math.round((doneCount / weight) * 100) : 0;
+    // Determine fill class — blocked overrides, pending is warning, else navy
+    let fillCls;
+    if (st.total === 0) fillCls = 'fill-empty';
+    else if (pct === 100) fillCls = 'fill-done';
+    else if (st.statuses['blocked'] > 0) fillCls = 'fill-blocked';
+    else if (st.statuses['pending'] > 0 && pct < 100) fillCls = 'fill-warning';
+    else if (pct > 0) fillCls = 'fill-partial';
+    else fillCls = 'fill-empty';
+    stageSegs.push({
+      id: sid,
+      label: (stageMap[sid] && stageMap[sid].label) || sid,
+      weight: weight,
+      total: st.total,
+      done: st.done,
+      hours: st.hours,
+      doneHours: st.doneHours,
+      pct: pct,
+      fillCls: fillCls,
+      isCurrent: st.total > st.done && !stageSegs.some(pending => pending.total > pending.done)
+    });
+  });
+  // v199: Append unstaged tasks (t.stage falsy) as a final "Other" segment
+  // so their progress counts toward the overall %. Otherwise projects with
+  // tasks lacking a stage would silently under-report.
+  if (byStage['other']) {
+    const st = byStage['other'];
+    const weight = mode === 'hours' ? st.hours : st.total;
+    if (weight > 0 || st.total > 0) {
+      const doneCount = mode === 'hours' ? st.doneHours : st.done;
+      const pct = weight > 0 ? Math.round((doneCount / weight) * 100) : 0;
+      let fillCls;
+      if (pct === 100) fillCls = 'fill-done';
+      else if (st.statuses['blocked'] > 0) fillCls = 'fill-blocked';
+      else if (st.statuses['pending'] > 0 && pct < 100) fillCls = 'fill-warning';
+      else if (pct > 0) fillCls = 'fill-partial';
+      else fillCls = 'fill-empty';
+      stageSegs.push({
+        id: 'other',
+        label: 'Other',
+        weight: weight,
+        total: st.total,
+        done: st.done,
+        hours: st.hours,
+        doneHours: st.doneHours,
+        pct: pct,
+        fillCls: fillCls,
+        isCurrent: st.total > st.done && !stageSegs.some(pending => pending.total > pending.done)
+      });
+    }
+  }
+  // Overall %
+  const totalWeight = stageSegs.reduce((s, x) => s + x.weight, 0);
+  const totalDoneWeight = stageSegs.reduce((s, x) => s + (mode === 'hours' ? x.doneHours : x.done), 0);
+  const totalPct = totalWeight > 0 ? Math.round((totalDoneWeight / totalWeight) * 100) : 0;
+  const totalTasks = stageSegs.reduce((s, x) => s + x.total, 0);
+  const doneTasks = stageSegs.reduce((s, x) => s + x.done, 0);
+  const totalHours = stageSegs.reduce((s, x) => s + x.hours, 0);
+  const doneHours = stageSegs.reduce((s, x) => s + x.doneHours, 0);
+  // Days until bid due
+  let daysLeft = null;
+  const bidDate = project.dueDate || project.bidDate || '';
+  if (bidDate) {
+    const bd = new Date(bidDate + 'T00:00:00');
+    const now = new Date(); now.setHours(0,0,0,0);
+    daysLeft = Math.round((bd - now) / 86400000);
+  }
+  // Urgency tier
+  let urgency = 'safe';
+  if (daysLeft !== null) {
+    if (daysLeft < 0) urgency = 'urgent';
+    else if (daysLeft <= 7) urgency = 'urgent';
+    else if (daysLeft <= 21) urgency = 'warning';
+  }
+  return {
+    project: project,
+    bidDate: bidDate,
+    daysLeft: daysLeft,
+    urgency: urgency,
+    pct: totalPct,
+    totalTasks: totalTasks,
+    doneTasks: doneTasks,
+    totalHours: totalHours,
+    doneHours: doneHours,
+    stageSegs: stageSegs
+  };
+}
+
+function _openProjectFromExecView(projectId) {
+  state.execView = false;
+  state.activeProjectId = projectId;
+  state.homeView = false;
   saveState();
   render();
 }
@@ -4258,6 +5042,7 @@ function refreshHomeView() {
 
 function openStatusSnapshot() {
   state.statusSnapshotView = true;
+  state.execView = false; // v213: clear exec view flag on navigation
   state.homeView = false;
   state.teamWorkloadView = false;
   state.trainingLogView = false; state.earlyLogView = false;
@@ -4298,6 +5083,7 @@ function refreshStatusSnapshot() {
 
 function openTeamWorkloadView() {
   state.teamWorkloadView = true;
+  state.execView = false; // v213: clear exec view flag on navigation
   state.homeView = false;
   state.statusSnapshotView = false;
   state.projectTimelineView = false; // v75: ensure mutually exclusive
@@ -4320,6 +5106,7 @@ function openTeamWorkloadView() {
 // card grid, click any card to jump into that project.
 function openProjectsListView() {
   state.projectsListView = true;
+  state.execView = false; // v213: clear exec view flag on navigation
   state.homeView = false;
   state.statusSnapshotView = false;
   state.projectTimelineView = false;
@@ -4564,6 +5351,8 @@ function renderProjectsListView() {
 // with per-person hours breakdown (pending, completed, this month, YTD).
 function openTrainingLogView() {
   state.trainingLogView = true;
+  state.execView = false; // v213: clear exec view flag on navigation
+  state.earlyLogView = false; // v214: was missing, mirrors the v126.1 fix pattern
   state.homeView = false;
   state.statusSnapshotView = false;
   state.projectTimelineView = false;
@@ -4590,6 +5379,7 @@ function exitTrainingLogView() {
 // pulled forward. Same navigation pattern as training log.
 function openEarlyLogView() {
   state.earlyLogView = true;
+  state.execView = false; // v213: clear exec view flag on navigation
   state.homeView = false;
   state.statusSnapshotView = false;
   state.projectTimelineView = false;
@@ -4637,6 +5427,7 @@ function refreshTeamWorkloadView() {
 
 function openProjectTimelineView() {
   state.projectTimelineView = true;
+  state.execView = false; // v213: clear exec view flag on navigation
   state.teamWorkloadView = false;
   state.trainingLogView = false; state.earlyLogView = false;
   state.projectsListView = false;
@@ -4734,6 +5525,7 @@ function printProjectTimeline() {
 
 function openOpenSlotsView() {
   state.openSlotsView = true;
+  state.execView = false; // v213: clear exec view flag on navigation
   state.teamWorkloadView = false;
   state.trainingLogView = false; state.earlyLogView = false;
   state.projectsListView = false;
@@ -4960,6 +5752,7 @@ function runFindAvailability() {
 
 function openTeamInsightsView() {
   state.tiView = true;
+  state.execView = false; // v213: clear exec view flag on navigation
   state.teamWorkloadView = false;
   state.trainingLogView = false; state.earlyLogView = false;
   state.projectsListView = false;
@@ -5513,9 +6306,22 @@ function _renderPtvTaskRow(item, groupKey, todayKey) {
   if (isDone) rowClasses.push('is-done');
   if (isOverdue) rowClasses.push('is-overdue');
   if (isCritical) rowClasses.push('is-critical');
+  // v187: Inline status dropdown replaces the static dot on Project Timeline
+  // rows so users can change status directly from the timeline. Same options
+  // + handler as Board/Table inline dropdowns, wired through a Project-
+  // timeline-scoped wrapper so cross-project navigation isn't required.
+  const statusOptions = [
+    ['not-started','Not Started'],
+    ['in-progress','In Progress'],
+    ['blocked','Blocked'],
+    ['pending','Pending'],
+    ['done','Complete'],
+    ['not-required','\u2298 Not Required'],
+    ['missed-deadline','\u2717 Missed Deadline']
+  ].map(([v,l]) => `<option value="${v}"${status === v ? ' selected' : ''}>${l}</option>`).join('');
   return `
     <div class="${rowClasses.join(' ')}" onclick="openTaskModal(null, '${escapeAttr(t.id)}')">
-      <div class="ptv-task-status-dot status-${status}"></div>
+      <select class="ptv-task-status-select status-${status}" onclick="event.stopPropagation();" onchange="event.stopPropagation();changeTaskStatusInline(event, '${escapeAttr(t.id)}', this.value)" title="Change status without opening task">${statusOptions}</select>
       <div>
         <span class="ptv-task-title">${escapeHtml(t.title || '(untitled)')}${_trainingChipMiniHtml(t)}${_buildCompletionSideBadgeHtml(t)}</span>
         ${t.stage ? `<span class="ptv-task-stage">${escapeHtml(stageLabel)}</span>` : ''}
@@ -7276,6 +8082,7 @@ function _buildEarlySummaryStripHtml(s) {
 function _jumpToEarlyLogFilteredTo(name) {
   state.earlyLogPersonFilter = name || 'all';
   state.earlyLogView = true;
+  state.execView = false; // v213: clear exec view flag on navigation
   state.teamWorkloadView = false;
   state.homeView = false;
   state.statusSnapshotView = false;
@@ -9729,7 +10536,7 @@ function renderHomeView() {
   // Show sign-in prompt and hide sections if no user
   const signinPrompt = document.getElementById('homeSigninPrompt');
   // v96: include the new My Workload section in show/hide handling
-  const sections = ['homeMyWorkloadSection', 'homeMyTasksSection', 'homeUnackSection', 'homeMessagesSection'];
+  const sections = ['homeMyTasksSection', 'homeUnackSection', 'homeMessagesSection'];
   if (!user) {
     if (signinPrompt) signinPrompt.style.display = 'block';
     sections.forEach(id => {
@@ -10030,10 +10837,415 @@ function _setSectionAlertState(sectionId, hasAlerts) {
   el.classList.toggle('home-section-has-alerts', !!hasAlerts);
 }
 
+
+// v177: Sticky hero — Workload summary (left) + Alerts summary (right).
+// Both are compact cards derived from the workload aggregator + alert-tier
+// buckets, formatted for at-a-glance scanning. Click any row/tile to jump
+// to the full section below.
+function renderHomeHero(user) {
+  if (!user) return;
+  renderHomeHeroWorkload(user);
+  renderHomeHeroAlerts(user);
+}
+
+function renderHomeHeroWorkload(user) {
+  const body = document.getElementById('homeHeroWorkloadBody');
+  const sub = document.getElementById('homeHeroWorkloadSub');
+  if (!body) return;
+  // v182: Fix — _aggregateWorkloadByAssignee returns a Map, not an array.
+  // v181 called .find on it which is not a Map method, so myStats was
+  // always undefined and the card body silently rendered "No tasks
+  // assigned to you" (or nothing at all).
+  try {
+    const statsMap = (typeof _aggregateWorkloadByAssignee === 'function') ? _aggregateWorkloadByAssignee() : null;
+    if (!statsMap || (statsMap.size === undefined ? !statsMap.length : statsMap.size === 0)) {
+      body.innerHTML = '<div class="home-hero-empty">No workload data yet.</div>';
+      if (sub) sub.textContent = '';
+      return;
+    }
+    // Handle both Map (current) and array (legacy) return shapes just in case
+    const asArray = (typeof statsMap.values === 'function') ? Array.from(statsMap.values()) : (Array.isArray(statsMap) ? statsMap : []);
+    const userLower = user.toLowerCase();
+    // Case-insensitive name match. Skip the synthetic "Unassigned" bucket.
+    let myStats = asArray.find(s => s && s.name && !s.isUnassignedBucket && s.name.toLowerCase() === userLower);
+    // Also try trimmed comparison as a defensive fallback (in case names have
+    // trailing whitespace anywhere).
+    if (!myStats) {
+      myStats = asArray.find(s => s && s.name && !s.isUnassignedBucket && s.name.trim().toLowerCase() === userLower.trim());
+    }
+    if (!myStats) {
+      const availableNames = asArray.filter(s => s && s.name && !s.isUnassignedBucket).map(s => s.name).join(', ');
+      body.innerHTML = '<div class="home-hero-empty">No workload found for <strong>' + escapeHtml(user) + '</strong>.<br><br><small style="color:var(--text-dim);">Available in workload: ' + escapeHtml(availableNames || '(none)') + '</small></div>';
+      if (sub) sub.textContent = '';
+      return;
+    }
+    body.innerHTML = _buildEstimatorCardHtml(myStats);
+    const totalOpen = myStats.totalOpen || 0;
+    const totalHrs = myStats.totalOpenHours || 0;
+    if (sub) sub.textContent = totalOpen + ' open \u00b7 ' + (Math.round(totalHrs * 10) / 10) + 'h';
+  } catch (e) {
+    console.warn('[v182] hero workload full-card render failed', e);
+    body.innerHTML = '<div class="home-hero-empty">Unable to render workload card: ' + escapeHtml(e.message || String(e)) + '</div>';
+  }
+}
+
+// v179: Day drill-down modal. Opens a modal listing every task the current
+// user is Lead or Support on with dueDate === dayStr, split into "Current
+// (open)" and "Completed / Not Required / Missed" sections so both current
+// and planned views are visible.
+function openHomeDayDrilldown(dayStr) {
+  const user = (typeof getCurrentUser === 'function') ? getCurrentUser() : null;
+  if (!user) return;
+  const userLower = user.toLowerCase();
+  const items = [];
+  (state.projects || []).forEach(p => {
+    if (p.archived) return;
+    (p.tasks || []).forEach(t => {
+      if (t.dueDate !== dayStr) return;
+      const isLead = (typeof getTaskLeads === 'function')
+        ? getTaskLeads(t).some(n => n.toLowerCase() === userLower)
+        : (t.assignee && t.assignee.toLowerCase() === userLower);
+      const isSupport = (typeof isTaskSupport === 'function') && isTaskSupport(t, user);
+      if (!isLead && !isSupport) return;
+      const hrsRaw = (typeof t.estimatedHours === 'number' && t.estimatedHours > 0) ? t.estimatedHours : 0;
+      const supportPct = (typeof getEffectiveSupportPct === 'function') ? getEffectiveSupportPct(t) : 100;
+      const effHrs = isLead ? hrsRaw : hrsRaw * (supportPct / 100);
+      items.push({ task: t, project: p, hours: effHrs, isLead: isLead, isSupport: isSupport && !isLead });
+    });
+  });
+  const isTermStatus = s => s === 'done' || s === 'not-required' || s === 'missed-deadline';
+  const openItems = items.filter(i => !isTermStatus(i.task.status || 'not-started'));
+  const doneItems = items.filter(i => isTermStatus(i.task.status || 'not-started'));
+  const openHrs = openItems.reduce((s, i) => s + i.hours, 0);
+  const modalId = 'homeDayDrilldownModal';
+  let m = document.getElementById(modalId);
+  if (!m) {
+    m = document.createElement('div');
+    m.id = modalId;
+    m.className = 'modal-backdrop';
+    m.style.display = 'none';
+    m.innerHTML =
+      '<div class="modal" style="max-width:640px; max-height:80vh; display:flex; flex-direction:column;">' +
+        '<div class="modal-header" style="display:flex; align-items:center; justify-content:space-between; padding:14px 18px; border-bottom:1px solid var(--border);">' +
+          '<div id="hddTitle" style="font-family:\'Barlow Condensed\', sans-serif; font-size:18px; font-weight:700;"></div>' +
+          '<button class="btn btn-sm" onclick="_closeHomeDayDrilldown()">\u2715</button>' +
+        '</div>' +
+        '<div class="modal-body" id="hddBody" style="padding:12px 18px; overflow-y:auto; flex:1;"></div>' +
+      '</div>';
+    document.body.appendChild(m);
+    m.addEventListener('click', function(e) { if (e.target === m) _closeHomeDayDrilldown(); });
+  }
+  const dateObj = new Date(dayStr + 'T00:00:00');
+  const titleEl = document.getElementById('hddTitle');
+  if (titleEl) titleEl.innerHTML = '\ud83d\udcc5 ' + dateObj.toLocaleDateString('en-US', {weekday:'long', month:'long', day:'numeric', year:'numeric'}) +
+    ' \u00b7 <span style="color:var(--sbg-navy, #0a2540);">' + openHrs.toFixed(1) + 'h open</span>' +
+    (doneItems.length > 0 ? ' \u00b7 <span style="color:var(--text-dim, #6b7687); font-size:12px;">' + doneItems.length + ' completed</span>' : '');
+  const bodyEl = document.getElementById('hddBody');
+  if (bodyEl) {
+    if (items.length === 0) {
+      bodyEl.innerHTML = '<div class="home-hero-empty">Nothing scheduled for this day.</div>';
+    } else {
+      const openHeader = openItems.length > 0
+        ? '<div class="hdd-section-header hdd-current">Current (open) \u00b7 ' + openItems.length + ' task' + (openItems.length === 1 ? '' : 's') + ' \u00b7 ' + openHrs.toFixed(1) + 'h</div>'
+        : '';
+      const doneHeader = doneItems.length > 0
+        ? '<div class="hdd-section-header hdd-done">Planned / Completed \u00b7 ' + doneItems.length + ' task' + (doneItems.length === 1 ? '' : 's') + '</div>'
+        : '';
+      bodyEl.innerHTML =
+        openHeader + openItems.map(i => _htlRowHtml(i)).join('') +
+        doneHeader + doneItems.map(i => _htlRowHtml(i)).join('');
+    }
+  }
+  m.style.display = 'flex';
+}
+
+function _closeHomeDayDrilldown() {
+  const m = document.getElementById('homeDayDrilldownModal');
+  if (m) m.style.display = 'none';
+}
+
+function renderHomeHeroAlerts(user) {
+  const body = document.getElementById('homeHeroAlertsBody');
+  const sub = document.getElementById('homeHeroAlertsSub');
+  if (!body) return;
+  const today = new Date();
+  today.setHours(0, 0, 0, 0);
+  const todayStr = formatDateForInput(today);
+  const tomorrow = new Date(today); tomorrow.setDate(tomorrow.getDate() + 1);
+  const tomorrowStr = formatDateForInput(tomorrow);
+  const userLower = user.toLowerCase();
+  let overdue = 0, dueToday = 0, dueTomorrow = 0, unack = 0, rejections = 0, signoffs = 0, missed = 0;
+  // v186: Count Missed Deadline tasks in the last 30 days so users can
+  // see them in the hero alerts card. Missed is terminal but users want
+  // visibility for accountability + review.
+  const missedCutoff = Date.now() - (30 * 24 * 60 * 60 * 1000);
+  (state.projects || []).forEach(p => {
+    if (p.archived) return;
+    (p.tasks || []).forEach(t => {
+      const isTerm = t.status === 'done' || t.status === 'not-required' || t.status === 'missed-deadline';
+      const isMine = (typeof isTaskMember === 'function')
+        ? isTaskMember(t, user)
+        : ((t.assignee && t.assignee.toLowerCase() === userLower) || (typeof isTaskSupport === 'function' && isTaskSupport(t, user)));
+      if (!isMine) return;
+      if (!isTerm && t.dueDate) {
+        if (t.dueDate < todayStr) overdue++;
+        else if (t.dueDate === todayStr) dueToday++;
+        else if (t.dueDate === tomorrowStr) dueTomorrow++;
+      }
+      if (!isTerm && !t.acknowledged) unack++;
+      if (!isTerm && t.completionRejected && !t.completionRejectionAcknowledged) rejections++;
+      const isLead = (typeof getTaskLeads === 'function')
+        ? getTaskLeads(t).some(n => n.toLowerCase() === userLower)
+        : (t.assignee && t.assignee.toLowerCase() === userLower);
+      if (t.status === 'done' && isLead && !t.completionAcknowledged) signoffs++;
+      // v186: Missed Deadline in the 30-day window
+      if (t.status === 'missed-deadline') {
+        const stamp = t.missedDeadlineAt || 0;
+        if (stamp === 0 || stamp >= missedCutoff) missed++;
+      }
+    });
+  });
+  const tiles = [
+    { id: 'overdue',   label: '\ud83d\udd34 Past Due',    count: overdue,   tier: 'critical', jump: 'homeMyTasksSection' },
+    { id: 'today',     label: '\ud83d\udfe1 Due Today',   count: dueToday,  tier: 'warning',  jump: 'homeTodayTimelineSection' },
+    { id: 'tomorrow',  label: '\ud83d\udfe2 Due Tomorrow',count: dueTomorrow, tier: 'info',   jump: 'homeMyTasksSection' },
+    { id: 'unack',     label: '\ud83d\udd14 Awaiting Ack',count: unack,     tier: 'warning',  jump: 'homeUnackSection' },
+    { id: 'signoffs',  label: '\u2713 Sign-Off Queue',     count: signoffs,  tier: 'info',     jump: 'homeSignoffsSection' },
+    { id: 'reject',    label: '\u2717 Rejections',         count: rejections, tier: 'critical', jump: 'homeRejectionsSection' },
+    // v186: Missed Deadline tile — quiet tier since it's a review/accountability
+    // item, not an active alert needing action.
+    { id: 'missed',    label: '\u2717 Missed Deadline',    count: missed,    tier: 'quiet',    jump: 'homeMyTasksSection' }
+  ];
+  const activeTiles = tiles.filter(t => t.count > 0);
+  if (activeTiles.length === 0) {
+    body.innerHTML = '<div class="home-hero-empty">\u2728 No active alerts \u2014 clear runway.</div>';
+    if (sub) sub.textContent = 'All clear';
+    return;
+  }
+  body.innerHTML = activeTiles.map(t =>
+    '<div class="home-hero-alert-tile tier-' + t.tier + '" onclick="scrollToHomeSection(\'' + t.jump + '\')" title="Click to jump to ' + t.label + '">' +
+      '<span class="home-hero-alert-tile-label">' + t.label + '</span>' +
+      '<span class="home-hero-alert-tile-count">' + t.count + '</span>' +
+    '</div>'
+  ).join('');
+  const totalActive = activeTiles.reduce((s, t) => s + t.count, 0);
+  if (sub) sub.textContent = totalActive + ' active';
+}
+
+function scrollToHomeSection(sectionId) {
+  const el = document.getElementById(sectionId);
+  if (!el) return;
+  if (el.classList.contains('is-collapsed')) el.classList.remove('is-collapsed');
+  el.scrollIntoView({ behavior: 'smooth', block: 'start' });
+  el.style.transition = 'box-shadow 0.4s';
+  el.style.boxShadow = '0 0 0 3px rgba(192, 127, 0, 0.5)';
+  setTimeout(() => { el.style.boxShadow = ''; }, 1200);
+}
+
+function renderHomeTodayTimeline(user) {
+  const list = document.getElementById('homeTodayTimelineList');
+  const sub = document.getElementById('homeTodayTimelineSub');
+  if (!list) return;
+  const today = new Date(); today.setHours(0, 0, 0, 0);
+  const todayStr = formatDateForInput(today);
+  const items = _collectHomeTimelineItems(user, todayStr, todayStr);
+  if (items.length === 0) {
+    list.innerHTML = '<div class="home-hero-empty">\ud83d\udcec Nothing due today.</div>';
+    if (sub) sub.textContent = 'Clear';
+    return;
+  }
+  const totalHrs = items.reduce((s, i) => s + i.hours, 0);
+  const rowsHtml = items.map(i => _htlRowHtml(i)).join('');
+  list.innerHTML =
+    '<div class="htl-day-group">' +
+      '<div class="htl-day-header is-today">' +
+        '<span class="htl-day-label">Today \u00b7 ' + today.toLocaleDateString('en-US', {weekday:'long', month:'short', day:'numeric'}) + '</span>' +
+        '<span class="htl-day-hours">' + totalHrs.toFixed(1) + 'h</span>' +
+        '<span class="htl-day-count">' + items.length + ' task' + (items.length === 1 ? '' : 's') + '</span>' +
+      '</div>' +
+      rowsHtml +
+    '</div>';
+  if (sub) sub.textContent = items.length + ' \u00b7 ' + totalHrs.toFixed(1) + 'h';
+}
+
+function renderHomeWeekTimeline(user) {
+  const list = document.getElementById('homeWeekTimelineList');
+  const sub = document.getElementById('homeWeekTimelineSub');
+  if (!list) return;
+  const today = new Date(); today.setHours(0, 0, 0, 0);
+  const todayStr = formatDateForInput(today);
+  const dow = today.getDay();
+  const daysFromMonday = (dow === 0) ? 6 : (dow - 1);
+  const monday = new Date(today);
+  monday.setDate(monday.getDate() - daysFromMonday);
+  const friday = new Date(monday);
+  friday.setDate(friday.getDate() + 4);
+  const mondayStr = formatDateForInput(monday);
+  const fridayStr = formatDateForInput(friday);
+  const items = _collectHomeTimelineItems(user, mondayStr, fridayStr);
+  if (items.length === 0) {
+    list.innerHTML = '<div class="home-hero-empty">\ud83d\udcec Nothing scheduled this week.</div>';
+    if (sub) sub.textContent = 'Clear';
+    return;
+  }
+  const groups = {};
+  items.forEach(i => {
+    if (!groups[i.dueDate]) groups[i.dueDate] = [];
+    groups[i.dueDate].push(i);
+  });
+  const dayLabels = ['Monday','Tuesday','Wednesday','Thursday','Friday'];
+  const dayStrs = [];
+  for (let n = 0; n < 5; n++) {
+    const d = new Date(monday); d.setDate(d.getDate() + n);
+    dayStrs.push({ dateStr: formatDateForInput(d), label: dayLabels[n], date: d });
+  }
+  let totalHrs = 0;
+  const groupsHtml = dayStrs.map(dayInfo => {
+    const dayItems = groups[dayInfo.dateStr] || [];
+    if (dayItems.length === 0) return '';
+    const dayHrs = dayItems.reduce((s, i) => s + i.hours, 0);
+    totalHrs += dayHrs;
+    const cls = (dayInfo.dateStr === todayStr) ? 'is-today' : (dayInfo.dateStr < todayStr ? 'is-over' : '');
+    return '<div class="htl-day-group">' +
+      '<div class="htl-day-header ' + cls + '">' +
+        '<span class="htl-day-label">' + dayInfo.label + ' \u00b7 ' + dayInfo.date.toLocaleDateString('en-US', {month:'short', day:'numeric'}) + '</span>' +
+        '<span class="htl-day-hours">' + dayHrs.toFixed(1) + 'h</span>' +
+        '<span class="htl-day-count">' + dayItems.length + ' task' + (dayItems.length === 1 ? '' : 's') + '</span>' +
+      '</div>' +
+      dayItems.map(i => _htlRowHtml(i)).join('') +
+    '</div>';
+  }).join('');
+  list.innerHTML = groupsHtml || '<div class="home-hero-empty">\ud83d\udcec Nothing scheduled this week.</div>';
+  if (sub) sub.textContent = items.length + ' \u00b7 ' + totalHrs.toFixed(1) + 'h';
+}
+
+function _collectHomeTimelineItems(user, fromStr, toStr) {
+  const items = [];
+  const userLower = user.toLowerCase();
+  (state.projects || []).forEach(p => {
+    if (p.archived) return;
+    (p.tasks || []).forEach(t => {
+      // v178: include terminal tasks (done / not-required / missed-deadline)
+      // so completed items appear crossed out inline instead of vanishing.
+      // The row renderer applies strikethrough via .status-done, and a
+      // muted look for the other two terminal states.
+      if (!t.dueDate || t.dueDate < fromStr || t.dueDate > toStr) return;
+      const isLead = (typeof getTaskLeads === 'function')
+        ? getTaskLeads(t).some(n => n.toLowerCase() === userLower)
+        : (t.assignee && t.assignee.toLowerCase() === userLower);
+      const isSupport = (typeof isTaskSupport === 'function') && isTaskSupport(t, user);
+      if (!isLead && !isSupport) return;
+      const hrsRaw = (typeof t.estimatedHours === 'number' && t.estimatedHours > 0) ? t.estimatedHours : 0;
+      const supportPct = (typeof getEffectiveSupportPct === 'function') ? getEffectiveSupportPct(t) : 100;
+      const effHrs = isLead ? hrsRaw : hrsRaw * (supportPct / 100);
+      items.push({
+        task: t, project: p,
+        dueDate: t.dueDate, hours: effHrs,
+        isLead: isLead, isSupport: isSupport && !isLead,
+        status: t.status || 'not-started',
+        critical: !!t.critical
+      });
+    });
+  });
+  // Sort: dueDate asc, terminal tasks LAST within same day (so open work
+  // reads first), then critical first, then lead-role first, then hours desc.
+  const isTermStatus = s => s === 'done' || s === 'not-required' || s === 'missed-deadline';
+  items.sort((a, b) => {
+    if (a.dueDate !== b.dueDate) return a.dueDate < b.dueDate ? -1 : 1;
+    const aTerm = isTermStatus(a.status);
+    const bTerm = isTermStatus(b.status);
+    if (aTerm !== bTerm) return aTerm ? 1 : -1;
+    if (a.critical !== b.critical) return a.critical ? -1 : 1;
+    if (a.isLead !== b.isLead) return a.isLead ? -1 : 1;
+    return b.hours - a.hours;
+  });
+  return items;
+}
+
+function _htlRowHtml(item) {
+  const dotColor = _statusDotColor(item.status);
+  const roleLabel = item.isLead ? 'LEAD' : 'Support';
+  const roleClass = item.isLead ? 'is-lead' : '';
+  const critical = item.critical ? '\ud83d\udd25 ' : '';
+  const taskId = escapeAttr(item.task.id);
+  const projectId = escapeAttr(item.project.id);
+  // v187: Inline status dropdown replaces the static colored dot so users
+  // can change status directly from Today Timeline + Week Workload rows
+  // without opening the task modal. onclick stops propagation so the row's
+  // openTaskModal handler doesn't fire when interacting with the select.
+  const statusOptions = [
+    ['not-started','Not Started'],
+    ['in-progress','In Progress'],
+    ['blocked','Blocked'],
+    ['pending','Pending'],
+    ['done','Complete'],
+    ['not-required','\u2298 Not Required'],
+    ['missed-deadline','\u2717 Missed Deadline']
+  ].map(([v,l]) => '<option value="' + v + '"' + (item.status === v ? ' selected' : '') + '>' + l + '</option>').join('');
+  return '<div class="htl-row status-' + item.status + '" onclick="openTaskModal(null, \'' + taskId + '\')" title="Click title/hours to open task \u00b7 change status via dropdown">' +
+    '<select class="htl-row-status-select status-' + item.status + '" ' +
+      'onclick="event.stopPropagation();" ' +
+      'onchange="event.stopPropagation();_htlChangeStatus(event, \'' + projectId + '\', \'' + taskId + '\', this.value)" ' +
+      'title="Change status without opening task" ' +
+      'style="background:' + dotColor + ';">' + statusOptions + '</select>' +
+    '<span class="htl-row-title">' + critical + escapeHtml(item.task.title || '(untitled)') + '</span>' +
+    '<span class="htl-row-project">' + escapeHtml(item.project.name || '') + '</span>' +
+    '<span class="htl-row-hours">' + (item.hours > 0 ? item.hours.toFixed(1) + 'h' : '\u2014') + '</span>' +
+    '<span class="htl-row-role ' + roleClass + '">' + roleLabel + '</span>' +
+  '</div>';
+}
+
+// v187: Handler for Today/Week timeline row status change. Cross-project
+// safe (routes through the active project if needed). Delegates to
+// updateTaskStatus which stamps the correct completedAt/notRequiredAt/
+// missedDeadlineAt metadata per v158/v173 transitions.
+function _htlChangeStatus(event, projectId, taskId, newStatus) {
+  if (!taskId || !newStatus) return;
+  // Find the project + task
+  const project = state.projects.find(p => p.id === projectId);
+  if (!project) return;
+  const task = (project.tasks || []).find(t => t.id === taskId);
+  if (!task) return;
+  const oldStatus = task.status || 'not-started';
+  if (oldStatus === newStatus) return;
+  // Preserve active project context — updateTaskStatus operates on activeProject
+  const prevActive = state.activeProjectId;
+  state.activeProjectId = projectId;
+  try {
+    if (typeof updateTaskStatus === 'function') {
+      updateTaskStatus(taskId, newStatus);
+    } else {
+      task.status = newStatus;
+      saveState();
+    }
+  } finally {
+    state.activeProjectId = prevActive;
+  }
+  // Re-render Home so the row + hero cards reflect the change
+  if (typeof render === 'function') render();
+}
+
+function _statusDotColor(status) {
+  switch (status) {
+    case 'not-started': return '#94a3b8';
+    case 'in-progress': return '#4a90c2';
+    case 'blocked':     return '#c8322b';
+    case 'pending':     return '#c07f00';
+    case 'done':        return '#2e7d52';
+    case 'not-required':return '#6b7687';
+    case 'missed-deadline': return '#a44029';
+    default:            return '#94a3b8';
+  }
+}
+
 function renderHomeMyTasks(user) {
   const el = document.getElementById('homeMyTasksBuckets');
   const subEl = document.getElementById('homeMyTasksSub');
   if (!el) return;
+  // v177: also refresh the sticky hero + timeline sections on every home render
+  try { renderHomeHero(user); } catch (e) { console.warn('[v177] hero render failed', e); }
+  try { renderHomeTodayTimeline(user); } catch (e) { console.warn('[v177] today timeline failed', e); }
+  try { renderHomeWeekTimeline(user); } catch (e) { console.warn('[v177] week timeline failed', e); }
   const buckets = getMyTasksAcrossProjects(user);
   const total = buckets.overdue.length + buckets.today.length + buckets.tomorrow.length + buckets.thisweek.length;
   if (subEl) subEl.textContent = total === 0 ? 'Nothing urgent this week' : `${total} open task${total === 1 ? '' : 's'} this week`;
@@ -19479,9 +20691,14 @@ function _buildToastActionsHtml(notif, toastId) {
     </div>`;
   }
 
-  // task-completed → ✓ Sign off, only when the recipient is the
-  // project Lead Estimator and the task isn't already signed off.
-  if (notif.type === 'task-completed') {
+  // task-completed OR task-completed-early → ✓ Sign off / ✗ Reject,
+  // only when the recipient is the project Lead Estimator and the task
+  // isn't already signed off. v184: also treat 'task-completed-early'
+  // as needing sign-off — v159's celebratory notification variant was
+  // routing through here without matching the type check, so early
+  // completions never got the Sign Off / Reject action buttons on the
+  // notification. Same eligibility gate; same buttons; same wiring.
+  if (notif.type === 'task-completed' || notif.type === 'task-completed-early') {
     const lead = (project.leadEstimator || '').toLowerCase();
     if (lead && lead === recipient && !task.completionAcknowledged) {
       return `<div class="toast-actions">
@@ -21455,6 +22672,44 @@ function getDefaultAdvancements() {
     advImplemented('quality-of-life', 'Completed Early Log — dedicated sidebar view for team recognition on pull-forward wins', "New sidebar page (🏁 next to Training Log) that surfaces every task pulled forward across all projects. Top strip: team totals (all-time / this month / YTD / total days pulled forward). Middle: per-person leaderboard cards ranked by count, with rank medals (🥇🥈🥉) for the top three, showing each person's total early completions + total days early + average + best single pull. Bottom: detailed task list with filters (window: all / week / month / quarter / year; person: everyone or specific; sort: most days early / most recent / oldest first). Every row shows the task title, project name, workstream, lead(s), due date, completion date, and the green early badge. Click any row to jump straight to that task's modal. Copy Summary button exports a plain-text leaderboard for reporting.", "Shipped Jul 27, 2026 in response to: 'I want a completed early log.' Follows the same navigation + rendering pattern as the Training Log (v119) so the app stays consistent. Ten pieces. (1) State slots: state.earlyLogView (bool), state.earlyLogWindowFilter (all/week/month/quarter/year, default all), state.earlyLogPersonFilter (name or all, default all), state.earlyLogSort (daysDesc/dateDesc/dateAsc, default daysDesc). All initialized in loadState with type guards. (2) Sidebar button: #earlyLogSidebarBtn inserted right after #trainingLogSidebarBtn. 🏁 icon, 'Completed Early' label, 'Tasks pulled forward · leaderboard' subtitle. onclick fires openEarlyLogView. (3) HTML view container: #earlyLogView reuses the tlv-* CSS classes (header, subtitle, actions, stat-strip, body, section, filters, person-grid, task-list) so we get consistent visual weight with Training Log for free. Title styled in the same green (#2e7d52) as the early-completion badge. Three action buttons: Copy Summary / Refresh / Close. (4) openEarlyLogView / exitEarlyLogView: mirror the Training Log open/exit shape. openEarlyLogView sets state.earlyLogView=true, resets every other top-level view flag (homeView, statusSnapshotView, projectTimelineView, teamWorkloadView, openSlotsView, tiView, trainingLogView, projectsListView), hides the sticky countdown bar, saves state, renders. exitEarlyLogView flips the flag off and re-renders. (5) All existing openXView functions batch-updated to reset state.earlyLogView=false alongside the existing state.trainingLogView=false reset — sed pass touched 28 sites so no matter how you navigate away from Early Log it clears cleanly. (6) Router branch: inserted after the Training Log branch in the render dispatcher. Same shape (hide all other view elements, unhide earlyLogView, run renderEarlyLogView, applySidebarState, return). Follow-through hides earlyLogView when the flag is off so subsequent views don't leak into it. (7) _collectEarlyCompletions helper: walks every non-archived project's tasks, filters status==='done' && completedEarly && completedDaysBefore>0, returns items with task, project, leads (via getTaskLeads with fallback), daysEarly, completedAt, dueDate — so downstream rendering doesn't have to re-derive. (8) _buildEarlyPersonSummary aggregates per-person stats — count, totalDaysEarly, avgDaysEarly, best. Each lead on a task gets credited for the pull-forward (co-leads share the win). (9) _filterEarlyCompletions applies the active window + person filters. Windows use standard boundaries: week=last 7 days, month=1st of current month, quarter=first day of current quarter, year=Jan 1. Person filter matches against the leads array. (10) renderEarlyLogView orchestrates it all — populates the four stat tiles at the top (Total Pull-Forwards / This Month / YTD / Total Days Pulled Forward in gold), builds the per-person leaderboard cards sorted by count then total days (rank medals for top 3, avatar with brand color, count as subtitle, three stats per card: Total Days Early / Avg / Best Pull), refreshes the person filter dropdown to include everyone with an early completion, sorts the detail list by the active sort mode, renders each row with title + project + workstream + lead + due date + completion date + green badge. Click any row → jumpToTaskFromEarlyLog(projectId, taskId) exits the Early Log view, switches active project, and pops the task modal. Copy Summary generates a plain-text export with team totals, leaderboard (with rank emojis), and the most recent 25 filtered rows — copies to clipboard with prompt fallback for browsers where clipboard API is blocked. Full diagnostic run stayed green (68/68 static + 19/19 live). JS syntax clean. Backward-compatible: existing done tasks that were completed before v158 don't appear (they have completedEarly=false by default from the loadState backfill), so the log starts fresh with the wins that were tracked from v158 onward. Deferred: Team Insights aggregation tile that mirrors this data in the KPI dashboard, project-scoped early-completion counter on the Home page, and an 'export as CSV' variant of the summary for month-end reporting."),
     advImplemented('quality-of-life', 'New Not Required tab on Project Alerts — recent scope-drops stay visible without cluttering urgency indicators', "Users needed a way to keep Not Required tasks in view for team review — quality checks, coaching conversations, audit trails — without having those tasks nag as past-due (fixed in v169). This ship adds a new muted-grey ⊘ Not Required tab to the Project Alerts strip. Only appears when there's at least one task marked Not Required in the last 30 days. Tab and panel use grey palette instead of red/gold urgency colors — visually recedes so it's clearly informational, not action-required. Same click-through-to-task-modal behavior as every other alert tab. Available in both the Project scope and My scope strips.", "Shipped Aug 1, 2026 in response to: 'I would also like a project alerts for Not Required so they still maintain some visibility if needed.' Six pieces. (1) getTasksByAlertTier gained a 'not-required' tier branch: filters project.tasks for status === 'not-required' AND notRequiredAt within the last 30 days (30 * 24 * 60 * 60 * 1000 ms cutoff). Legacy not-required tasks that pre-date v158's notRequiredAt stamp (no timestamp = 0) are included anyway so nothing's silently hidden. Recent-window keeps the tab from growing unbounded — a team doing weekly scope reviews will see the last month of drops without every historical skip. (2) Tier populated in the alerts strip builder: const notRequired = getTasksByAlertTier(project, 'not-required', scope). (3) New tab button in the tabs.push sequence, placed after unacknowledged since it's informational not urgent: '⊘ Not Required <count>' with tooltip 'Tasks marked Not Required in the last 30 days — visible for team review, no action needed'. Only rendered when notRequired.length > 0 (empty tab suppression). (4) Titles map entry: 'not-required': '⊘ Not Required — Scope-Dropped Tasks (Last 30 Days)'. (5) Tier map (used by filterTasksByAlertTier when dispatching to getTasksByAlertTier) got 'not-required': 'not-required' — added to BOTH the project-scope AND my-scope maps via Python replace. (6) CSS for .alert-tab.tab-notrequired (muted grey background, greyer border, dark-grey text — no red / gold urgency signals) and .alert-panel.panel-not-required (grey border, grey title, 0.85 opacity on items so scope-dropped work visually recedes). Full dark-mode variants included. Manual JS syntax check passed. All alert-tab conventions (scope='my' vs 'project', empty-tab suppression, active-state class, escapeHtml on user-facing text) preserved."),
     advImplemented('high-impact', 'New Sub Bids Due (Trade Partners) anchor + post-preload warning for tasks with unresolved anchor dates', "Bundle covering both parts of the request. (1) New fifth date anchor type — 'sub-bids-due' — with a new project field project.subBidsDueDate. Task authors can now anchor a task offset to when SBG's subs are expected to have their pricing in (upstream of Bid Day, common trigger for scope-leveling + estimating tasks). New SB button in the Edit Task modal anchor toggle and template editor row, colored teal (#2e8b8b) to distinguish from S/B/P/R. Reanchor pipeline updated so editing the Sub Bids Due date in the Project modal triggers task recomputation the same way editing other anchor dates does. (2) Post-preload warning: when a template loads into a project and one or more tasks are anchored to a date that isn't set on the project (Pre-Bid, RFI Due, Sub Bids Due, or Bid Day), a deferred alert 400ms after render tells the user exactly how many tasks are affected per anchor type and how to fix it — the silent failure that had users reporting 'pre-bid tasks aren't anchoring' now surfaces itself as an actionable message.", "Shipped Aug 1, 2026 in response to: 'task being loaded that anchor to Prebid are not anchoring, also I would like an additional anchor from Sub Bids Due from Trade Partners'. Two-part diagnosis: (a) plumbing for the pre-bid anchor was correct all along — resolveTaskAnchorDate reads project.prebidDate, reanchorProjectTaskDates walks each task's own anchor, saveProject reanchors when prebidDate changes. What was happening: template preload silently produced tasks with dueDate='' when project.prebidDate was empty at preload time. Task modal shows a per-task warning when opened, but nothing at the project level ever told the user. Fixed with a project-level post-preload summary alert. (b) User's ask for a new anchor type is a clean additive schema change. Twelve pieces. (1) _TASK_ANCHOR_LABELS table (v82) got a fifth entry: sub-bids-due -> {short:'Sub Bids', long:'Sub Bids Due (Trade Ptr)', dateField:'subBidsDueDate', warnLabel:'Sub Bids Due Date'}. This table drives label text, hint text, calc-badge format, and warning messages across the app. (2) resolveTaskAnchorDate got the fifth branch — reads (project.subBidsDueDate || '').trim() || null. Returns null when the anchor date isn't set so the UI's warning path fires per usual. (3) Load-time backfill — if (typeof p.subBidsDueDate === 'undefined') p.subBidsDueDate = ''. Runs on every state load next to prebidDate/rfiDueDate backfills. (4) Validation lists — batch sed replaced all 14 occurrences of ['bid-start','bid-day','pre-bid','rfi-due'] with the 5-element version including 'sub-bids-due'. Covers task backfill validators, template-task validators, and the _addTemplateTasksToProject anchor-picker. Unrecognized values still default to 'bid-start' for backward compat. (5) _addTemplateTasksToProject anchor picker — new else-if branch reads project.subBidsDueDate. (6) Project modal form — new form-row with #projSubBidsDueDate date input and hint text 'The date SBG's subs are expected to have pricing in. Tasks can anchor to this.' Placed after the prebid/rfi row inside the same data-bidding-only container. (7) openProjectModal loads existing value into the new input; new-project init falls through to empty string by default. (8) saveProject reads newSubBidsDueDate from the input, includes it in the data object passed to Object.assign(p, data). (9) Reanchor detection extended: oldSubBidsDueDate snapshot before Object.assign, subBidsChanged = oldSubBidsDueDate !== newSubBidsDueDate, subBidsChanged added to the trigger condition. When it fires, the existing reanchorProjectTaskDates walk correctly resolves via task.dateAnchor which now includes sub-bids-due. (10) Task modal anchor toggle — new button 'SB' with data-anchor='sub-bids-due' and title 'Anchor offset from Sub Bids Due date (from Trade Partners)'. CSS active state background #2e8b8b (teal) matches template editor button. (11) Template editor row — new SB button in the mtt-anchor-toggle, active-state check inspects t.dateAnchor === 'sub-bids-due', onClick calls setMasterTaskAnchor(index, 'sub-bids-due'). Same teal accent. (12) Post-preload warning — new try/catch block at the end of _addTemplateTasksToProject that walks the just-created tasks, counts any with empty dueDate AND typeof dayOffset === 'number' (meaning it SHOULD have computed one), buckets by anchor type. For each anchor type where count > 0 AND the corresponding project field is empty, adds a human-readable line to a missingParts array. If missingParts is non-empty, a setTimeout(400ms) alert fires: '⚠ N tasks loaded without a computed due date: • 3 anchored to Pre-Bid Walk Date • 2 anchored to Sub Bids Due Date. Edit the project to set the missing anchor date(s) — the tasks will auto-reanchor and pick up their due dates.' Deferred so it doesn't block the save/render pipeline. Wrapped in try/catch so any edge-case error can't kill state persistence. Follow-up ideas: (a) also fire this warning during JSON merge import so users notice when someone else's tasks come in with anchors we can't resolve, (b) inline 'Fix now' button on the alert that opens the project modal, (c) anchor-warning badge on the task card itself for tasks with unresolved anchors."),
+    advImplemented('bug-fix', 'Diagnostic sweep on all 1135 functions \u2014 fixed 2 more navigation gaps found by systematic audit', "User request: 'please run diagnostics on all functions.' Ran a systematic static analysis pass across the whole file's ~1135 unique function definitions and their references. Six checks: (a) duplicate top-level definitions \u2014 confirmed all duplicates (formatDate, mk, ensure) are inner-scoped locals inside other functions, no real collision; (b) HTML/dynamic event-handler resolution \u2014 every function name referenced in an onclick/onchange/etc. attribute resolves to a defined function; (c) executive-view function graph reachability \u2014 all 23 Executive View functions (openExecutiveView through _formatDateYmd) are defined once and referenced from 1-8 call sites, no orphans; (d) state-field consistency \u2014 no dead state fields except state.calMonth (written twice but never read, minor); (e) navigation-function view-flag hygiene audit \u2014 for each function that ENABLES a view flag (real navigation, excludes modals), verified it CLEARS every other navigation view flag. This audit turned up two more bugs of the same class as v213. Fix 1: openExecutiveView was missing clears for earlyLogView, openSlotsView, projectTimelineView, projectsListView, statusSnapshotView, teamWorkloadView, trainingLogView (had only homeView + tiView + execView-self). Symptom: opening Executive View from any of those views would set execView=true but leave the previous flag stuck true too \u2014 render() precedence favored execView so the view rendered correctly, but state was dirty and clicking the wrong sidebar item next could trigger unexpected behavior. Fix 2: openTrainingLogView was missing clear for earlyLogView (mirrors the v126.1 fix pattern where projectsListView was similarly missing). Symptom: opening Training Log from Early Log would leave both flags stuck true.", "Shipped Sep 9, 2026 in response to: 'please run diagnostics on all functions.' Two functional fixes plus documentation of clean checks. (1) openExecutiveView now clears all 8 other view flags (homeView, tiView, statusSnapshotView, teamWorkloadView, trainingLogView, earlyLogView, projectsListView, projectTimelineView, openSlotsView) with a v214 comment noting it's the mirror of the v213 fix. (2) openTrainingLogView now also clears state.earlyLogView (with v214 comment referencing the v126.1 pattern this mirrors). Passing checks: 1135 unique function names defined, 3 duplicates all confirmed inner-scoped (formatDate/mk/ensure locals), zero undefined onclick handlers across HTML and dynamically-generated templates, all 23 Executive View functions reachable with 1-8 call sites each, no dead state fields of concern, no other navigation-function gaps (74 open* functions checked, 72 confirmed as modal-openers that correctly do not clear view state, remaining 2 gaps fixed above). Manual JS syntax check passed. Post-ship: navigation between any two views is now provably clean \u2014 every open* function that transitions view state clears every OTHER view flag before setting its own."),
+    advImplemented('bug-fix', 'FIX: Navigation stuck on Executive View \u2014 every open* function now clears state.execView', "User bug report: 'when i try to click from pages to pages its not working and leaves me stuck on current page, happens on several pages.' Root cause: since v197 the Executive View was added with its own state.execView flag and a render() precedence branch that returns early when execView is true. All ten sidebar-navigation functions (openHomeView, openStatusSnapshot, openTeamWorkloadView, openProjectsListView, openTrainingLogView, openEarlyLogView, openProjectTimelineView, openOpenSlotsView, openTeamInsightsView, selectProject) properly clear ALL the other view flags they know about \u2014 but none of them were updated to clear state.execView. So once a user landed in Executive View and clicked any other sidebar item, the target view's flag got set to true but execView stayed true, and render() saw execView first (precedence #2 after tiView), rendered Executive View, and returned. User was trapped. Fixed by inserting 'state.execView = false' into every navigation entry point that sets a *View flag to true. Also fixed three fallback paths (loadState archived-active fallback, delete-project fallback, archive-project fallback) that set homeView=true when there's no other project to fall back to, defensive clearing of execView there too. Same class of bug as the v55 Team Workload fix but in the other direction \u2014 previous work forgot to add clear-execView to the openers rather than mistakenly adding clear-teamWorkloadView.", "Shipped Sep 9, 2026 in response to: 'when i try to click from pages to pages its not working and leaves me stuck on current page, happens on several pages.' Thirteen insertions of 'state.execView = false' with v213 comment marker: nine into open* function bodies (openHomeView, openStatusSnapshot, openTeamWorkloadView, openProjectsListView, openTrainingLogView, openEarlyLogView, openProjectTimelineView, openOpenSlotsView, openTeamInsightsView), one into selectProject, one into _jumpToEarlyLogFilteredTo, three into fallback branches (loadState archived-active-fallback, delete-project no-fallback-available, archive-project no-fallback-available). No functional changes to Executive View itself \u2014 openExecutiveView already clears the other flags correctly; the missing link was the return path. Also swept the file for any other 'state.someView = true' pattern and confirmed all navigation entry points now clear execView. Manual JS syntax check passed. Post-ship: users can freely navigate away from Executive View to any sidebar destination (Home, Team Insights, Team Workload, Projects List, Training Log, Early Log, Project Timeline, Open Slots, Status Snapshot) or click any project card to jump into it \u2014 navigation is no longer trapped when execView state is stuck true."),
+    advImplemented('high-impact', 'By Assignee cards now show TRUE per-assignee slice \u2014 percent + tasks + hours + milestone chain + current stage all recomputed from only that person\u2019s tasks, not the whole project rollup', "User feedback: 'by assignee but i want to see % and other information calculated on task they are assigned and not overall project, a real look into completeness for each assignee.' The v211 By Assignee grouping was surfacing the RIGHT projects per person, but the cards themselves still showed whole-project stats \u2014 same 45%/175 tasks whether you were viewing under Sunny's section or Trent's section. Not useful for real workload visibility. Refactored so that when a card is rendered under a person's section, every number reflects only that person's tasks: their done+total task count, their done+total hour count, their per-stage completion in the milestone chain (only stages where they have tasks), their 'current' stage (the first incomplete stage in their slice), and their overall percent. Added a small gold '<NAME>\u2019S SLICE' badge next to the title and the % sub-label now reads 'Sunny \u00b7 by hours' instead of just 'by hours' \u2014 unambiguous that these numbers are their slice. Person section header also now shows 'Avg N% complete' computed across their sliced cards, so you get both workload (open tasks/hours) and completeness (avg %) at a glance.", "Shipped Sep 9, 2026 in response to: 'by assignee but i want to see % and other information calculated on task they are assigned and not overall project, a real look into completeness for each assignee.' Six changes. (1) _buildExecCardData signature gained an optional taskFilter parameter: const tasks = (project.tasks || []).filter(t => (typeof taskFilter === 'function') ? taskFilter(t) : true). Everything downstream (byStage grouping, stage segments, overall pct, totals) uses the filtered task set. Backward compatible \u2014 all existing callers pass no filter so behavior is unchanged. (2) _renderExecCardsByAssignee rebuilds cards per (person, project) pair using an assigneeFilter that checks (t.leads || []).indexOf(name) >= 0 || (t.supportMembers || []).indexOf(name) >= 0. Each sliced card gets sliced.assigneeName = name attached so the renderer knows this is a slice view. (3) After sorting, computes avgPct per group from the sliced cards: g.stats.avgPct = round(sum(c.pct) / cards.length). (4) Section header stat parts now include 'Avg N% complete' between open-hours and past-due. (5) _renderExecCardHtml checks c.assigneeName: if present, renders a .ev-slice-badge before the title (formatted as '<NAME>\u2019S SLICE' in gold uppercase 9px), changes the 'Currently:' label to 'Their current:', and appends the assignee name to the pct sub-label (e.g. 'Sunny \u00b7 by hours' instead of just 'by hours'). (6) CSS + print CSS: new .ev-slice-badge rule (inline-flex gold-tinted 2/7px padding, rgba(192,127,0,0.15) bg, 1px gold-alpha border, 9px Barlow Condensed 800-weight uppercase); print variant at 6.5pt with 1/4pt padding preserving colors via !important. Manual JS syntax check passed. Post-ship: in By Assignee view, each project card shows only that person's slice \u2014 e.g. Sunny's card for NPC Dallas shows '12/25 tasks \u00b7 34/78h \u00b7 45%' with a milestone chain colored only by her stage completion + a 'SUNNY\u2019S SLICE' badge next to the title + a 'Sunny \u00b7 by hours' label under the %. Same card for Trent under his section shows Trent's numbers instead."),
+    advImplemented('high-impact', 'Executive View Group By: Assignee \u2014 replaced v210 project-lead grouping with task-level assignee grouping so real workload shows through', "User feedback: 'i really need by assignee.' The v210 grouping used project.leadEstimator which is a project-level attribute \u2014 but real workload lives at the task level. A person may not be leadEstimator on a project but still have 15 open tasks assigned to them (via task.leads[] or task.supportMembers[]). Refactored the grouping to walk every open task, aggregate assignees from both task.leads[] and task.supportMembers[], and produce true task-level workload stats per person: open tasks, open hours (sum of estimatedHours for open tasks assigned to them), past-due tasks, tasks due this week, project count (distinct projects they touch), lead-task count, support-task count. A project card can now appear under multiple people's sections \u2014 which is the point, because it shows collaboration overlap. Sections sorted by past-due DESC then urgent DESC then open-task count DESC then alphabetical, so the biggest firefight surfaces at the top. Header shifts to red-tinted gradient with red left border when person has any past-due OR this-week tasks. Section note now shows lead/support task split (e.g. '12 as lead \u00b7 8 as support').", "Shipped Sep 9, 2026 in response to: 'i really need by assignee.' Five changes. (1) Button label + tooltip 'By Lead'\u2192'By Assignee', data-groupby 'lead'\u2192'assignee'. (2) setExecutiveGroupBy accepts 'assignee' as canonical value; 'lead' aliased to 'assignee' for backward compat with v210 state. (3) renderExecutiveView active-state sync also treats 'lead'\u2192'assignee' when comparing. (4) renderExecutiveCards branch updated: 'assignee' (or aliased 'lead') calls new _renderExecCardsByAssignee. (5) _renderExecCardsByLead deleted and replaced with _renderExecCardsByAssignee: walks allProjects filtered to visibleProjectIds; iterates project.tasks; skips done + not-required tasks; for each open task, computes isPastDue (dueDate < today) and isThisWeek (dueDate <= today+7 and not past-due); dedupes assignees per task using Set(leads \u222a supports); for each assignee, adds project.id to their projectIds Set, increments openTasks, adds estimatedHours to openHours, and increments pastDueTasks / urgentTasks / leadTasks / supportTasks accordingly (lead takes precedence for the split when someone appears in both leads[] and supportMembers[]). Builds groups: name \u2192 {stats, cards=filter(cards where projectIds.has(project.id))}. Unassigned bucket: cards whose project has zero non-done non-not-required task assignees anywhere. Sorts groups (unassigned last, then pastDueTasks DESC, urgentTasks DESC, openTasks DESC, alphabetical). Sorts cards within each group (currently-bidding-soonest first, then post-bid most-recent-past). Section header shows: name + open-tasks stat + open-hours stat + past-due stat (red glow) + this-week stat (red glow) + project count + lead/support split note. Backward compat: state.execGroupBy='lead' from any v210 user is now handled everywhere as 'assignee'. No CSS changes needed \u2014 the ev-section-lead + has-urgent + ev-lead-stats styles from v210 all reused. Manual JS syntax check passed. Post-ship: click \ud83d\udc64 By Assignee \u2014 sections show every person who has any open task assignment, sorted so whoever has the most past-due + due-this-week rises to the top with a red-tinted header; each person's stat strip shows how much open work they have + how it splits between lead and support; same project can appear under multiple people's sections when they collaborate on it."),
+    advImplemented('high-impact', 'Executive View Group By: Lead added \u2014 groups projects by lead estimator with per-person stats (leading count + urgent count + avg progress + support-count) for workload distribution visibility', "User asked for Version A of the by-person snapshot: workload distribution grouped by lead estimator. Implemented as a pivot on the existing Executive View \u2014 new 'Group By' toggle in the header (\ud83d\udcc5 By Bid Date / \ud83d\udc64 By Lead) swaps between the Currently Bidding / Post Bid grouping and a new per-person grouping. Per-person section header shows: person name (Barlow Condensed uppercase), leading count, urgent count (highlighted red if >0), avg % progress across their projects, and total hours or tasks depending on the active progress mode. Also shows a 'Supporting N more projects' note when the person appears in supportMembers[] on projects where they're not the lead \u2014 so support-heavy team members aren't invisible. Projects within each person's section are sorted currently-bidding-first (by soonest bid) then post-bid (by most-recent-past). Sections themselves sorted by urgent count DESC, then project count DESC, then alphabetical so whoever needs help most urgently surfaces at the top. Projects with no lead assigned go into an 'Unassigned' section at the bottom in a muted grey palette. Section header background shifts to a subtle red gradient with red left border when that person has 1+ urgent bids, so triage priority is unmistakable at a glance.", "Shipped Sep 9, 2026 in response to: 'a version' (Version A workload distribution, following analysis of A vs B and the recommendation to pivot the existing view rather than duplicate). Eight changes. (1) New HTML toggle group .ev-groupby-group in .ev-actions with two buttons (data-groupby='bid-date' active default / data-groupby='lead') calling setExecutiveGroupBy(). Positioned between viewmode-group and progress toggle-group. (2) state.execGroupBy field added to loadState defaults. (3) setExecutiveGroupBy(mode) function \u2014 validates + saves + rerenders. (4) renderExecutiveView active-state sync loop now also toggles .ev-groupby-btn.active. (5) renderExecutiveCards refactored: extracted existing bid-date logic into _renderExecCardsByBidDate helper (returns HTML string instead of setting innerHTML), then branches on state.execGroupBy to call either that helper or the new _renderExecCardsByLead. (6) _renderExecCardsByLead: builds a supportIndex by walking all projects and their tasks, mapping name -> Set of projectIds where that name appears as a supportMember AND is not the project's leadEstimator; groups cards by leadEstimator (empty lead \u2192 '__unassigned__' key); computes per-group stats (projectCount, urgentCount, avgPct, totalHours, doneHours, totalTasks, doneTasks, supportingOn = supportIndex[name].size); sorts cards within group (currently-bidding-first by soonest then post-bid by most-recent-past); sorts groups (unassigned last, then urgentCount DESC, projectCount DESC, alphabetical); emits a section header per group with .ev-section-lead class + optional .has-urgent modifier when urgentCount>0 + optional .ev-section-unassigned modifier. (7) CSS: .ev-groupby-group + .ev-groupby-btn (navy when active vs gold for viewmode); .ev-section-header.ev-section-lead uses navy\u2192dark-navy gradient; .ev-section-header.ev-section-lead.has-urgent uses navy\u2192dark-red gradient with 3px red left border; .ev-section-header.ev-section-unassigned uses grey gradient; new .ev-lead-stats + .ev-lead-stat rows (Barlow Condensed 11px uppercase, JetBrains Mono 13px for numbers in white, is-urgent modifier makes the urgent-count number red with subtle glow). (8) Print CSS: .ev-groupby-group hidden on print; .ev-section-lead + .has-urgent + .ev-section-unassigned backgrounds forced with !important so gradients survive PDF export; .ev-lead-stats 8pt gap 6pt + strong 9pt. Manual JS syntax check passed. Post-ship: click \ud83d\udc64 By Lead in the Executive View \u2014 cards regroup by lead estimator with a person-header banner for each showing their leading count, urgent count, avg progress, and support-count; whoever has the most urgent workload surfaces at the top; sections with 1+ urgent bids have a red-tinted header + red left border for triage visibility."),
+    advImplemented('polish', 'Executive View meta shifted inline next to title in header \u2014 fills empty horizontal space, eliminates two rows', "User screenshot annotated: 'seems like you could shift current status bid date lead etc under project title to the empty space next to % and the title.' The v208 card had the title on its own line with a lot of empty horizontal space to its right (before the % column), and the metaline + currentline were stacked below it also with empty space to the right. Consolidated: title + metaline + currentline all now live in a single baseline-aligned inline-flex row (.ev-card-header-left flex-wrap:wrap), so all the meta text flows immediately to the right of the title into the previously-empty space. The Currently: STAGE marker is now the last element in the metaline (still styled in gold uppercase so it stands out). Cards now roughly half the height of v208 with the same information.", "Shipped Sep 9, 2026 in response to: 'seems like you could shift current status bid date lead etc under project title to the empty space next to % and the title.' Four changes. (1) _renderExecCardHtml rewritten: removed the .ev-card-currentline block entirely; consolidated everything into .ev-card-metaline (Bids + Days pill + Lead + Tasks + Hours + Currently). Added new .mli-current-inline span at the end of the metaline containing the '\u00b7 Currently: STAGE-NAME' text with the gold treatment retained. (2) CSS: .ev-card-header-left changed from block to display:flex + align-items:baseline + flex-wrap:wrap + gap:8px + row-gap:2px so title and metaline share the same row and wrap gracefully when narrow. Title flex-shrink:0 so it stays on the row's left. Metaline changed to display:inline-flex, flex:1, min-width:0, line-height 1.3\u21921.2. Days pill 10\u21929.5px + padding 1/7\u21921/6. New .mli-current-inline (inline-flex baseline) + .mli-current-label (10\u21929.5px) + .mli-current-stage (12\u219211.5px) rules replacing the old .ev-card-currentline styling. (3) Restored .ev-card-header-pct block that was accidentally dropped when the header-left CSS was rewritten. (4) Print CSS updated to match the new inline structure: .ev-card-title 12pt margin 0 (was 0 0 2pt 0), .ev-card-header-left gap 6pt row-gap 1pt, .ev-card-metaline 7.5pt gap 3pt, .bi-days 7pt 1/4 padding, .mli-current-label 7pt, .mli-current-stage 9pt, .ev-card-header-pct padding-left 6pt (was 8pt), percent 18pt (was 20pt), pct-sign 10pt (was 11pt), percent-label 6.5pt (was 7pt). Removed the .ev-card-currentline print rules entirely since the element no longer exists. Manual JS syntax check passed. Post-ship: each card's header is one baseline-aligned horizontal row \u2014 project title (16px Barlow Condensed navy) on the left, then all facts (Bids, days pill, Lead, Tasks, Hours, gold CURRENTLY: stage-name) flowing inline to its right, then % on the far right. Zero empty horizontal space between title and %."),
+    advImplemented('polish', 'Executive View cards squeezed aggressively \u2014 every dimension pulled in 15-25% while keeping all content visible', "User screenshot showed a project card with visible white space still remaining despite v206's condensation \u2014 space above/below elements, room around the % column, gap between the current-stage line and the progress bar. Batch-compressed every measurable dimension in the card CSS: card padding 10/14\u21926/10px, gap 6\u21923px, title 18\u219216px + zero margin, metaline 10.5\u219210px, currentline 12\u219211px + margin-top 3\u21921 + stage-name 13\u219212px, progress bar 8\u21926px + border-radius 4\u21923px, % 28\u219224px + sign 15\u219213px, milestone icon 20\u219217px + border 2\u21921.5px + font 10\u21929px, milestone label 9\u21928px + line-height 1.1\u21921.05, milestone sub 9\u21928.5px + current-sub 10.5\u21929.5px, connector top 14\u219211px + height 2\u21921.5px, milestones padding 4/2\u21922/1 + gap 3\u21922, .ev-milestone gap 2\u21921, .ev-grid gap 12\u21926, .ev-card border-left 4\u21923px + radius 6\u21925px. Section headers also compressed: padding 14/18\u21928/14, title 22\u219217, icon 22\u219218, count pill 12\u219210, note 11\u219210. Result: each card is about 25-30% shorter than v206 with the same information density. Whole Executive View now shows many more cards per screen without scrolling.", "Shipped Sep 9, 2026 in response to: 'squeeze this as much as you can, i still have alot of free space in each card.' Eighteen CSS blocks tightened on the card + five blocks tightened on the section headers. No JS or HTML changes. Print CSS untouched \u2014 print sizes are already very tight and expressed in pt units so they stay legible. All content preserved: title, metaline (Bids/Days/Lead/Tasks/Hours), CURRENTLY stage line, %, progress bar, and full milestone chain with labels and sub-numbers. Colors + status tiers preserved. Manual JS syntax check passed. Post-ship: exec cards read like a compact status ledger \u2014 title flush at top, metaline immediately below with all facts, current-stage callout inline, progress bar and milestone chain packed tight without wasted space between rows."),
+    advImplemented('high-impact', 'Bid Calendar view added to Executive View \u2014 monthly grid showing all Currently Bidding due dates, shareable + printable for the team', "User asked for an overall Currently Bidding calendar shareable with the team. Added a view-mode toggle (\ud83d\udcca Cards / \ud83d\udcc5 Bid Calendar) at the top of the Executive View that switches between the existing project cards view and a new monthly calendar grid. Calendar shows 6 weeks of days with bid due-dates rendered as colored pills in the day cells \u2014 red for \u22647 days, gold for \u226421 days, green for later, muted grey for past-due. Prev/Next/Today navigation. Month title and 'N bids this month' stat. Legend with color meanings. Today cell highlighted with gold outline. Weekend columns muted. Click any bid pill to open the project. Everything respects the existing project filter chips. Print/PDF button on the header exports the calendar view too \u2014 print CSS optimized for letter portrait with compact day cells and colored bids preserved.", "Shipped Sep 9, 2026 in response to: 'i need an overall currently bidding calendar to share with team.' Six pieces. (1) New view-mode toggle in .ev-actions: two buttons (data-view='cards' / data-view='calendar') calling setExecutiveViewMode(). Active button gets gold background. (2) New HTML element <div class='ev-calendar' id='evCalendar' style='display:none;'></div> next to the existing #evGrid. (3) state.execViewMode + state.execCalendarMonth initialized in loadState. Cursor date format YYYY-MM-01. (4) JS: setExecutiveViewMode / shiftExecutiveCalendar / resetExecutiveCalendar / _getExecCalendarCursorDate / _formatMonthKey / _formatDateYmd / renderExecutiveCalendar. Renderer walks projects, filters to non-archived Bidding-workstream, respects hiddenIds, aggregates by dueDate into a byDate map, then builds a 6-row x 7-col grid starting on the Sunday of the week containing the 1st. Each cell shows day number + list of bid pills. Urgency class computed from daysUntil (past = past-bid grey, <=7 red, <=21 gold, else green). (5) renderExecutiveView refactored: extracted filter/summary and cards logic into renderExecutiveFilterAndSummary + renderExecutiveCards helpers; main function now shows/hides #evGrid vs #evCalendar based on state.execViewMode and calls the appropriate renderer. (6) CSS: .ev-viewmode-group + .ev-viewmode-btn (gold when active), .ev-calendar container with 16/18px padding, .ev-cal-toolbar (flex row with Prev/Today/Next + month title + monthstat count), .ev-cal-legend (color key), .ev-cal-grid + .ev-cal-dowrow (navy header) + .ev-cal-cells (7-col grid with minmax(80px, auto) rows), .ev-cal-day states (is-other-month muted, is-past dim, is-today gold outline, is-weekend tinted, has-bids soft red bg), .ev-cal-day-num monospace, .ev-cal-bid pill with color variants for urgency tiers. Print CSS added for calendar: hides view-mode toggle + nav buttons, keeps colors, tighter day cells (60pt min-height), 6.5pt bid pills. Manual JS syntax check passed. Post-ship: click \ud83d\udcc5 Bid Calendar in the Executive View \u2014 the whole area swaps to a monthly grid with every Currently Bidding due date visible as a colored pill on its day; navigate prev/next months; click Today to reset; hit \ud83d\udda8 Print / PDF to export the calendar as a shareable one-page report."),
+    advImplemented('polish', 'Executive View condensed \u2014 footer row eliminated, all meta moved into the header where empty space was, card padding tightened further', "User asked to condense the Executive View cards further and use empty space in the header instead of a separate footer row. Rebuilt the card: title stays at top, dense single-line metaline packs Bids + Days + Lead + Tasks + Hours all together (JetBrains Mono 10.5px), then a Currently: STAGE-NAME sub-line in gold Barlow Condensed 13px below. Footer row deleted entirely. Card padding 14/18\u219210/14px, gap 10\u21926px, title 20\u219218px, progress bar 10\u21928px, milestone icons 22\u219220px \u2014 every dimension pulled in. Result: cards are ~30% shorter and read as a self-contained banner (title + metaline + currentline + progress + chain) with no wasted horizontal or vertical space.", "Shipped Sep 9, 2026 in response to: 'can you put items at bottom of each project at the top in empty space, i want condensed as possible and utilizes empty space as best you can executive view.' Three changes. (1) _renderExecCardHtml restructured: removed the .ev-card-footer-row block entirely. New .ev-card-metaline packs all the meta on one wrapping row with span.mli (label pairs) + span.mli-sep (\u00b7 separators) + span.bi-days (colored day pill). New .ev-card-currentline sub-line shows 'CURRENTLY:' small-caps label + stage name in gold-uppercase 13px Barlow Condensed. Both live in .ev-card-header-left below the title. (2) CSS: .ev-card padding 14/18\u219210/14 + gap 10\u21926, .ev-card-title 20\u219218 + margin-bottom 3\u21922, .ev-progress-track height 10\u21928, .ev-milestones padding 6/4\u21924/2 + gap 4\u21923, .ev-milestone-icon 22\u219220 + font 11\u219210, .ev-milestone gap 3\u21922, .ev-milestone-label line-height 1.15\u21921.1, .ev-milestone-sub 9.5\u21929 + current-sub 11\u219210.5, connector top 17\u219214. New .ev-card-metaline (flex-wrap, gap 5, 10.5px monospace) + .ev-card-currentline (gold uppercase 13px) rules. Removed .ev-card-footer-row CSS + old .ev-card-bidinfo CSS. (3) Print CSS updated: swapped .ev-card-bidinfo rules for .ev-card-metaline + .ev-card-currentline sizings (8pt / 9pt / 10pt); removed .ev-card-footer-row print sizings since the element no longer exists. Manual JS syntax check passed. Post-ship: each card is a tight self-contained block \u2014 title top-left, dense meta line below with all bid/lead/task/hour facts, CURRENTLY: stage line in gold below that, giant % top-right, then full-width progress bar and milestone chain. No empty space, no footer, no wasted pixels."),
+    advImplemented('high-impact', 'Executive View \u2014 Print / PDF button with formal report layout, hidden UI chrome, colors preserved for print output', "User asked for export-to-PDF / print-to-PDF functionality on the Executive View. Added a print button in the header actions that triggers window.print(). Comprehensive @media print CSS transforms the on-screen dashboard into a formal report: page setup letter portrait 0.4/0.5in margins, hides sidebar + top bar + notification bell + modals + toolbar + filter chips, shows a print-only branded report title block (SOURCE BUILDING GROUP / SBG Preconstruction Executive Snapshot / Generated <date> \u00b7 Progress calculated by <mode>). Card colors, section headers, milestone chain icons and progress bars all preserved via -webkit-print-color-adjust:exact. Cards break-inside:avoid so each project stays on one page. Users get PDF export for free via the browser's Save-as-PDF option in the print dialog.", "Shipped Sep 9, 2026 in response to: 'make export to pdf or print to pdf function report.' Five changes. (1) New '\ud83d\udda8 Print / PDF' button in .ev-actions calls printExecutiveReport() which updates the report title with today's date + active mode then calls window.print() after a 50ms tick so the DOM update lands. (2) New printExecutiveReport function updates #evPrintReportTitle + #evPrintReportSub then triggers print. (3) New print-only HTML block .ev-print-title at the top of #executiveView containing branded header (SOURCE BUILDING GROUP + Commercial GC tagline), report title, and generation timestamp / mode sub-line. Hidden on screen via CSS. (4) Comprehensive @media print CSS: @page letter portrait margins 0.4/0.5in; hides sidebar/topbar/modals/notif-bell/sticky-countdown/toolbar/filter-strip/title-and-subtitle-in-header/close-refresh-toggle buttons; forces .main + .app-shell + .ev-header full-width; shows .ev-print-title flex-layout with 22pt report title in Barlow Condensed navy; keeps summary strip visible but compresses to 4 stat blocks; section headers stay colored (navy for Currently Bidding, grey-navy for Post Bid) with break-after:avoid; each .ev-card break-inside:avoid + page-break-inside:avoid at 8/10pt padding with 3pt left border; milestone icons 16pt with print-safe colors (green/gold/navy/red hardcoded via !important); labels 6.5pt to fit compact print grid; connector line preserved; footer row 8pt. All colors forced via -webkit-print-color-adjust:exact + print-color-adjust:exact so status colors survive Chromium/Safari printing. (5) CSS moved the base .ev-print-title { display: none; } out of media block so it's hidden by default on screen. Manual JS syntax check passed. Post-ship: click '\ud83d\udda8 Print / PDF' \u2014 browser print dialog opens with the Executive View formatted as a formal report; users can print to paper or choose 'Save as PDF' as the destination to export a clean multi-page PDF report with brand header, KPI strip, both bid sections, and every project card with progress bars + milestone chain preserved in full color."),
+    advImplemented('high-impact', 'Executive View \u2014 two-section grouping: Currently Bidding (sorted by soonest bid date) then Post Bid, big navy section headers between', "User asked for the view to be sorted by currently bidding first (soonest bid on top), then past-due / post-bid projects below, with big section headers distinguishing the two groups. Split the sorted cards into currentlyBidding (daysLeft >= 0 or null) and postBid (daysLeft < 0). Currently Bidding sorted by daysLeft ascending so tomorrow's bids show above next-month bids. Post Bid sorted so most-recently-passed bids show above older ones \u2014 the freshest wrap-ups are on top. Big navy section header with icon + title + count pill + note strip renders before each group.", "Shipped Sep 9, 2026 in response to: 'needs to be sorted by currently bidding sorted by what bids first and then if projects are in post bid / past the due dates then show after that, big section headers Currently Bidding, Post Bid distinguishing between the two.' Two changes. (1) renderExecutiveView reworked the sort + group logic: instead of one sorted list, split cards into currentlyBidding + postBid arrays, sort each independently (currently by soonest first, post-bid by most-recent-past first via b.daysLeft - a.daysLeft), then emit two section headers + card lists concatenated into gridHtml. Each section header is a flex row with an emoji icon (\ud83c\udfaf for Currently Bidding, \ud83d\udccb for Post Bid), Barlow Condensed 22px uppercase title, project count pill (rounded semi-transparent white), and italic note ('Sorted by soonest bid date' / 'Bids past \u2014 in wrap-up or awaiting award'). (2) CSS: .ev-section-header uses navy background + white text as primary style; .ev-section-post-bid overrides to a muted grey-navy gradient so it reads as secondary. Padding 14/18px, border-radius 6px, margin 8/4px. Icon 22px, title 22px 800-weight uppercase, count pill 12px small-caps in rgba(white/0.18), note 11px italic in rgba(white/0.75). Manual JS syntax check passed. Post-ship: Executive View now visibly splits into two labeled sections \u2014 Currently Bidding pursuits (with soonest-bidding on top) and Post Bid pursuits (with most-recent-past on top) \u2014 so executives immediately distinguish active from wrap-up work."),
+    advImplemented('high-impact', 'Executive View \u2014 horizontal chain restored (user preference), % moved into the header to reclaim width, labels wrap on hyphens/spaces so long stage names show without overlap or truncation', "User feedback + screenshot: 'I like the horizontal chain a lot better, why don't you just lose some of the space at the end and make it to where all stage names text are visible with no overlapping, in other words use the space you have available and quit wasting usable space for no real reason.' The vertical table was fine but they preferred the horizontal chain \u2014 the issue with the earlier chain was that labels overflowed and got cut off. Two things fixed: (a) the % was in a fixed right column eating ~110px that could go to stages, so moved it into the compact top-right of the header row (no dedicated column), and (b) labels had white-space:nowrap which caused overflow; switched to word-break:break-word + overflow-wrap:break-word + hyphens:auto so names like BID-INVITATION-SOLICITATION wrap to 2-3 lines naturally at hyphens instead of colliding with siblings.", "Shipped Sep 9, 2026 in response to: 'I like the horizontal chain a lot better, why don't you just lose some of the space at the end and make it to where all stage names text are visible with no overlapping, in other words use the space you have available and quit wasting usable space for no real reason, see what I mean in screenshot.' Card structure rewritten. (1) _renderExecCardHtml back to horizontal chain rendering: milestones = flex row with each .ev-milestone containing an icon + label + sub-line (pct% for current stage, count for others). (2) Header row is now two-column but the right column (.ev-card-header-pct) is a compact block \u2014 no fixed min-width, just the number (28px) + label (9px) with a vertical rule + 10px padding-left. About 40-50px reclaimed vs the old 90px min-width percent-wrap column. (3) .ev-milestones is a direct child of .ev-card so it uses the FULL card width \u2014 no side-column parent constraining it. (4) Labels: font 9px + width:100% + overflow-wrap:break-word + word-break:break-word + hyphens:auto + line-height:1.15. Long hyphenated stage names now wrap at hyphens into 2-3 lines instead of overflowing. (5) .ev-milestone flex 1 1 0 with min-width:0 so all stages share equal space regardless of count \u2014 2 stages or 22 stages, each column fills evenly. (6) Sub-line kept: .ev-milestone-sub monospace 9.5px shows count-text (2/2h etc.) below the label, or the live % for the current stage in gold 800-weight 11px. Done state shows green pct. (7) Connector line ::before top:17px to match new icon vertical center. (8) Print media query preserved from v202 \u2014 hides toolbar, break-inside:avoid on cards. Manual JS syntax check passed. Post-ship: horizontal chain reads like the screenshot the user shared \u2014 dots with labels and sub-numbers below \u2014 but labels now wrap to multiple lines at natural break points so nothing collides or gets cut off, and the % no longer wastes an entire right column."),
+    advImplemented('high-impact', 'Executive View redesigned as a printable/shareable report \u2014 vertical stage TABLE with every stage name inline (no hover), works for any stage count', "User feedback: 'no, i still need full name as I want this to be clean one stop view that i can actually print and share; I do not want the Hover at all, defeats the point.' Print + share workflow is the primary use case, and tooltips are useless on paper. Completely redesigned the card away from the horizontal milestone chain into a proper vertical stage TABLE. Every stage row shows: colored status dot (\u2713/\u25cf/\u25cb/!/\u25d0), stage number (#), full stage name (readable inline in Barlow Condensed 14px), completion percentage, hour/task count, and a CURRENT or BLOCKED tag when applicable. Card has a print-friendly stacked layout: header row (title + bid info + giant %), full-width progress bar, stage table, footer summary. Print media styles hide the toolbar actions and add page-break-inside:avoid so cards stay together on paper.", "Shipped Sep 9, 2026 in response to: 'no, i still need full name as I want this to be clean one stop view that i can actually print and share; I do not want the Hover at all, defeats the point.' Full rewrite of card structure. (1) _renderExecCardHtml restructured: new header row with title/bidinfo/percent, full-width progress bar, stage table with column header + per-stage rows, footer row with totals + current stage. Each stage row is a 6-column grid: status dot | # | stage name | % complete | hours/tasks | tag. (2) Removed horizontal milestone chain, current-callout strip, and card-main container entirely from the output. (3) CSS: .ev-card now flex-column instead of 2-column grid. New .ev-card-header-row + .ev-card-header-left, .ev-stage-table + .ev-stage-table-header (navy background, uppercase small-caps column labels), .ev-stage-row (6-column grid matching header, 5-6px padding, hover gold tint), .esr-icon (20px colored circle by mstate), .esr-num (monospace stage #), .esr-name (14px Barlow Condensed uppercase, colored by mstate \u2014 gold for current, navy for done, muted for pending), .esr-pct (12px monospace, gold+bold for current, green for done), .esr-count (11px muted monospace), .esr-current-tag (gold CURRENT pill), .esr-blocked-tag (red BLOCKED pill), .ev-card-footer-row (task/hour counts + current stage restated in Barlow Condensed). (4) Print media query: hides .ev-header .ev-actions, adds break-inside:avoid to .ev-card, resets hover shadows so cards print clean. (5) Percent moved into the header row (32px, no longer floating right column). Old CSS for .ev-milestone/.ev-current-callout/.ev-card-main/.ev-card-identity/.ev-card-meta-row stays in the stylesheet as dead but harmless \u2014 no new HTML references it. Manual JS syntax check passed. Post-ship: each project card reads as a proper preconstruction status report \u2014 project banner up top with progress bar and %, then every stage listed vertically with its icon/#/name/pct/count/tag, then the summary footer; ready to print or export as PDF, no hover interaction needed."),
+    advImplemented('high-impact', 'Executive View milestone labels replaced with numbered dots + prominent current-stage callout strip \u2014 no more overlap on 15-18-stage projects', "User screenshot: with 15-18 preconstruction stages per project, per-stage labels ('BID-INVITATION-SOLICITATION', 'SPECIAL-PROJECT-TASK', etc.) were colliding horrifically \u2014 max-width:120px + white-space:nowrap didn't help when the flex column was only 60-80px wide. Redesigned: dropped per-stage text labels entirely. Milestones now show as clean dots with a small monospace stage number (1..N) underneath. Full stage name is still available on hover via title tooltip. Below the milestone chain, a new prominent 'current stage callout' strip clearly names WHERE the project is right now \u2014 stage badge ('STAGE 5 / 18'), stage name in big Barlow Condensed, live percent in gold, and next-stage preview. Executives always see the current focus at a glance without hovering, and the milestone chain reads as clean geometry regardless of stage count.", "Shipped Sep 9, 2026 in response to: 'still jumbled' with screenshot of overlapping stage labels. Five changes. (1) _renderExecCardHtml rewritten: milestone chain uses .ev-milestone-num (small monospace 1..N) instead of .ev-milestone-label. Tooltip on each dot shows '{n}. {stage-name} \u2014 {pct}% \u00b7 {counts}'. (2) New currentCalloutHtml block: for pct===100 shows '\u2713 COMPLETE / All stages complete'; for pct<100 with a current stage shows 'STAGE N/M / STAGE-NAME / NN% / \u2192 Next: NEXT-STAGE'; for no current stage shows 'NOT STARTED / No active stage'. (3) CSS: removed .ev-milestone-label + .ev-milestone-sub blocks entirely. Added .ev-milestone-num (9px monospace, gold when current), .ev-current-callout (gold left-border box with linear-gradient background), .ecc-badge (small-caps stage counter), .ecc-stage (16px Barlow Condensed navy stage name), .ecc-pct (15px gold monospace), .ecc-next (small grey next-stage preview). Done + pending variants with green + grey palettes. (4) .ev-milestone-icon 22\u219220px + font 12\u219211px \u2014 slightly smaller so more dots fit horizontally. Connector line ::before top 11\u219210px to match. (5) Meta row simplified: removed 'Currently: X' since that's now in the callout; kept just 'Lead: X' + task/hour counts. Manual JS syntax check passed. Post-ship: project cards with 15-18 stages read as a clean row of numbered dots with a prominent gold-bordered current-stage callout below \u2014 no more label overlap, current focus is unmistakable, hover any dot for full stage name."),
+    advImplemented('high-impact', 'Executive View \u2014 percent column shrunk to give many-stage projects more room + project filter chip strip lets executives choose which projects display', "Two follow-ups on the Executive View. (1) Projects at SBG often have 8-12 preconstruction stages (Kickoff, Estimating, Drawings Review, Sub Bidding, RFI Period, Bid Prep, Bid Day, Post-Bid, etc.). v198's 42px percent column consumed too much horizontal room, squeezing the milestone chain so labels ellipsized. Shrunk the percent-wrap min-width 120\u219272px, font 42\u219228px, % sign 22\u219215px, percent-label 10\u21929px, gap 4\u21922px. About 50px reclaimed for the milestone chain. (2) New project filter chip strip in the header below the summary strip. Every bidding project renders as a rounded chip (navy background, check mark, project name). Click a chip to hide/show that project. 'Show All' / 'Hide All' buttons for bulk actions. Hidden projects render muted with strikethrough so it's obvious what's filtered. Summary strip aggregates only visible projects so the KPIs update with the filter. Filter selection persists via state.execHiddenProjects so refreshes maintain the view.", "Shipped Sep 9, 2026 in response to: 'most projects will have a ton of stages, make overall % at the end smaller to allow more visibility of each stage, also I would like the option to choose which projects are displaying.' Six changes. (1) .ev-card-percent-wrap: min-width 120\u219272px, padding-left 18\u219212, gap 4\u21922. (2) .ev-card-percent font 42\u219228px + .ev-pct-sign font 22\u219215px. (3) .ev-card-percent-label font 10\u21929px. (4) New HTML block for filter strip in the header: .ev-filter-strip with .ev-filter-header (label + Show All + Hide All buttons) + .ev-filter-chips (renders dynamically). (5) CSS for .ev-filter-strip, .ev-filter-header, .ev-filter-label (small caps 'SHOW:'), .ev-filter-all-btn (small transparent buttons), .ev-filter-chip (rounded navy pill with check mark, hover, is-hidden variant with strikethrough + muted colors), .ev-filter-chip .fc-check (12px check mark, hidden when muted). (6) State + JS: state.execHiddenProjects = [] initialized in loadState; toggleExecProject(id) adds/removes from array + saves + re-renders; setExecFilterAll(true|false) sets to empty or full list + saves + re-renders. renderExecutiveView reworked to first render filter chips for all bidding projects, then filter to visible list before building cards. Summary strip shows 'N of M Shown' when filtered vs 'N Active Bids' when all shown. Empty state 'All projects hidden. Click Show All or a chip above to display projects.' for edge case. Manual JS syntax check passed. Post-ship: milestone chain has ~50px more room for many-stage projects; filter chips let executives focus on 1-3 specific pursuits or bulk-hide/show; KPIs and card list update instantly with each toggle; filter state persists across sessions."),
+    advImplemented('polish', 'Executive View self-review \u2014 fixed six rough edges spotted on my own build', "User asked me to review v198 and fix anything wrong. Found six issues. (1) The current-stage milestone was rendering the raw percent inside a 22px circle \u2014 '73%' or '100%' at 12px font would visually overflow. Fixed by using symbols only in the circle (\u2713 done, \u25cf current, \u25cb pending, ! blocked, \u25d0 partial-upstream) and moving the live percent to a small gold sub-line under the label. (2) .ev-card-percent-wrap min-width 90px was too tight when the number was '100' + '%' \u2014 bumped to 120px + increased padding-left 12\u219218 for breathing room. (3) Inline style='font-size:24px' on the % sign moved into a proper .ev-pct-sign class (22px, weight 700, dimmed color, urgency-color variants). (4) .ev-milestone-label max-width 100\u2192120px so two-word stage names like 'Bid Review' don't ellipsize. (5) Card border-left 5\u21924px, padding 18/22\u219216/20, gap 16\u219218 for a slightly lighter/more spacious feel. (6) _buildExecCardData was silently dropping tasks with no stage (t.stage falsy \u2014 they were bucketed under 'other' but 'other' isn't in stageOrder). Added an explicit append for the 'other' bucket at the end so unstaged tasks contribute to the overall %. Also added a mstate-partial variant for stages with progress but not the current one, and a graceful fallback message for projects with no stage segments at all.", "Shipped Sep 9, 2026 as self-review of v198. Six changes. (1) Milestone icon logic rewritten: symbols only in the 22px circle. current \u2192 \u25cf filled dot, partial \u2192 \u25d0 half-filled circle, done \u2192 \u2713 check, pending \u2192 \u25cb empty circle, blocked \u2192 ! exclamation. New sub-line below each label \u2014 for current stage shows live pct in gold 800-weight, for others shows count text in muted grey. (2) .ev-card-percent-wrap min-width 90\u2192120px + padding-left 12\u219218px. (3) New .ev-pct-sign class with font-size:22px, weight:700, muted color, + urgency variants that pick up sbg-red/sbg-gold/2e7d52. Inline style attribute removed from _renderExecCardHtml. (4) .ev-milestone-label max-width 100\u2192120px + added .ev-milestone.mstate-partial CSS variant with navy background. (5) .ev-card border-left 5\u21924px, padding 18/22\u219216/20, gap 16\u219218. (6) _buildExecCardData: after the stageOrder.forEach loop, added an explicit block to check byStage['other'] and append it as an 'Other' segment if it has tasks or weight, with the same fillCls logic. Also added .ev-milestones-empty CSS (muted italic message in a rounded surface-2 box) and a render-level fallback in _renderExecCardHtml so projects with zero stage segments show 'No stages defined for this project' instead of an empty milestone row. Manual JS syntax check passed. Post-ship: 22px circles no longer overflow with text, 100% percents fit their column without squish, sub-percent gives executives a peek at current-stage progress without hovering, unstaged tasks now contribute to overall completion, and the whole card reads slightly lighter and more spacious."),
+    advImplemented('high-impact', 'Executive View redesigned for at-a-glance scanning \u2014 single progress bar per project, milestone dots, big % number, uniform row-per-project layout', "User feedback on v197: 'way too jumbled an executive is going to find it really hard to understand.' Rebuilt from principles. Executive dashboards need ONE clear takeaway per project: how far along is it and how urgent. v197's variable-width stage segments meant executives had to interpret both width (stage weight) and fill (completion) simultaneously per stage \u2014 too much cognitive load. v198 replaces that with a single clean horizontal progress bar per project (colored by urgency), a simple milestone chain below it (\u2713 done / % current / \u25cb pending / ! blocked circles), and a giant 42px percent number on the right. One row per project (not a grid) so vertical scan compares projects easily. Summary strip at top uses big value + small caps label format instead of prose. Muted colors, more whitespace, larger typography throughout \u2014 professional executive-report aesthetic instead of dense operational dashboard.", "Shipped Sep 9, 2026 in response to: 'way too jumbled an executive is going to find it really hard to understand.' Two rewrites. (1) CSS rebuilt from scratch. Grid changed from multi-column card grid to single-column vertical list (.ev-grid: flex column, gap 12px) so projects compare vertically. Each .ev-card is a 2-column grid: main content (title + progress bar + milestones + meta row) on left, giant percent number on right separated by a vertical rule. New .ev-progress-track (12px tall solid bar) + .ev-progress-fill (single color by urgency, no per-stage segmentation). New .ev-milestones flex row with .ev-milestone dots \u2014 22px circles with an inner char (\u2713/percent/\u25cb/!) and label below. Connector line drawn behind milestones via ::before pseudo-element. Milestone states: mstate-done (green), mstate-current (gold with box-shadow ring), mstate-blocked (red), mstate-pending (default). Header + summary strip use big-value + small-caps-label pattern for the 4 KPIs (Active Bids / Urgent / Avg Progress / Tasks Complete). Removed all the .ev-stage-funnel/.ev-stage-segment/.ev-stage-fill/.ev-stage-label CSS since we no longer show the variable-width funnel. (2) _renderExecCardHtml rewritten to match: milestones map from stage segments, choosing state based on pct and isCurrent flags. Progress bar shows overall pct. Days-left renders as a colored pill (bi-days) matching urgency tier. Meta row shows 'Currently: <stage>' + 'Lead: <name>' on the left, task and hour counts on the right. Right column: giant percent number (42px) with 'by hours' or 'by tasks' label under. Also cleaned up the summary strip in renderExecutiveView to emit the new 4-item format. Deleted the old duplicate _renderExecCardHtml that lingered from v197's initial ship. Manual JS syntax check passed. Post-ship: Executive View reads like a proper leadership dashboard \u2014 4 KPIs across the top, one row per project with clear progress bar + milestone chain + big % number, urgent projects visually pop at the top of the list."),
+    advImplemented('high-impact', 'New Executive View \u2014 bidding project stage-progress snapshot with hours vs task-count toggle for leadership at-a-glance scanning', "New top-level view accessible from the sidebar (\ud83d\udcc8 Executive View button). Purpose: leadership snapshot showing every non-archived Bidding-workstream project as a card with a horizontal stage-funnel bar. Each stage segment's width is proportional to that stage's weight (hours OR task count based on the active toggle), and each segment fills bottom-up by completion % with color coding for status (green done, navy partial, gold pending/warning, red blocked, grey empty). Cards sorted by bid date ascending so the most urgent pursuits are on top. Header shows a summary strip aggregating counts + hours + average completion across all projects, and the toggle at top switches the whole calculation basis between hour-weighted and task-count-weighted. Click any card to open that project's normal view.", "Shipped Sep 9, 2026 in response to: 'seperate execouive view snapshot tab that shows bidding projects progress bars per stage with toggle between progress complete by hours or by number of task any thoughts?' Six pieces. (1) New sidebar button #executiveViewSidebarBtn (\ud83d\udcc8 icon) inserted next to Team Insights, calls openExecutiveView(). (2) New HTML block <div id='executiveView' class='hidden'> with .ev-header (title + subtitle + toggle group + Refresh + Close), .ev-summary-strip aggregating totals, and .ev-grid using CSS grid-template-columns: repeat(auto-fill, minmax(560px, 1fr)) so cards flow 1-3 columns depending on screen width. (3) State: state.execView=false, state.execProgressMode='hours' initialized in loadState. (4) View router: new state.execView branch in render() following the same precedence pattern as state.tiView \u2014 hides all sibling views, shows executiveView, calls renderExecutiveView(). Also added a one-liner auto-hide at the top of render() so any non-execView branch hides executiveView without needing individual edits everywhere. (5) JS functions: openExecutiveView / exitExecutiveView / setExecutiveMode / refreshExecutiveView / renderExecutiveView / _buildExecCardData / _renderExecCardHtml / _openProjectFromExecView. _buildExecCardData walks project.tasks grouped by stage (using state.stages for order), computes total + done + hours + doneHours + status counts per stage, then converts to segments where weight = mode=='hours' ? hours : total, pct = doneWeight/weight, fillCls chosen from empty/partial/warning/blocked/done based on pct + status mix. Overall pct = sum(doneWeight)/sum(weight). Also computes daysLeft and urgency tier (urgent <=7 days, warning <=21, safe otherwise) which drives the card's border-left color. _renderExecCardHtml renders the flex-weighted stage segments with fill heights, matching flex-weighted labels row below (stage name + numbers per segment), header (title + bid date + days-left + lead estimator + big percent number), and footer chips (task count + hours). Current-stage segment gets a gold outline via .is-current::after. (6) CSS: ~20 .ev-* rules covering the header, toggle group (dark navy active state), summary strip, grid, card + urgency variants, stage funnel, segments + fill states, stage labels, footer chips, empty state, plus dark-mode variants. Manual JS syntax check passed. Post-ship: click Executive View in the sidebar; the whole main content area swaps to a grid of bidding-project cards with progress bars per stage; toggle at top switches the entire calc between hours and task-count basis; click any card to jump to that project."),
+    advImplemented('polish', 'Home header (Good evening \u2026) shrunk 28\u219218px + gap under header collapsed', "User asked to make the Good Evening / Good Morning greeting header smaller and remove the gap underneath. The .home-title was 28px in a heavy .home-header with 16/20px padding and 20px margin-bottom, then the .home-hero-split added another 10-12px padding + 16px margin creating a big visual gap between greeting and the workload/alerts cards. Compressed all three: title 28\u219218px, header padding 16/20\u21928/12px, header margin-bottom 20\u21926px, hero-split margin-bottom 16\u21928px + padding 10/12\u21924/6px + gap 12\u21928px. Header now reads as a tight banner sitting right above the hero cards instead of a fat title with dead space.", "Shipped Sep 9, 2026 in response to: 'make good evening header smaller and remove gap underneath.' Two CSS blocks touched. (1) .home-header + .home-title-row + .home-title + .home-subtitle: header padding 16/20\u21928/12, margin-bottom 20\u21926, border-left 4\u21923, border-radius 6\u21924; title-row gap 16\u219212, align-items flex-start\u2192center; title font 28\u219218 + line-height 1.1 added so descenders don't add air; subtitle margin-top 4\u21921 + font 13\u219211. (2) .home-hero-split: margin-bottom 16\u21928, padding 10-12\u21924-6, gap 12\u21928 so the sticky hero starts flush with the header's bottom edge. Every color + gradient + border-left accent preserved. Manual JS syntax check passed. Post-ship: Good Evening / Morning greeting is compact, and the Workload + Alerts cards sit essentially flush underneath it \u2014 the vertical real estate previously spent on decorative spacing is reclaimed for the actual data."),
+    advImplemented('polish', 'My Workload hero card shrunk further \u2014 bars 42\u219234px, all fonts down another 1-2px, tighter paddings + margins throughout', "User asked to shrink My Workload again. Another compaction pass on top of v189's overrides. Every dimension pulled in: card padding 6/8\u21924/6px, bars height 42\u219234px (matching bar-wrap explicit height so bars stay proportional), fonts across strip title/total/date/pills all drop 1-2px, week summary padding/margin 4/6+4\u21922/4+2px, capacity bar height 6\u21925px, avg strip 10\u21929px, hour chip 11\u219210px + top offset -14\u2192-12px so the chip stays visually anchored to the shorter bar top. Full content still fits at natural height with no scroll; just visually denser.", "Shipped Sep 9, 2026 in response to: 'shrink my worload some more.' Ten tightening rules within the #homeHeroWorkloadBody scope. (1) .twv-card padding 6/8\u21924/6px + border-left 3\u21922px. (2) .twv-card-week-summary + .twv-week-summary font 12\u219210px, padding 4/6\u21922/4px, margin 4\u21922px. (3) .twv-week-cap-bar height 6\u21925px, margin 3\u21922px. (4) .twv-week-avg-strip font 10\u21929px, padding 3/6\u21922/4px, margin 3\u21922px. (5) .twv-strip padding 6/8\u21924/6px, margin 4\u21922px. (6) .twv-strip-header margin-bottom 4\u21922px. (7) .twv-strip-title 10\u21929px, .twv-strip-total 11\u21929px, .twv-strip-bars height 42\u219234px + new explicit .twv-strip-bar-wrap { height:34px } to match, .twv-strip-col-date 9\u21928.5px. (8) .twv-strip-bars overflow-visible padding-top 18\u219214px. (9) .twv-strip-bar-num font 11\u219210px, top -14\u2192-12px, padding 1/5\u21920/4px so the chip stays anchored to the shorter bar. (10) .twv-card-slots/pastdue/slot-pill/pastdue-pill font 10\u21929px, padding 3/8\u21922/6px, margin 3\u21922px. Line heights + colors untouched so readability holds. Team Workload page unaffected. Manual JS syntax check passed. Post-ship: hero My Workload card is roughly 25-30% shorter vertically than v194 with the same full content \u2014 weekly cap bar, avg strip, daily schedule with hour chips, slot pill, past-due pill."),
+    advImplemented('polish', 'My Tasks item fonts reduced another ~10% for tighter scanning', "v191 compacted the My Tasks items ~40% overall but the user wants the fonts even smaller. This pass drops another ~1px across every text element in the .home-item + inner chip family so rows scan tighter and more titles fit per screen.", "Shipped Sep 9, 2026 in response to: 'my task make font smaller.' Eight one-pixel font reductions on the My Tasks CSS. (1) .home-task-bucket-label 10\u21929px + padding 3/6\u21922/5px. (2) .hi-title 12\u219211px (still the biggest / anchor). (3) .hi-meta 9.5\u21929px. (4) .hi-right 9.5\u21929px. (5) .hi-project-chip 8.5\u21928px + padding 1/5\u21921/4px. (6) .hi-due-badge 8.5\u21928px + padding 1/5\u21921/4px. (7) .hi-series-badge 9\u21928px + padding 0/4\u21920/3px + gap 3\u21922px. (8) .home-item gap 8\u21926px + padding 4/8\u21923/7px so the row is slightly shorter too. Line heights unchanged so text stays readable at the smaller sizes. Every priority accent + color coding preserved. Manual JS syntax check passed. Post-ship: My Tasks items on Today are ~10% tighter both in font and in vertical footprint compared to v191."),
+    advImplemented('bugfix', 'Hour chips actually visible now \u2014 fixed cascading clip through .twv-strip-bars overflow-y:hidden', "User confirmed via screenshot that v192's hour-chip fix wasn't working: the chip is emitted, positioned at top:-14px, and z-indexed above the bar, but was STILL invisible because a parent .twv-strip-bars has overflow-y:hidden in the base CSS. Only setting overflow:visible on the immediate parent .twv-strip-bar-wrap wasn't enough \u2014 the grandparent clipped everything above its top edge. Fixed by cascading overflow:visible !important through THREE levels: .twv-strip-bars (grandparent), .twv-strip-col (parent flex column), and .twv-strip-bar-wrap (chip's offset parent). Now the chip can escape all the way up to the strip container's padding-top area.", "Shipped Sep 9, 2026 in response to: 'hour chips still not there!' (with screenshot showing bars without hour labels). Two-part CSS fix within the #homeHeroWorkloadBody scope. (1) Added #homeHeroWorkloadBody .twv-strip-bars { overflow: visible !important; padding-top: 18px } \u2014 the base .twv-strip-bars rule at line 2984 has 'overflow-x:auto; overflow-y:hidden' which was the actual culprit. Even though v192 set overflow:visible on the bar-wrap, the grandparent bars was still clipping. Now overridden with !important + ID selector for max specificity. (2) Added #homeHeroWorkloadBody .twv-strip-col { overflow: visible !important } for the intermediate parent, defensive against any future rule that might clip. (3) Consolidated the .twv-strip-bar-num rule to explicitly set every property (position, top, font, background, border, z-index up to 5, stronger box-shadow rgba(0.15 vs 0.08)) so no residual specificity from earlier rules can weaken it. Team Workload page unaffected \u2014 all rules scoped to #homeHeroWorkloadBody. Manual JS syntax check passed. Post-ship: refresh the tracker, each Workload daily bar should show its hour total as a small white pill with a soft shadow floating just above the bar top; the 0-hour days will show no chip (existing behavior \u2014 the chip element is only emitted when hrs > 0)."),
+    advImplemented('bugfix', 'PTV defaults now actually stick for existing users + Workload hour chips clearly visible above each bar', "Two follow-ups. (1) v186's changed defaults (Compact + Clean + Colors ON for Project Timeline) never took effect for anyone who'd already used the tracker because the typeof check kept their persisted false values intact. Added a one-time migration flag (state.ptvDefaultsMigrated_v192) that flips the three modes to the intended defaults on next load for every existing user, then never fires again \u2014 all subsequent toggles persist normally. (2) v190's Workload hour chips (14.3h, 6.6h, etc. above each daily bar) were positioned inside the bar-wrap at top:0 which meant a full-height bar could cover them and the compact 42px strip left little room. Rebuilt the positioning: chip now sits at top:-14px (above the wrap), .twv-strip-bar-wrap gets overflow:visible so the chip escapes, .twv-strip-bars gets padding-top:16px to make room, chip has z-index:3 plus a soft box-shadow so it reads clearly against any background.", "Shipped Sep 9, 2026 in response to: 'Project timeline default to compact clean with color didnt hold; also My workload daily colored dont show the total hours for each.' Two changes. (1) loadState PTV migration block: after the typeof-based initial defaults (which only affect fresh users), an if (!state.ptvDefaultsMigrated_v192) block force-sets ptvCleanMode=true, ptvCompactMode=true, ptvMonoMode=false and stamps state.ptvDefaultsMigrated_v192=true. On next load the flag is set so the block skips \u2014 users can freely toggle any mode and their choices persist normally. Existing users get the intended defaults on their next tracker open; new users get them from the initial defaults. Fresh installs still work because the typeof block runs first and sets the same values. (2) CSS: #homeHeroWorkloadBody .twv-strip-bar-num rewritten \u2014 top -14px (was 0), background var(--surface) with border + subtle box-shadow so it reads as a distinct pill floating above the bar, z-index 3 (was 2), pointer-events none, white-space nowrap. New #homeHeroWorkloadBody .twv-strip-bar-wrap { overflow: visible; position: relative; } so the abs-positioned chip can escape the wrap's bounds. .twv-strip-bars padding-top bumped 12\u219216px so the tallest bar's chip has room above the strip. Dark-mode variant explicit for the chip background (#14181f). Team Workload page bar-num rendering unaffected since every rule is scoped to #homeHeroWorkloadBody. Manual JS syntax check passed. Post-ship: refresh the tracker, Project Timeline opens Compact + Clean + Colors regardless of prior state; My Workload daily bars show a clear white pill with the hour total floating just above each bar."),
+    advImplemented('polish', 'My Tasks bucket items compacted ~40% for a cleaner, less-cluttered scan on Today', "User asked for the items under My Tasks on Today to be smaller with better visual for descriptions \u2014 the previous sizing was too cluttered and not user-friendly. Compacted every dimension across the bucket + item + inner chip elements. Row height ~50% shorter, gaps 40% tighter, chip and font sizes 10-25% smaller across the board. Task titles remain the visual anchor (12px, 600-weight) but the surrounding pixel spend is minimized so more titles read on a single screen and the description reads as the primary content instead of the chrome around it.", "Shipped Sep 9, 2026 in response to: 'Today page, make items under My Task smaller so better visual of descriptions, right now to cluttered and not very user friendly.' Nine tightening passes on the .home-task-bucket + .home-item + inner element CSS. (1) .home-task-bucket gap 6\u21923px. (2) .home-task-bucket-label font 11\u219210px, letter-spacing 0.12\u21920.1em, padding 4/8\u21923/6px, border-bottom 2px\u21921px. (3) .home-items-list gap 6\u21923px. (4) .home-item padding 8/12\u21924/8px, gap 10\u21928px, border-radius 4\u21923px. Row is now roughly half the previous height. (5) .hi-series-badge padding 1/6\u21920/4px, margin-left 6\u21924px, border-radius 8\u21926px, gap 3\u21923px (unchanged). (6) .hi-project-chip padding 2/6\u21921/5px, font 9\u21928.5px, gap 4\u21923px, letter-spacing 0.08\u21920.06em, max-width 140\u2192120px. (7) .hi-title font 13\u219212px + line-height 1.25 added for tighter multi-word wrap. (8) .hi-meta font 10\u21929.5px, margin-top 2\u21921px, line-height 1.2. (9) .hi-right font 10\u21929.5px. .hi-due-badge padding 2/6\u21921/5px, font 9\u21928.5px. All logical order preserved \u2014 hi-critical / hi-warning / hi-info tier accents keep their 3px left borders and background tints so users can still scan by priority color. Manual JS syntax check passed. Post-ship: My Tasks section on Today shows the same bucket structure (Overdue / Due Today / Due Tomorrow / This Week) but each item is compact enough to see 8-12 rows in the same space that used to hold 4-6, and the title text is the most visible thing on each row."),
+    advImplemented('polish', 'Home stats strip removed entirely (Overdue / Active pursuits etc.) + Workload hour chips repositioned above each daily bar', "Two follow-ups on Today's hero. (1) The compact stats strip that ran below the Home header (Overdue, Active pursuits, etc.) removed entirely to reclaim vertical room for the Workload + Alerts hero. Users get the same information at a higher fidelity from the Alerts hero card + the timelines below, so the top strip was redundant. (2) Workload hour chips (14.3h, 6.6h, 10h, 8.3h, 8.3h on each daily bar) were positioned at top:1/right:1 inside each bar-wrap, which made them small and hard to read once v189 compacted the strip. Repositioned to center above each bar with a stronger visual treatment (11px, 800-weight, white background with border, rounded pill) so hours per day read at a glance without hovering.", "Shipped Sep 9, 2026 in response to: 'My workload I still want to see hours on top of each day on the color cap indicator; remove the Overdue, Active pursuits etc at the top completely to make more room for My workload.' Two changes. (1) HTML: <div class='home-stats' id='homeStats'></div> removed from the Home view block. renderHomeStats function (still defined) will silently no-op because getElementById returns null. No JS side effects since it was called with a null-guard at its head. (2) CSS: #homeHeroWorkloadBody .twv-strip-bar-num override rewritten. Font 9\u219211px, weight 800, padding 1/4, background rgba(255,255,255,0.95), border 1px var(--border), border-radius 3px. Position changed from top:1 right:1 to top:0 left:50% transform:translateX(-50%) so the chip sits centered above the bar instead of tucked in the corner. Dark-mode variant sets background to rgba(20,25,32,0.95) + white text. .twv-strip-bars gets padding-top:12px to make room for the chip above the bar top edge. Team Workload page's own bar-num rendering is unaffected since every rule is scoped to #homeHeroWorkloadBody. Manual JS syntax check passed. Post-ship: Home header transitions directly into the Workload + Alerts hero (no stats strip between); each daily bar in Workload displays its hour total prominently above the bar in a white pill."),
+    advImplemented('polish', 'My Workload card no longer scrolls \u2014 internal estimator card contents compacted so it fits at natural height', "User asked for the My Workload box to be smaller but without any scroll. v188 capped both hero cards at max-height:220px with overflow-y:auto which introduced an internal scrollbar on the workload card since the full Team Workload estimator card is 350\u2013400px tall. v189 keeps the cap-and-scroll approach for the Alerts card but scoped-overrides the workload card to max-height:none / overflow:visible, then compacts every internal .twv-* element (redundant header hidden, capacity bar height 10\u21926px, strip bars height 60\u219242px, all fonts and paddings reduced ~30%) so the full estimator card content fits at natural height inside a much smaller footprint. Team Workload page keeps its normal-sized cards \u2014 the overrides are scoped to #homeHeroWorkloadBody only.", "Shipped Sep 9, 2026 in response to: 'My workload I just want box smaller but I do not want scroll.' Two CSS changes. (1) #homeHeroWorkload override: max-height:none + overflow:visible so the container grows to whatever the content needs (no scrollbar). (2) 12 targeted overrides on #homeHeroWorkloadBody .twv-* selectors that compact each internal element of _buildEstimatorCardHtml: .twv-card padding 14\u21926/8 + border-left 4\u21923px + no hover transform, .twv-card-header display:none (name+avatar redundant \u2014 the hero card header already says 'MY WORKLOAD'), .twv-card-week-summary + .twv-week-summary padding 4/6 + font 12px, .twv-week-cap-bar height 6px + margin 3px, .twv-week-avg-strip font 10px + padding 3/6, .twv-strip padding 6/8 + margin 4px, .twv-strip-title 10px, .twv-strip-total 11px, .twv-strip-bars height 42px + gap 3px, .twv-strip-col-date 9px, .twv-strip-bar-num 9px + padding 1/3, .twv-card-slots + .twv-card-pastdue + their pills font 10px + padding 3/8 + margin 3px. Team Workload page (.tw-view class scope) is completely unaffected since every override is prefixed with #homeHeroWorkloadBody. Manual JS syntax check passed. Post-ship: My Workload card is now a compact, complete-view estimator card that fits without scroll; My Alerts card retains its 220px cap and scroll for extreme cases; Team Workload page unchanged."),
+    advImplemented('polish', 'Today hero My Workload + My Alerts cards compacted to roughly half the previous height', "User asked for the two hero cards on Today (My Workload left, My Alerts right) to be half the size. Both were rendering full-height with 12-14px padding, 16px headers, and no height cap \u2014 the workload card in particular expanded to fit the full estimator card (350-400px+) and pushed the timelines below off the initial viewport. Compacted both cards: max-height:220px with a thin scrollbar so long content scrolls internally, tighter padding (8-10px), smaller header font (16\u219213px), smaller icon (16\u219213px), reduced gap (8\u21925px), and shrunk the alert tiles (padding 8\u21924px, label font 12\u219211px, count font 15\u219213px) so all 7 tiles fit inside the 220px cap without truncation.", "Shipped Sep 9, 2026 in response to: 'My Workload and My Alerts Boxes I want half the size.' Three CSS changes on the Home hero. (1) .home-hero-card: padding 12\u21928/10, min-height 120\u219260, max-height:220px added, overflow-y:auto added, gap 8\u21925. Compact scrollbar styling for both webkit (::-webkit-scrollbar 6px, thumb var(--border)) and firefox (scrollbar-width:thin). (2) .home-hero-card-header + .home-hero-card-icon + .home-hero-card-title + .home-hero-card-sub: gap 8\u21926, padding-bottom 6\u21924, icon 16\u219213, title 16\u219213, sub 11\u219210. (3) .home-hero-alert-tile family: tile padding 8\u21924/8, border-radius 5\u21924, label font 12\u219211, count font 15\u219213. Result: total card height is now capped at 220px which is roughly half of the previous \u2248400px workload card. Alerts card content fits without scroll since compacted tiles stack cleanly. Workload card scrolls the full estimator internally when needed but the whole daily-schedule section is still visible in a single glance. Manual JS syntax check passed. Post-ship: Today page opens with both hero cards taking about half the previous vertical footprint, timelines below immediately visible without long scroll."),
+    advImplemented('quality-of-life', 'Inline status dropdown on every timeline row \u2014 Today Timeline, This Week Workload, Project Timeline', "User asked to allow changing status directly from all timeline rows without opening the task modal. Board + Table already had this (v174 added Not Required + Missed Deadline options). This ship brings the same treatment to (a) the Today Timeline rows on the Home page, (b) the This Week Workload rows on the Home page (same _htlRowHtml renderer covers both), and (c) the Project Timeline rows on the PTV page. Each row's static status dot is replaced with a compact circular <select> element styled to match the previous dot's footprint \u2014 same colored circle, same row layout \u2014 but now clickable to reveal all seven status options. Selecting one calls updateTaskStatus which stamps the proper completedAt / notRequiredAt / missedDeadlineAt metadata per v158/v173 transitions. Row-level click-through to open the task modal is preserved via event.stopPropagation on the select.", "Shipped Sep 9, 2026 in response to: 'on all timelines allow function to change status.' Five pieces. (1) _htlRowHtml (Today Timeline + Week Workload) rewritten: replaced the <span class='htl-row-status'> colored dot with a <select class='htl-row-status-select'> containing all seven status options (Not Started, In Progress, Blocked, Pending, Complete, \u2298 Not Required, \u2717 Missed Deadline). onclick handler calls event.stopPropagation() so clicking the dropdown doesn't fire the row's openTaskModal. onchange calls _htlChangeStatus with the project id + task id + new value. (2) New _htlChangeStatus function: finds the target project + task, preserves the active project context (saves prevActive, temporarily switches to the row's project so updateTaskStatus's activeProject-scoped logic works, restores prevActive after). Delegates to updateTaskStatus (v158's canonical status-change entry point that stamps completedAt/notRequiredAt/missedDeadlineAt/rescheduledFromPastDue reset all correctly). Calls render() so the row + hero cards reflect the change immediately. (3) _renderPtvTaskRow rewritten: replaced the <div class='ptv-task-status-dot'> with a <select class='ptv-task-status-select'> with the same seven status options. Calls changeTaskStatusInline (the existing Board/Table handler from v174) which already handles the active-project scoping since PTV is always operating on the active project. Same event.stopPropagation pattern. (4) CSS: .ptv-task-status-select styled as a 16px circular colored button with appearance:none to strip browser select chrome, hidden text, and hover box-shadow for the click affordance. Colors mirror the seven status-* classes including not-required grey (#6b7687) and missed-deadline rust (#a44029) from v173. .htl-row-status-select follows the same recipe at 14px. Both include option-list styling for the popup menu. (5) The row grid layout is unchanged since the select occupies the same slot the dot did. Manual JS syntax check passed. Post-ship: click the small colored circle on any Today Timeline, Week Workload, or Project Timeline row and pick a new status \u2014 the row updates in place, metadata stamps correctly, and clicking the rest of the row still opens the task modal."),
+    advImplemented('quality-of-life', 'My Alerts hero card adds a Missed Deadline tile + Project Timeline defaults to Compact + Clean View + Colors', "Two follow-ups. (1) The sticky My Alerts hero card on Today (v177) already had tiles for Past Due, Due Today, Due Tomorrow, Awaiting Ack, Sign-Off Queue, and Rejections but was missing Missed Deadline. Missed is terminal so it's not an urgency alert per se, but users want it visible for review + accountability \u2014 same reason it has its own alert-tab in Project Alerts + My Alerts (v173). Added a quiet-tier tile counting Missed Deadline tasks the user is Lead/Support on within the last 30 days. Quiet tier renders in muted grey so it reads as review-material, not action-material. (2) Project Timeline view had three stackable toggles (Clean View v166, Monochrome v167, Compact v168) all defaulting to OFF. User wants the timeline to open compact + clean + colored by default so it reads as a shareable plan on first look. Changed loadState defaults: ptvCleanMode=true, ptvCompactMode=true, ptvMonoMode=false. Users can still toggle any of the three independently \u2014 the render sync pass at line 35222 auto-syncs the toolbar button labels + body classes to whatever's in state.", "Shipped Sep 9, 2026 in response to: 'My Alerts add Missed; Project timeline (Default should be compact and clean view, show colors).' Four pieces. (1) renderHomeHeroAlerts extended: added a `missed` counter alongside the existing six. Walks the same task loop and increments missed when t.status === 'missed-deadline' AND (t.missedDeadlineAt === 0 OR t.missedDeadlineAt >= 30-day-cutoff). Same window semantics as the Project Alerts Missed Deadline tier from v173. (2) tiles array gains a 7th entry: {id: 'missed', label: '\u2717 Missed Deadline', count: missed, tier: 'quiet', jump: 'homeMyTasksSection'}. Uses the .tier-quiet CSS variant from v177 (muted grey border-left + neutral background) so it reads as review material rather than an urgency alert. Zero-count auto-hides via the existing activeTiles filter so users don't see it when there's nothing to review. (3) loadState defaults changed: state.ptvCleanMode=true, state.ptvCompactMode=true, state.ptvMonoMode=false (unchanged \u2014 colors on). Only affects users on first init; existing users who had previously set their own values keep their choices via the typeof check. (4) No render-sync changes needed \u2014 the existing PTV render pass at line 35222 reads state and applies body classes + button labels dynamically. Manual JS syntax check passed. Post-ship: Today hero My Alerts card shows a 7th tile when the user has Missed Deadline tasks in the last 30 days; opening Project Timeline defaults to compact rows + clean view (no pills/badges) + full color coding."),
+    advImplemented('quality-of-life', 'Sidebar workstream / Past Pursuits / Archived sections always collapse on page load', "User asked for the projects sidebar categories (Bidding, Training, Events, Precon General, Past Pursuits, Archived) to be collapsed by default. v123 already set the initial state.workstreamExpanded to {} + state.pastPursuitsExpanded to false, so a fresh browser was collapsed \u2014 but the state is persisted, so users who had clicked to expand a section saw that section expanded on subsequent loads. Enforced the 'collapsed by default' intent literally by resetting all three collapse states on EVERY loadState pass. Expanding a section during a session still works and stays expanded until reload; refresh the browser and everything collapses back to a clean baseline.", "Shipped Sep 9, 2026 in response to: 'I want these to be collapsed by default.' Three-line change to loadState's v123 backfill block. Previously used 'if not set, initialize to {}'. Now unconditionally sets state.workstreamExpanded = {}, state.pastPursuitsExpanded = false, state.archivedExpanded = false on every load. Downstream renderSidebar reads those directly (const expanded = state.workstreamExpanded && state.workstreamExpanded[wsId] === true) so a clean map means every section renders collapsed. Persistence is intentionally sacrificed here \u2014 the user's ask maps to 'literal collapsed by default,' not 'remember my last state.' If they want session persistence back later, we can add a toggle in Settings. Manual JS syntax check passed. Post-ship: refresh the tracker, every sidebar section starts collapsed with the \u25b8 chevron; click any to expand for the current session; refresh again to reset."),
+    advImplemented('bugfix', 'Early-completion notifications now show Sign Off / Reject buttons like routine completions do', "User reported: 'when i recieve notification that task is completed ahead of schedule it doesnt show sign off or reject in the notification.' Root cause: v159 introduced the task-completed-early notification type (distinct from task-completed so filters + icons + severity titles can differentiate the celebration variant). But the toast action-buttons builder only checked `notif.type === 'task-completed'` when deciding whether to render the Sign Off / Reject buttons \u2014 the early variant never matched the check, so the Lead Estimator saw the notification body without any way to sign off or reject directly from the toast. They had to click through to the task modal to act on it. Fix: extend the type check to accept BOTH values. Same eligibility gate (recipient must be project Lead Estimator AND task.completionAcknowledged must be false), same buttons, same handlers.", "Shipped Sep 9, 2026 in response to: 'when i recieve notification that task is completed ahead of schedule it doesnt show sign off or reject in the notification.' One-line fix: `if (notif.type === 'task-completed')` \u2192 `if (notif.type === 'task-completed' || notif.type === 'task-completed-early')` in the toast action-buttons block. Verified no other type gate exists that would filter out early completions from sign-off eligibility \u2014 the Home page's Completions Awaiting My Sign-Off section works off task.completionAcknowledged directly (not notification type), and the bell dropdown doesn't render per-notification action buttons at all (only the transient toast does). So the toast fix is the complete fix. Manual JS syntax check passed. Post-ship: when a task is marked complete ahead of schedule and the recipient is the project's Lead Estimator, the toast now shows the \u2713 Sign off and \u2717 Reject buttons alongside the celebratory message."),
+    advImplemented('quality-of-life', 'Hide the Top Projects block inside the Today hero estimator card', "User asked to remove the Top Projects list from the Today hero's workload card. That block is generated by _buildEstimatorCardHtml which is the same builder Team Workload uses per-assignee, so editing the builder itself would strip Top Projects from every Team Workload card too. Scoped-CSS approach instead: a single #homeHeroWorkloadBody .twv-card-projects { display: none } rule hides the block ONLY when it renders inside the Today hero container. Team Workload page still shows Top Projects on every card as before.", "Shipped Sep 9, 2026 in response to: 'remove top projects.' One-line CSS addition scoped to #homeHeroWorkloadBody. Rule uses !important to defeat any inline styles. Selector matches the .twv-card-projects wrapper div that holds both the 'Top projects:' label and the project rows, so the whole block collapses to zero height without leaving a gap. Team Workload page renderTeamWorkloadView continues to render Top Projects on each estimator card exactly as before. Manual JS syntax check passed. Post-ship: Today hero shows the weekly capacity bar, daily schedule, slot pill, and past-due pill \u2014 but no Top Projects list; Team Workload page is unchanged."),
+    advImplemented('bugfix', 'Hero workload was invisible \u2014 _aggregateWorkloadByAssignee returns a Map not an array, .find on it silently no-op\u2019d and the card stayed empty; fixed with Array.from(map.values()) plus a diagnostic empty state showing available assignee names', "User reported: 'uggggg nothing even shows up in workload at all now on today page.' v181 assumed _aggregateWorkloadByAssignee returned an array and called .find() on the result. Map has no .find method (though it does have .length undefined which passed the truthy check). The variable myStats was always undefined and the code fell into the 'No tasks assigned to you' branch \u2014 or, since Map lacks .length, the initial `!allStats.length` check evaluated to true (!undefined === true) and rendered the 'No workload data yet' branch, so the card body was blank. Fix: convert the Map to an array via Array.from(statsMap.values()) before searching. Also added a defensive branch that handles both Map and array return shapes (in case the aggregator ever changes), a trimmed-name fallback comparison, and a much better empty-state that lists the available assignee names when the user can't be matched \u2014 so future name-mismatch bugs are self-diagnosing instead of silently invisible.", "Shipped Sep 9, 2026 in response to: 'uggggg nothing even shows up in workload at all now on today page.' Three changes to renderHomeHeroWorkload. (1) Data-shape handling: `if (!statsMap || (statsMap.size === undefined ? !statsMap.length : statsMap.size === 0))` checks for empty regardless of whether the aggregator returns a Map (has .size) or an array (has .length). Then `const asArray = (typeof statsMap.values === 'function') ? Array.from(statsMap.values()) : (Array.isArray(statsMap) ? statsMap : []);` converts to array. All subsequent .find calls now work. (2) Name-match hardened: primary lookup filters out the synthetic 'Unassigned' bucket via `!s.isUnassignedBucket` (so if the user's name accidentally matches 'unassigned', we skip it). Secondary lookup uses .trim().toLowerCase() on both sides as a defensive fallback for stray whitespace. (3) Diagnostic empty state: when no myStats found, the body renders the user\u2019s name plus a comma-separated list of every assignee name the aggregator DID find. This turns a silent-invisible failure into a self-explaining one \u2014 the user immediately sees whether the problem is a name-casing mismatch, a teamMembers vs task-assignee drift, or a genuine no-work situation. Manual JS syntax check passed. Post-ship: the estimator card should now render for the current user with the weekly capacity bar, daily schedule with hour chips, and slot + past-due pills as shown in the picture."),
+    advImplemented('high-impact', 'Today hero uses the full Team-Workload estimator card matching the shared picture \u2014 weekly capacity bar + daily schedule with hour chips + slot availability + past-due pills', "User shared a screenshot showing the exact layout wanted: top row with '47.3h / 40h (1 wk)' + '118%', horizontal capacity bar with +18% overflow, a beige info strip '\u2248 47.3h/wk avg vs 40h/wk capacity', DAILY SCHEDULE card with '47.3h scheduled' header, 5 vertical bars in grey capacity envelopes with red/gold fills and hour chips (14.3, 6.6, 10, 8.3, 8.3) plus date labels, then two rounded pills below ('\ud83d\udd12 No open slots (\u226425%)' and '\ud83d\udd01 7.3h past-due \u00b7 12 tasks'). That is exactly what _buildEstimatorCardHtml renders on the Team Workload page. v178 used this approach but then constrained it with max-height:360px + internal scroll which the user hated. v179 pivoted to a compact mini-bar. v180 tried to add capacity fill to the mini-bar. This iteration goes back to the full estimator card WITHOUT the max-height, so the whole card renders inline at its natural height as shown in the picture.", "Shipped Sep 9, 2026 in response to: 'wrong again, i want workload to look like picture.' Two pieces. (1) renderHomeHeroWorkload rewritten: calls _aggregateWorkloadByAssignee(), finds current user by case-insensitive name match, then sets body.innerHTML to _buildEstimatorCardHtml(myStats) \u2014 identical to what Team Workload renders per assignee. Falls back to friendly empty message if user has no workload data or no assigned tasks. Sub label shows 'N open \u00b7 Xh'. Try/catch around the whole render so any card-builder failure can't take out the Home page. (2) Verified .home-hero-card CSS has NO max-height constraint (v179 removed it) so the full card renders inline at natural height matching the picture. Since the estimator card's bars are already clickable and open the day drill-down via openWorkloadDrilldown, the picture's full interactivity carries through end-to-end. Retains v179 features: homeMyWorkloadSection stays deleted, my openHomeDayDrilldown function stays available (harmless dead code path). Retains v180 features: timelines still render without internal scroll. Effectively v178 minus the max-height + scroll problem. Manual JS syntax check passed. Post-ship: the top-left hero on Today matches the shared picture exactly \u2014 weekly capacity summary, average-vs-capacity strip, full daily schedule chart with hour chips and colored fills, and the slot + past-due pills."),
+    advImplemented('quality-of-life', 'Hero mini-bars show capacity fill with Team-Workload color states + timelines no longer scroll internally', "Two follow-ups to v179's hero + timeline layout. (1) The hero mini-bars now scale to a fixed daily capacity ceiling (8h) instead of to the busiest day in the visible week, so users can immediately see how much of each day is filled. Each column has a light 'capacity track' background frame showing the full 8h envelope; the bar fills from the bottom up within it. Colors match Team Workload thresholds: navy under 75%, gold 75-100%, red over 100% cap. Hour label above each bar also color-cues (gold when \u2265 6h, red when > 8h). Today's column gets a gold outline on the track frame so it's obvious even without a bar. (2) Removed max-height + overflow-y from both Today Timeline and This Week Workload sections so the full list renders inline instead of hiding behind a scroll container. Sticky day headers also removed since they were only useful with internal scroll. Long lists just extend the page \u2014 team sees everything at once without hunting.", "Shipped Sep 9, 2026 in response to: 'today my workload needs to show capacity filled like the other workloads do so it easy to tell how much each day is filled; also today timeline and week workload do not need to be scrollable I want my team to see there full list.' Six pieces. (1) renderHomeHeroWorkload's bar loop rewritten. New capRatio = d.hours / perDayCap (8) drives pct = min(100, capRatio*100). Fill class derived from capRatio thresholds: bar-empty (0), bar-some (<75%), bar-high (75-100%), bar-over (>100%) \u2014 same class names Team Workload uses on .twv-strip-bar so styling is consistent in spirit. Bar wraps in a new .home-hero-wl-mini-bar-track div that acts as the 100% capacity frame. Today gets a gold outline via .is-today on the track. Hover tooltip now says 'Nh / 8h cap' with OVER CAPACITY suffix when over. Hint text updated to 'Bars show fill vs 8h daily cap \u00b7 Click for details'. (2) hoursCls added: 'hot' when over cap, 'warm' when 75-100%, empty when under \u2014 applied to the hour label so it color-cues too. (3) CSS: new .home-hero-wl-mini-bar-track class \u2014 light grey background frame, thin border, rounded top, height:100%, flex column with align-items:flex-end so the bar grows from the bottom. Today variant gets sbg-gold border-color + inset shadow. Dark-mode variant uses white/8% alpha. (4) CSS: bar color states rewritten with .bar-empty / .bar-some / .bar-high / .bar-over class names matching Team Workload. Removed the old .is-over class handler since it's superseded by .bar-over. (5) CSS: mini-bar height bumped from 60px to 72px so the capacity track has more room to show fill differences. (6) CSS: removed #homeTodayTimelineSection .home-section-body + #homeWeekTimelineSection .home-section-body max-height:420px overflow-y:auto rules from v178 \u2014 both sections now render full-height inline. .home-timeline-list .htl-day-header sticky positioning also removed since it only added value with internal scroll. Manual JS syntax check passed. Post-ship: each day column shows a capacity envelope (grey frame) with a navy/gold/red bar filling from the bottom based on hour fill vs 8h cap; timelines below display every row without a hidden scroll pane so the team sees the full list on a single scroll of the page."),
+    advImplemented('quality-of-life', 'Today hero back to compact mini-bar with per-day hours + click-to-drill-down showing current + planned tasks; redundant bottom My Workload section removed', "v178 swapped the compact hero for the full Team-Workload card, but that made the top of Today busy and duplicated what already lived below in the homeMyWorkloadSection. v179 restores the lightweight mini-bar treatment with three enhancements over v177: each bar now has an hours label above it (or a green \u2713 if only completed items exist that day), clicking any bar opens a drill-down modal listing every task the current user is Lead or Support on for that day split into 'Current (open)' and 'Planned / Completed' sections, and the redundant homeMyWorkloadSection is removed entirely so the top hero is the single source of workload truth on Today.", "Shipped Sep 9, 2026 in response to: 'No, I want the top Workload to show like before but shows hours for each day and clickable for each day to see list of task both current and planned; today timeline and week workload to be fixed; remove workload from bottom that looks like Team workload template.' Five pieces. (1) renderHomeHeroWorkload reverted to compact mini-bar structure from v177 but enhanced: aggregator now tracks BOTH open hours + completed task count per day (isTerm branch adds to doneCount only; non-term adds to hours + count). Bar column layout wraps an hours label above the bar so users see the number at a glance without hovering. Empty days show a muted \u2013 dash; days with only completed items show a muted \u2713. (2) New wrapper .home-hero-wl-mini-bar-col makes the entire column (label + bar) clickable and clips a subtle gold hover tint over the whole column so target area is generous. Clicking calls openHomeDayDrilldown(dateStr). (3) New openHomeDayDrilldown function creates or reuses a top-level modal, walks all tasks with matching dueDate that the user is Lead/Support on, splits into openItems + doneItems (using isTermStatus for done/not-required/missed-deadline), renders openItems under a navy 'Current (open) \u00b7 N \u00b7 Xh' header and doneItems under a grey 'Planned / Completed \u00b7 N' header, reusing the existing _htlRowHtml renderer so status-color borders + strikethrough treatment carry over. Backdrop click closes. (4) HTML: homeMyWorkloadSection section block (43 lines including its own toolbar toggle + chart) removed entirely from the homeView DOM. Section id also removed from the defaultCollapsed array and the show/hide sections list in renderHomeView so no code tries to toggle a nonexistent element. The renderHomeMyWorkload function itself stays defined (still called by three other refresh paths) but early-returns cleanly because document.getElementById('homeMyWorkloadSection') now returns null and the function has an `if (!section || !body) return;` guard at the top. (5) Hero cards' max-height:360px + overflow-y:auto (from v178) removed so the compact card no longer needs internal scroll. Bar height increased from 32px to 60px so hour labels above have room. Today's day-of-week label in the labels row now bolds + gold-colors to match the today-highlighted bar. Manual JS syntax check passed. Post-ship: hero shows 5 slim bar columns each with an hours label above and a small clickable footprint; clicking opens a modal listing that day's tasks in two sections (open work first, completed items below with strikethrough via the existing status styling); the bottom Team-Workload-style section is gone."),
+    advImplemented('quality-of-life', 'Today hero uses full Team-Workload card + Timeline lists show completed with strikethrough + PTV-style status left-border colors + fixed-height scroll containers', "Three follow-ups to v177's Today redesign. (1) Left hero card (My Workload) now renders the full _buildEstimatorCardHtml output \u2014 same chart, capacity ceiling, hover tooltips, click-to-drill-down, and early-completion summary strip that the Team Workload page uses \u2014 instead of the compact custom mini-bar. Users get parity with Team Workload behavior without leaving Today. (2) Today Timeline + This Week Workload lists now include Done / Not Required / Missed Deadline tasks in the list instead of filtering them out. Completed items render with strikethrough text and reduced opacity so they read as 'already handled' but stay visible for context. Terminal tasks sort to the bottom within each day so open work reads first. Each row gets a status-color left border matching Project Timeline's row treatment (in-progress blue, blocked red, pending gold, done green, not-required grey, missed rust). (3) Both timeline section bodies get max-height:420px with overflow-y:auto and sticky-position day headers so long lists scroll internally without pushing the rest of Today off-screen. Hero cards also get max-height:360px + internal scroll to prevent the full estimator card from crowding the page.", "Shipped Sep 9, 2026 in response to: 'today workload I want to function same as Team Workload does, Today Timeline and Week Workload I want to show crossed out completed items and show status colors like project timeline does; also I want todays timeline and weeks workload to be fixed.' Interpretation: 'fixed' = pinned/fixed-height scroll (so section headers stay visible). Four pieces. (1) renderHomeHeroWorkload rewritten: calls _aggregateWorkloadByAssignee(), finds the current user's stats row by case-insensitive name match, then sets body.innerHTML to _buildEstimatorCardHtml(myStats). Falls back to friendly empty message if user has no assigned work. Sub label shows 'N open \u00b7 Xh'. Try/catch around the whole thing so a failure in the shared card builder can't break the Home page. (2) _collectHomeTimelineItems terminal-status filter removed. Previously: `if (t.status === 'done' || 'not-required' || 'missed-deadline') return;`. Now: only filter on dueDate + user-membership. Sort order updated: terminal tasks sink to the bottom of their day via a `isTermStatus` helper applied before the critical/lead/hours tiebreakers. (3) CSS: seven new .htl-row.status-* rules add a colored 3px left border per status matching the PTV row treatment. Status-in-progress + status-blocked + status-pending + status-done + status-not-required + status-missed-deadline all get subtle background tints too (3-4% opacity of the status color) so the row reads at a glance. Strikethrough + opacity 0.55 applied to .htl-row-title AND .htl-row-hours for all three terminal statuses (was only status-done before). (4) CSS: #homeTodayTimelineSection .home-section-body + #homeWeekTimelineSection .home-section-body get max-height:420px overflow-y:auto. .home-timeline-list .htl-day-header gets position:sticky top:0 z-index:2 so day headers stick when scrolling within the section. Hero cards get max-height:360px overflow-y:auto so the full estimator card fits without eating vertical space. Manual JS syntax check passed. Post-ship: hero-workload card behaves exactly like a Team Workload row (click bars to drill down, hover for task-list tooltip); Today Timeline + Week Workload include completed items with strikethrough + status colors matching PTV; long lists scroll internally with sticky day headers."),
+    advImplemented('high-impact', 'Today page redesign — sticky Workload+Alerts hero at top always visible, plus new Today Timeline and This Week Timeline lists across all projects', "Today (Home) page reworked so the user\u2019s two most important signals \u2014 workload and alerts \u2014 are always visible at the top when scrolling, and two new sections below show every task the user is Lead or Support on scheduled for today and for the current work week. Hero card on the left (\ud83d\udcbc My Workload) shows today\u2019s hours, this-week hours, past-due hours (when any), and a 5-day mini bar chart with today highlighted in gold and over-cap days in red. Hero card on the right (\ud83d\udea8 My Alerts) shows tiles for Past Due, Due Today, Due Tomorrow, Awaiting Ack, Sign-Off Queue, and Rejections \u2014 only tiles with a nonzero count render, so the card stays clean when things are calm. Clicking any row or tile smooth-scrolls to the relevant section below and briefly highlights it. Below the hero, two new sections: \ud83d\udcc5 Today\u2019s Timeline (every task due today across all projects the user is on) and \ud83d\udcc6 This Week\u2019s Workload (Mon-Fri grouped by day). Each row shows status dot, task title (with \ud83d\udd25 for critical), project, prorated hours (pro-rata for support role), and Lead vs Support tag.", "Shipped Sep 9, 2026 in response to: 'Today tab: I want workload up top always visible on one side and alerts on the other side; also I want a Today Timeline Workload list as well as weeks Workload list across all projects involved in.' Nine pieces. (1) HTML: new .home-hero-split grid container with two .home-hero-card cells (workload + alerts) inserted between the home header and the existing homeMyTasksSection. Each card has a header (icon + title + sub) and a body slot. (2) HTML: two new home-section blocks \u2014 homeTodayTimelineSection + homeWeekTimelineSection \u2014 with collapsible headers and body divs (homeTodayTimelineList + homeWeekTimelineList). Same chevron/toggle pattern as existing sections so they participate in Expand All / Collapse All. (3) CSS: .home-hero-split uses grid-template-columns 1fr 1fr with position:sticky top:0 z-index:30 and a bg color that matches --bg (with dark-mode variant), so as the user scrolls the two hero cards stay pinned. Cards have subtle border-left accents (navy on left, red on right) plus box-shadow and rounded corners. (4) CSS: .home-hero-wl-* classes cover the workload card\u2019s row layout, big monospaced value chip with .hot / .warm color states based on hour-count thresholds, and the 5-day mini bar chart (.home-hero-wl-mini-bar with .home-hero-wl-mini-bar-day flex children). .is-today paints gold; .is-over paints red. (5) CSS: .home-hero-alert-tile* classes cover the right-side tile layout with tier-critical / tier-warning / tier-info / tier-quiet color variants. (6) CSS: .htl-* classes cover the two new timeline lists \u2014 .htl-day-group wraps a day\u2019s worth of rows, .htl-day-header spans full width with day label + hours pill + count, and .htl-row is a 5-column grid (status dot / title / project / hours / role) that ellipsis-clips long text. Status-done rows get strikethrough + reduced opacity. (7) JS: renderHomeHero(user) fans out to renderHomeHeroWorkload + renderHomeHeroAlerts. Workload builder walks the current Mon-Fri (or next week if Sunday), sums per-day prorated hours (using getTaskLeads + getEffectiveSupportPct so support role gets its share), also collects overdue hours separately, then renders rows + bar chart + labels. Alerts builder walks every non-archived project counting overdue / due-today / due-tomorrow / unack / sign-off queue / rejections filtered to tasks the user is a member of, filters out zero-count tiles, renders remaining as clickable tiles. Both skip 'done' + 'not-required' + 'missed-deadline' since v172/v173 established those as terminal everywhere. (8) JS: renderHomeTodayTimeline + renderHomeWeekTimeline share a _collectHomeTimelineItems helper that walks projects/tasks filtering to (a) non-terminal status, (b) dueDate within range, (c) user is Lead or Support. Sorted by dueDate then critical then lead-first then hours-desc. Row renderer _htlRowHtml uses openTaskModal(null, taskId) on click to keep click-through consistent with the rest of the Home page. Status-dot helper _statusDotColor(status) covers all seven statuses. (9) JS: renderHomeMyTasks(user) got a three-line preamble calling renderHomeHero + renderHomeTodayTimeline + renderHomeWeekTimeline inside try/catch, so the new panels refresh on every Home render without needing to edit renderHomeView itself. Also added scrollToHomeSection helper that expands the target if collapsed, smooth-scrolls to it, and briefly outlines it in gold for visual confirmation. Manual JS syntax check passed. Post-ship expectation: open Today, see the two hero cards pinned at top with live workload + alert summaries; scroll down to see Today Timeline (just today\u2019s tasks) and This Week Timeline (Mon-Fri grouped) across every project you\u2019re on. Click any tile/row/hero-row to jump."),
     advImplemented('bugfix', 'Reschedule persistence fix — reschedule now sticks after refresh; dayOffset synced to state in both reason modes', "User reported: 'when reschuelding it is not holding in the JSON file and reverts back to original after refreshing.' Root cause: v175 confirm handler only synced #taskDayOffset for 'anchor' reason mode. In 'past-due' mode the form field kept the OLD dayOffset while task.dueDate was updated to new. If the user then hit Save on the still-open outer task modal (or any auto-save path fired), saveTask read the entire form including the stale dayOffset and Object.assigned it onto the task — creating a state where dueDate and dayOffset were inconsistent. Downstream renders (project date recomputes, table-view date derivations) then 'resolved' the mismatch by recomputing dueDate from dayOffset + anchor, effectively reverting the reschedule. Fix: always sync BOTH #taskDueDate AND #taskDayOffset in BOTH reason modes, always recompute dayOffset from new date + anchor to keep them consistent, and defensively re-save AFTER render() to guarantee the persisted copy reflects the reschedule.", "Shipped Aug 18, 2026 in response to: 'when reschuelding it is not holding in the JSON file and reverts back to original after refreshing.' Three changes to _confirmRescheduleTaskModal. (1) dayOffset recomputation moved OUT of the reason-mode branch and made unconditional whenever a real date is set. Regardless of whether the reason is 'anchor' or 'past-due', the code now: (a) resolves the anchor date, (b) computes newDayOffset = _businessDaysBetween(anchor, newDue), (c) writes task.dayOffset. For 'anchor' mode this represents the plan revision (dayOffset moves with the date, so the task stays aligned to its anchor). For 'past-due' mode this represents the task being pushed — the v89 accountability badge captures the slip separately via task.rescheduledFromPastDue, so updating dayOffset doesn't erase accountability. Both intents preserved. (2) Form-field sync no longer gated on reason. Previously #taskDayOffset was only synced for 'anchor' mode: `if (offsetEl && reason === 'anchor') offsetEl.value = task.dayOffset;`. Now BOTH #taskDueDate AND #taskDayOffset sync in both modes, matching the just-updated task state. This prevents the outer task modal's Save button (or any auto-save on close/render) from writing stale form values back over the reschedule. Also calls updateOffsetFromDue() to refresh the date-calc badge on the modal so the user sees the new anchor+offset display. (3) Defensive re-save after render(). saveState() now runs TWICE — once immediately after the in-memory mutation (captures the change before any DOM sync can fail), and once after render() completes (guarantees the persisted copy reflects the reschedule even if render triggered any state-touching side effects). Both saves are idempotent so this only adds robustness. Manual JS syntax check passed. Post-ship: reschedule any task via the modal, refresh the browser, task shows the new date persistently. Works for both Reschedule Anchor Date and Push For Past Due reason modes."),
     advImplemented('high-impact', 'Reschedule modal — full UX with live preview + reason picker (Reschedule Anchor Date vs Push For Past Due)', "v174 shipped the in-task Reschedule as a window.prompt() with text-based shortcuts — user asked for a proper modal that mirrors the Reschedule Past-Due workspace. v175 replaces the prompt with a real modal. Task summary card at top shows the current due date + anchor context (e.g., 'Bid Day + 3 days'). Reason radio group forces user to declare intent: (a) 📐 Reschedule Anchor Date — the plan moved (design date pushed, subs got extra time). Updates dayOffset so the task stays aligned to its anchor going forward. NO slip badge. (b) 🔁 Push For Past Due — the task got missed and needs to be pushed. Stamps the v89 red accountability badge everywhere the task appears. Default reason is auto-picked based on whether the task is currently past-due. Six shortcut buttons for the common push amounts (+1, +2, +3, +5, +1 week, +2 weeks). Custom N business days number input. Specific date picker. Clear-date checkbox. Only one input method is active at a time — picking one clears the others. LIVE preview panel updates on every change showing '<old date> → <new date> (+N calendar days)' plus a reason-specific cue ('slip badge will be stamped' vs 'dayOffset will be updated') plus (for Anchor mode) the computed new dayOffset value with the anchor date used. Confirm button disabled until a valid selection is made.", "Shipped Aug 18, 2026 in response to: 'i need the rescheduke function to be more user friendly and see previews of dates pushed, be more similar to current reschedule function, also I need to add reason for push options (Reschedule Anchor Date, Push For Past Due).' Ten pieces. (1) rescheduleThisTask() rewritten as a thin wrapper that opens _openRescheduleTaskModal(project, task). (2) _openRescheduleTaskModal — injects a <div class='modal-backdrop' id='rescheduleTaskModal'> into the DOM on first open (same pattern as openReschedulePastDueModal), reuses on subsequent opens. Modal shell has header + body + actions bar with Cancel + Confirm buttons. Caches projectId + taskId on the modal dataset so the confirm handler can find them. Backdrop click closes. (3) _renderRescheduleTaskModalBody — builds the body markup: task summary card (title, current due, anchor+offset context, PAST DUE badge when applicable) + reason radio tiles + shortcut buttons row + custom N days input + specific date input + clear checkbox + live preview panel. Default reason is auto-selected based on isTaskOverdue(task). (4) Reason tiles use styled label wrappers with the radio input inside; CSS class rtm-reason-tile with :has() checked selector gives the selected tile a purple ring + light purple background. (5) Six shortcut buttons (data-days attribute) call _selectRescheduleShortcut(days) which computes newDue via addBusinessDays from the current due date, stamps modal.dataset.pendingNewDue + pendingMode='shortcut', clears the other input types, highlights the picked button purple, calls _updateRescheduleModalPreview. (6) Custom N input calls _selectRescheduleCustomDays — same but reads the number input. (7) Specific date input calls _selectRescheduleSpecificDate — writes date directly. (8) Clear checkbox calls _selectRescheduleClear — sets pendingMode='clear'. (9) _updateRescheduleModalPreview computes and renders the preview: old→new date with calendar-day delta, reason-specific message, and (for anchor mode) the recomputed dayOffset via _businessDaysBetween helper. Warns when anchor mode is picked but the project's anchor date isn't set. Toggles Confirm button disabled state. (10) _confirmRescheduleTaskModal applies the change: writes task.dueDate, stamps lastEditedAt + lastEditedBy. Branch on reason: (a) 'anchor' + newDue → resolveTaskAnchorDate, recompute dayOffset via _businessDaysBetween, write task.dayOffset. NO v89 badge. (b) 'past-due' + oldDue + newDue → append oldDue to rescheduledFromPastDue, stamp rescheduledFromPastDueMeta {source: 'in-task-reschedule', when, rescheduledBy, originalDueDate, newDueDate, pushCount++}. This IS the v89 accountability badge. Clears _recurrenceSpawned, syncs #taskDueDate + #taskDayOffset inputs, calls refreshHeaderStatusPill + render + closes modal + showToast with reason-specific suffix ('slip badge stamped' vs 'anchor offset updated'). New helper _businessDaysBetween(a, b) counts business days between two Dates, signed. Manual JS syntax check passed."),
     advImplemented('quality-of-life', 'Board + Table dropdowns show Not Required + Missed Deadline options · new in-task Reschedule button', "Two follow-ups on the v158/v173 status work. (1) Board card inline status dropdown and Table view status column dropdown were still hardcoded to the original five statuses (not-started / in-progress / blocked / pending / done). Not Required + Missed Deadline weren't options there — the only way to reach them was the calendar picker or the task modal. Added both to the dynamic dropdown templates with their status emojis (⊘ Not Required, ✗ Missed Deadline). (2) New '🔁 Reschedule' button in the task modal action bar (between Duplicate and Copy to Project). Purple accent to match the visual language of the Reschedule Past-Due modal. Clicking prompts for +1/+2/+3/+7 business days, a custom +N, an explicit YYYY-MM-DD, or 'clear'. Pushes t.dueDate forward, stamps rescheduledFromPastDue metadata so the v89 accountability badge fires, clears any recurrence-spawn flag so recurring instances get a fresh window, syncs the modal's due-date input, and shows a confirmation toast.", "Shipped Aug 18, 2026 in response to: 'on board and possible other view the missing Deadline and Not Required is not showing up as pull down option Also, I need when opening task details option to Reschedule directly on task.' Five pieces. (1) Board card renderTaskCard inline dropdown at line 59387 — the dynamically emitted <select class='card-status-select'> with data-driven <option> per status. Added the two missing options: <option value='not-required'>⊘ Not Required</option> and <option value='missed-deadline'>✗ Missed Deadline</option>. Selected-state gating preserved with the ternary. Same changeTaskStatusInline handler wires through updateTaskStatus which already stamps the correct completedAt / notRequiredAt / missedDeadlineAt metadata per v158/v173. (2) Table view row status column at line 59640 — parallel dropdown, same two additions. (3) Task modal action bar — new button #rescheduleTaskBtn inserted between Duplicate and Copy to Project. Purple color (#6b46c1) borrowed from the workload page's Reschedule Past-Due button so the visual language is consistent. Tooltip explains the shortcut format. (4) New function rescheduleThisTask() — reads editingTaskId, resolves the task on activeProject, computes current due-date label, prompts with the shortcut menu, parses the answer through three branches: 'clear' → empty dueDate; /^\\+?\\d+$/ → addBusinessDays from current base; /^\\d{4}-\\d{2}-\\d{2}$/ → literal date. Invalid input aborts with an alert. Same-date rejected with an alert. On success: writes t.dueDate + lastEditedAt + lastEditedBy, appends oldDue to t.rescheduledFromPastDue array, stamps rescheduledFromPastDueMeta.source='in-task-reschedule' so the v89 accountability badge distinguishes this from workload-page reschedules. Clears _recurrenceSpawned so recurring instances that had already spawned their next one get a fresh window. Syncs the modal's #taskDueDate input value so the visible field reflects the new date. Calls refreshHeaderStatusPill + render + showToast. (5) Anchor date (dateAnchor) is intentionally left alone — this is a concrete date override, not a plan revision. Users who want to also change the anchor can edit dayOffset directly in the modal. All Not Required + Missed Deadline transition logic (stamping timestamps, clearing on reverse) still fires normally through changeTaskStatusInline → updateTaskStatus since the dropdown values match the KNOWN_STATUSES entries. Manual JS syntax check passed."),
@@ -24212,6 +25467,11 @@ function render() {
   const trainingLogViewEl = document.getElementById('trainingLogView');
   const earlyLogViewEl = document.getElementById('earlyLogView');
   const projectsListViewEl = document.getElementById('projectsListView');
+  // v197: Executive View element — auto-hide it in every branch that
+  // isn't the execView branch by adding this one-liner. Simpler than
+  // wiring individual hide calls in every existing branch.
+  const executiveViewEl_auto = document.getElementById('executiveView');
+  if (executiveViewEl_auto && !state.execView) executiveViewEl_auto.classList.add('hidden');
   // v82: Team Insights view takes precedence over all others
   if (state.tiView) {
     if (emptyEl) emptyEl.classList.add('hidden');
@@ -24222,11 +25482,33 @@ function render() {
     if (projectTimelineViewEl) projectTimelineViewEl.classList.add('hidden');
     if (openSlotsViewEl) openSlotsViewEl.classList.add('hidden');
     if (teamInsightsViewEl) teamInsightsViewEl.classList.remove('hidden');
+    const execViewEl_ti = document.getElementById('executiveView');
+    if (execViewEl_ti) execViewEl_ti.classList.add('hidden');
     const _scbBar5 = document.getElementById('stickyCountdownBar');
     const _scbMain5 = document.querySelector('.main');
     if (_scbBar5) _scbBar5.style.display = 'none';
     if (_scbMain5) _scbMain5.classList.remove('has-sticky-countdown');
     renderTeamInsightsView();
+    applySidebarState();
+    return;
+  }
+  // v197: Executive View — same precedence pattern
+  if (state.execView) {
+    if (emptyEl) emptyEl.classList.add('hidden');
+    if (projectViewEl) projectViewEl.classList.add('hidden');
+    if (homeViewEl) homeViewEl.classList.add('hidden');
+    if (snapshotEl) snapshotEl.classList.add('hidden');
+    if (workloadViewEl) workloadViewEl.classList.add('hidden');
+    if (projectTimelineViewEl) projectTimelineViewEl.classList.add('hidden');
+    if (openSlotsViewEl) openSlotsViewEl.classList.add('hidden');
+    if (teamInsightsViewEl) teamInsightsViewEl.classList.add('hidden');
+    const execViewEl = document.getElementById('executiveView');
+    if (execViewEl) execViewEl.classList.remove('hidden');
+    const _scbBar6 = document.getElementById('stickyCountdownBar');
+    const _scbMain6 = document.querySelector('.main');
+    if (_scbBar6) _scbBar6.style.display = 'none';
+    if (_scbMain6) _scbMain6.classList.remove('has-sticky-countdown');
+    if (typeof renderExecutiveView === 'function') renderExecutiveView();
     applySidebarState();
     return;
   }

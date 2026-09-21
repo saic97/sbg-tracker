@@ -3,7 +3,7 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <meta name="application-name" content="SBG Preconstruction Bid Tracker">
-<meta name="version" content="V176">
+<meta name="version" content="V214">
 <!--
   =============================================================================
   BUILD DATE — SINGLE SOURCE OF TRUTH
@@ -16,7 +16,7 @@
 <meta name="build-date" content="Jul 31, 2026">
 <meta name="created" content="2026-04-18">
 <meta name="built" content="2026-04-19T23:56:18Z">
-<title>SBG Preconstruction Bid Tracker · V176</title>
+<title>SBG Preconstruction Bid Tracker · V214</title>
 <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;600;700&amp;family=Barlow+Condensed:wght@500;600;700;800&amp;family=Inter:wght@300;400;500;600;700;800&amp;display=swap" rel="stylesheet">
 
 <meta name="api-base" content="">
@@ -30,7 +30,7 @@
     <div class="brand-logo" id="brandLogo" onclick="openSettingsModal()" title="Click to edit company logo"><img src="data:image/gif;base64,R0lGODlhAQABAAAAACH5BAEKAAEALAAAAAABAAEAAAICTAEAOw==" alt="Company Logo" style="width:100%;height:100%;object-fit:contain;border-radius:4px;background:#fff;"></div>
     <div class="brand-text">
       <h1>SOURCE BUILDING GR<span class="accent">O</span>UP</h1>
-      <div class="subtitle">Preconstruction · Bid Pursuit Tracker <span class="version-stamp version-stamp-milestone" title="v176 · Reschedule persistence fix — dayOffset now synced in both reason modes, defensive re-save prevents revert">🎉 V176</span><span class="version-built" data-role="build-date"></span></div>
+      <div class="subtitle">Preconstruction · Bid Pursuit Tracker <span class="version-stamp version-stamp-milestone" title="v214 · Diagnostic sweep on all 1135 functions — fixed 2 more navigation gaps (openExecutiveView missing 7 clears + openTrainingLogView missing earlyLogView clear)">🎉 V214</span><span class="version-built" data-role="build-date"></span></div>
     </div>
   </div>
   <div class="header-stats">
@@ -215,6 +215,15 @@
       </div>
     </button>
 
+    <!-- v197: Executive View — bidding project progress snapshot for leadership -->
+    <button class="snapshot-sidebar-btn" id="executiveViewSidebarBtn" onclick="openExecutiveView()" title="Executive Snapshot — bidding projects with per-stage progress bars. Toggle between hour-weighted and task-count-weighted progress.">
+      <span class="ssb-icon">📈</span>
+      <div class="ssb-body">
+        <span class="ssb-label">Executive View</span>
+        <span class="ssb-sub">Bidding project progress by stage</span>
+      </div>
+    </button>
+
     <div class="sidebar-section">
       <div class="sidebar-title">
         <span>Projects</span>
@@ -334,7 +343,7 @@
     <!-- File creation/version footer — stays pinned to the bottom of the sidebar -->
     <div class="sidebar-footer" id="sidebarFooter">
       <div class="sf-brand">SBG Precon Tracker</div>
-      <div class="sf-version sf-version-milestone" title="v176 · Reschedule persistence fix — dayOffset now synced in both reason modes, defensive re-save prevents revert">🎉 V176</div>
+      <div class="sf-version sf-version-milestone" title="v214 · Diagnostic sweep on all 1135 functions — fixed 2 more navigation gaps (openExecutiveView missing 7 clears + openTrainingLogView missing earlyLogView clear)">🎉 V214</div>
       <div class="sf-created">Created April 18, 2026</div>
       <div class="sf-built" data-role="build-date" title="Exact timestamp when this HTML file was generated"></div>
       <div class="sf-org">Source Building Group · Mansfield, TX</div>
@@ -373,9 +382,56 @@
             <button class="btn btn-sm" onclick="exitHomeView()">✕ Close</button>
           </div>
         </div>
-        <!-- Compact stat strip showing totals across all projects -->
-        <div class="home-stats" id="homeStats"></div>
+        <!-- v190: home-stats strip removed per user request to reclaim
+             vertical room for the Workload + Alerts hero. -->
+
       </div>
+
+      <!-- v177: STICKY HERO — Workload (left) + Alerts (right) always visible at top.
+           Compact summary cards; click to jump to full sections below. -->
+      <div class="home-hero-split" id="homeHeroSplit">
+        <div class="home-hero-card home-hero-workload" id="homeHeroWorkload">
+          <div class="home-hero-card-header">
+            <span class="home-hero-card-icon">💼</span>
+            <span class="home-hero-card-title">My Workload</span>
+            <span class="home-hero-card-sub" id="homeHeroWorkloadSub"></span>
+          </div>
+          <div class="home-hero-card-body" id="homeHeroWorkloadBody"></div>
+        </div>
+        <div class="home-hero-card home-hero-alerts" id="homeHeroAlerts">
+          <div class="home-hero-card-header">
+            <span class="home-hero-card-icon">🚨</span>
+            <span class="home-hero-card-title">My Alerts</span>
+            <span class="home-hero-card-sub" id="homeHeroAlertsSub"></span>
+          </div>
+          <div class="home-hero-card-body" id="homeHeroAlertsBody"></div>
+        </div>
+      </div>
+
+      <!-- v177: Today Timeline Workload — every task the user is Lead or Support on that's due TODAY,
+           across all projects. Groups by project for context. -->
+      <section class="home-section" id="homeTodayTimelineSection">
+        <div class="home-section-header" onclick="toggleHomeSection('homeTodayTimelineSection')" title="Click to collapse or expand">
+          <span class="home-section-chevron">▾</span>
+          <span class="home-section-title">📅 Today's Timeline</span>
+          <span class="home-section-sub" id="homeTodayTimelineSub"></span>
+        </div>
+        <div class="home-section-body">
+          <div class="home-timeline-list" id="homeTodayTimelineList"></div>
+        </div>
+      </section>
+
+      <!-- v177: This Week's Workload list — Mon-Fri tasks grouped by day across all projects -->
+      <section class="home-section" id="homeWeekTimelineSection">
+        <div class="home-section-header" onclick="toggleHomeSection('homeWeekTimelineSection')" title="Click to collapse or expand">
+          <span class="home-section-chevron">▾</span>
+          <span class="home-section-title">📆 This Week's Workload</span>
+          <span class="home-section-sub" id="homeWeekTimelineSub"></span>
+        </div>
+        <div class="home-section-body">
+          <div class="home-timeline-list" id="homeWeekTimelineList"></div>
+        </div>
+      </section>
 
       <!-- v96/v97: My Workload — full-page workload view scoped to signed-in user -->
       <!-- v132: My Tasks + Awaiting Acknowledgment moved ABOVE My Workload.
@@ -404,49 +460,6 @@
         </div>
       </section>
 
-      <section class="home-section" id="homeMyWorkloadSection" style="display:none;">
-        <div class="home-section-header" onclick="toggleHomeSection('homeMyWorkloadSection')" title="Click to collapse or expand">
-          <span class="home-section-chevron">▾</span>
-          <span class="home-section-title">💼 My Workload</span>
-          <span class="home-section-sub" id="homeMyWorkloadSub"></span>
-        </div>
-        <div class="home-section-body">
-          <!-- v97: Toolbar — same controls as Team Workload, minus Sort and Show-Inactive -->
-          <div class="twv-toolbar hmw-toolbar">
-            <div class="twv-toolbar-group">
-              <label>Date Window:</label>
-              <div class="twv-segmented">
-                <button class="twv-seg-btn" data-scope="this-week" onclick="setWorkloadDateScope('this-week')" title="Monday through Friday of this calendar week">This Week</button>
-                <button class="twv-seg-btn" data-scope="next-week" onclick="setWorkloadDateScope('next-week')" title="Monday through Friday of next calendar week">Next Week</button>
-                <button class="twv-seg-btn" data-scope="two-week" onclick="setWorkloadDateScope('two-week')">Next 2 Weeks</button>
-                <button class="twv-seg-btn" data-scope="four-week" onclick="setWorkloadDateScope('four-week')">Next 4 Weeks</button>
-                <button class="twv-seg-btn" data-scope="this-month" onclick="setWorkloadDateScope('this-month')">This Month</button>
-                <button class="twv-seg-btn" data-scope="next-month" onclick="setWorkloadDateScope('next-month')">Next Month</button>
-                <button class="twv-seg-btn" data-scope="all-open" onclick="setWorkloadDateScope('all-open')" title="All open tasks">All Open</button>
-              </div>
-            </div>
-            <div class="twv-toolbar-group">
-              <label>Chart grain:</label>
-              <div class="twv-segmented" style="height:auto;">
-                <button class="twv-seg-btn twv-grain-btn" data-grain="day" onclick="setWorkloadGrain('day')" title="One bar per business day">Day</button>
-                <button class="twv-seg-btn twv-grain-btn" data-grain="week" onclick="setWorkloadGrain('week')" title="One bar per calendar week">Week</button>
-              </div>
-            </div>
-            <div class="twv-toolbar-group">
-              <label>Workload:</label>
-              <div class="twv-segmented" style="height:auto;">
-                <button class="twv-seg-btn twv-mode-btn" data-mode="current" onclick="setWorkloadMode('current')" title="Only incomplete tasks — what's actually left to do">Current</button>
-                <button class="twv-seg-btn twv-mode-btn" data-mode="planned" onclick="setWorkloadMode('planned')" title="All originally assigned tasks, including completed">Planned</button>
-              </div>
-            </div>
-            <div class="twv-toolbar-group" style="margin-left:auto;">
-              <a href="#" class="home-mw-shortcut" onclick="event.preventDefault();exitHomeView();openTeamWorkloadView();" title="Open the full team view with detail table, 14-day chart, and unassigned pile">Open full Team Workload →</a>
-            </div>
-          </div>
-          <!-- v97: Card container — same visual as Team Workload's grid, but stretched to full width for the single user card -->
-          <div class="hmw-card-wrap" id="homeMyWorkloadBody"></div>
-        </div>
-      </section>
 
       <!-- Bid Countdowns across all active projects -->
       <section class="home-section" id="homeCountdownsSection">
@@ -926,6 +939,60 @@
           <p>Try increasing the threshold or expanding the window. If team members don't have capacity set in Capacity & PTO settings, they won't appear here.</p>
         </div>
       </div>
+    </div>
+
+    <!-- ============================================================
+         EXECUTIVE VIEW (v197)
+         Leadership snapshot — bidding projects with per-stage progress
+         bars. Toggle between hour-weighted and task-count-weighted.
+         ============================================================ -->
+    <div id="executiveView" class="hidden">
+      <!-- v205: Print-only report title block. Hidden on screen via CSS,
+           shown only when printing so the report reads as a formal doc. -->
+      <div class="ev-print-title" aria-hidden="true">
+        <div class="ev-print-brand">
+          <span class="epb-name">SOURCE BUILDING GROUP</span>
+          <span class="epb-tag">Commercial General Contractor · Preconstruction</span>
+        </div>
+        <h1 class="ev-print-report-title" id="evPrintReportTitle">SBG Preconstruction Executive Snapshot</h1>
+        <div class="ev-print-report-sub" id="evPrintReportSub"></div>
+      </div>
+      <div class="ev-header">
+        <div class="ev-title-row">
+          <div>
+            <h1 class="ev-title">📈 Executive Snapshot</h1>
+            <div class="ev-subtitle">Bidding project progress by stage — click any card to open the full project</div>
+          </div>
+          <div class="ev-actions">
+            <div class="ev-viewmode-group" role="tablist">
+              <button class="ev-viewmode-btn active" data-view="cards" onclick="setExecutiveViewMode('cards')" title="Project cards with progress bars + milestone chains">📊 Cards</button>
+              <button class="ev-viewmode-btn" data-view="calendar" onclick="setExecutiveViewMode('calendar')" title="Monthly calendar showing all Currently Bidding due dates">📅 Bid Calendar</button>
+            </div>
+            <div class="ev-groupby-group" role="tablist">
+              <button class="ev-groupby-btn active" data-groupby="bid-date" onclick="setExecutiveGroupBy('bid-date')" title="Group projects by bid date (Currently Bidding / Post Bid)">📅 By Bid Date</button>
+              <button class="ev-groupby-btn" data-groupby="assignee" onclick="setExecutiveGroupBy('assignee')" title="Group projects by task assignee — real workload distribution based on who's assigned to which tasks">👤 By Assignee</button>
+            </div>
+            <div class="ev-toggle-group" role="tablist">
+              <button class="ev-toggle-btn active" data-mode="hours" onclick="setExecutiveMode('hours')" title="Progress weighted by estimated hours per task">⏱ By Hours</button>
+              <button class="ev-toggle-btn" data-mode="count" onclick="setExecutiveMode('count')" title="Progress weighted by task count"># By Task Count</button>
+            </div>
+            <button class="btn btn-sm" onclick="printExecutiveReport()" title="Print or save as PDF. Use your browser's Save as PDF option in the print dialog.">🖨 Print / PDF</button>
+            <button class="btn btn-sm" onclick="refreshExecutiveView()" title="Refresh data">↻ Refresh</button>
+            <button class="btn btn-sm" onclick="exitExecutiveView()">✕ Close</button>
+          </div>
+        </div>
+        <div class="ev-summary-strip" id="evSummaryStrip"></div>
+        <div class="ev-filter-strip">
+          <div class="ev-filter-header">
+            <span class="ev-filter-label">Show:</span>
+            <button class="ev-filter-all-btn" onclick="setExecFilterAll(true)" title="Show all projects">Show All</button>
+            <button class="ev-filter-all-btn" onclick="setExecFilterAll(false)" title="Hide all projects">Hide All</button>
+          </div>
+          <div class="ev-filter-chips" id="evFilterChips"></div>
+        </div>
+      </div>
+      <div class="ev-grid" id="evGrid"></div>
+      <div class="ev-calendar" id="evCalendar" style="display:none;"></div>
     </div>
 
     <!-- ============================================================
